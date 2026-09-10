@@ -22,15 +22,20 @@ const SAFETY_TIMER: Duration = Duration::from_secs(600);
 
 const INTER_BATCH_PAUSE: Duration = Duration::from_millis(50);
 
+fn sync_retry_delay(failures:u32)->Duration {
+    if failures==0 {SAFETY_TIMER} else {Duration::from_secs((15u64 << (failures-1).min(6)).min(600))}
+}
+
 pub async fn run_sweep_loop(state: Arc<CloudStateInner>) {
+    let mut sync_failures=0u32;
     loop {
 
         tokio::select! {
             _ = state.notify.notified() => {
                 debug!("cloud sweep: woken by Notify");
             }
-            _ = tokio::time::sleep(SAFETY_TIMER) => {
-                debug!("cloud sweep: woken by safety timer");
+            _ = tokio::time::sleep(sync_retry_delay(sync_failures)) => {
+                debug!("cloud sweep: woken by timer");
             }
         }
 
@@ -72,8 +77,10 @@ pub async fn run_sweep_loop(state: Arc<CloudStateInner>) {
             }
         }
 
-        if let Err(e) = crate::sync::run_once(state.clone()).await {
-            warn!("cloud sync error: {}", e);
+        match crate::sync::run_once(state.clone()).await {
+            Ok(())=>sync_failures=0,
+            Err(e) if crate::sync::work_pending(&e)=>sync_failures=1,
+            Err(e)=>{sync_failures=sync_failures.saturating_add(1);warn!("cloud sync error: {}",e);}
         }
     }
 }
@@ -135,12 +142,15 @@ async fn sweep_once(state: Arc<CloudStateInner>) -> Result<u32> {
                 for p in &mut pending {
                     // Embed temperature samples because the telemetry DB remains local.
                     p.route.temp_samples = db_ext::temp_samples_for_route(&store, &p.file);
-                    let encrypted = encrypt::encrypt_route(
+                    let locations = crate::locations::for_route(&store, &p.route)
+                        .context("read clip location evidence")?;
+                    let encrypted = encrypt::encrypt_route_with_locations(
                         &p.route,
                         &pi_key,
                         &user_id,
                         &pi_id,
                         p.cloud_route_id.as_deref(),
+                        locations.as_ref(),
                     )
                     .with_context(|| format!("encrypt {}", p.file))?;
 
@@ -205,6 +215,7 @@ async fn sweep_once(state: Arc<CloudStateInner>) -> Result<u32> {
             pi_id: creds_snapshot.pi_id.clone(),
             routes: wire_routes,
         };
+        { let _guard=state.current_credentials(&creds_snapshot).await?; }
         let resp = client
             .post_json_bearer_with_headers(
                 "/api/pi/routes",
@@ -217,7 +228,7 @@ async fn sweep_once(state: Arc<CloudStateInner>) -> Result<u32> {
 
         if status.as_u16() == 401 {
             warn!("cloud upload: 401, wiping credentials");
-            state.handle_remote_revoke().await;
+            state.handle_remote_revoke(&creds_snapshot).await;
             return Err(anyhow!("auth rejected; pi unpaired"));
         }
         if status.as_u16() == 403 {
@@ -242,7 +253,7 @@ async fn sweep_once(state: Arc<CloudStateInner>) -> Result<u32> {
                 }
                 _ => {
                     warn!("cloud upload: 403 ({:?}), wiping credentials", err_field);
-                    state.handle_remote_revoke().await;
+                    state.handle_remote_revoke(&creds_snapshot).await;
                     return Err(anyhow!("auth rejected; pi unpaired"));
                 }
             }
@@ -276,6 +287,7 @@ async fn sweep_once(state: Arc<CloudStateInner>) -> Result<u32> {
         }
 
         let parsed: UploadResponse = resp.json().await.context("parse upload response")?;
+        let _pairing_guard=state.current_credentials(&creds_snapshot).await?;
 
         let now_unix = now_ms() / 1000;
         let mut storage_full_seen = false;
@@ -350,6 +362,7 @@ async fn sweep_once(state: Arc<CloudStateInner>) -> Result<u32> {
             break;
         }
 
+        drop(_pairing_guard);
         tokio::time::sleep(INTER_BATCH_PAUSE).await;
     }
 
@@ -386,4 +399,18 @@ struct UploadResult {
     #[serde(rename = "routeId")]
     route_id: String,
     status: String,
+}
+
+#[cfg(test)]
+mod retry_tests {
+    use super::*;
+    #[test]
+    fn sync_failures_retry_soon_then_back_off_without_exceeding_the_safety_interval() {
+        assert_eq!(sync_retry_delay(0),SAFETY_TIMER);
+        assert_eq!(sync_retry_delay(1),Duration::from_secs(15));
+        let delays:Vec<_>=(1..=12).map(sync_retry_delay).collect();
+        assert!(delays.windows(2).all(|pair|pair[1]>=pair[0]));
+        assert!(delays.iter().all(|delay|*delay<=SAFETY_TIMER));
+        assert_eq!(sync_retry_delay(u32::MAX),SAFETY_TIMER);
+    }
 }

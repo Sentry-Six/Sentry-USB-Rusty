@@ -8,7 +8,6 @@ use axum::{
 };
 use serde::Deserialize;
 use serde_json::json;
-use tracing::warn;
 
 use sentryusb_cloud_uploader::CloudUploader;
 
@@ -28,6 +27,7 @@ pub async fn get_status(State(state): State<AppState>) -> impl IntoResponse {
         "pairedAt": snap.paired_at,
         "lastUploadAt": snap.last_upload_at,
         "lastUploadError": snap.last_upload_error,
+        "mutableSync": snap.mutable_sync,
         "pendingRouteCount": snap.pending_route_count,
         "totalUploadedRouteCount": snap.total_uploaded_route_count,
         "dekRotationGeneration": snap.dek_rotation_generation,
@@ -55,22 +55,9 @@ pub async fn pair_begin(
             .into_response();
     }
 
-    let snap = state.cloud.uploader.status().await;
-    if snap.paired {
-        return (
-            StatusCode::CONFLICT,
-            Json(json!({ "error": "already paired; unpair first" })),
-        )
-            .into_response();
+    if let Err(error)=state.cloud.uploader.pair_start(&body.code).await {
+        return (StatusCode::CONFLICT,Json(json!({"error":error.to_string()}))).into_response();
     }
-
-    let handle = state.cloud.uploader.clone();
-    let code = body.code.clone();
-    tokio::spawn(async move {
-        if let Err(e) = handle.pair_begin(&code).await {
-            warn!("cloud pair begin failed: {}", e);
-        }
-    });
     (StatusCode::ACCEPTED, Json(json!({ "ok": true }))).into_response()
 }
 

@@ -208,7 +208,7 @@ fn build_safety_analytics(summaries: &[DriveSummary], period: &str) -> SafetyAna
             }
             if let Some(ps) = period_start {
                 if let Ok(dt) =
-                    NaiveDateTime::parse_from_str(&d.start_time, "%Y-%m-%dT%H:%M:%S")
+                    NaiveDateTime::parse_from_str(&d.start_time, "%Y-%m-%dT%H:%M:%S%.f")
                 {
                     return dt.date() >= ps;
                 }
@@ -262,7 +262,7 @@ fn build_safety_analytics(summaries: &[DriveSummary], period: &str) -> SafetyAna
         }
         fsd_disengagements += d.fsd_disengagements;
 
-        if let Ok(dt) = NaiveDateTime::parse_from_str(&d.start_time, "%Y-%m-%dT%H:%M:%S") {
+        if let Ok(dt) = NaiveDateTime::parse_from_str(&d.start_time, "%Y-%m-%dT%H:%M:%S%.f") {
             let date_key = dt.format("%Y-%m-%d").to_string();
             let day_name = match dt.weekday() {
                 chrono::Weekday::Mon => "Mon",
@@ -447,65 +447,96 @@ fn mileage_weighted_safety_breakdown(
 /// `/api/drives/:id/*` calls keep lining up, and it needs the file
 /// list for the targeted BLOB fetch. Returns `None` if the id doesn't
 /// match any drive.
-pub fn find_drive_files(
-    summaries: &[RouteSummary],
-    id: &str,
-) -> Option<(usize, Vec<String>)> {
-    let groups = group_summary_clips(summaries);
-
-    let pick = |idx: usize| -> Vec<String> {
-        // Dedupe parent files: when a clip's mid-clip park gap splits it
-        // across two drives, each drive's sub-clip list references the
-        // parent once; within a single drive a parent appears at most
-        // once, but the dedupe is cheap insurance against future logic
-        // changes that allow multiple sub-clips of the same parent in
-        // one drive.
-        let mut seen = std::collections::HashSet::new();
-        groups[idx]
-            .iter()
-            .filter_map(|c| {
-                if seen.insert(c.summary.file.as_str()) {
-                    Some(c.summary.file.clone())
-                } else {
-                    None
-                }
-            })
-            .collect()
-    };
-
-    if let Ok(idx) = id.parse::<usize>() {
-        if idx < groups.len() {
-            return Some((idx, pick(idx)));
-        }
-    }
-    for (idx, group) in groups.iter().enumerate() {
-        if group.is_empty() {
-            continue;
-        }
-        let st = group[0]
-            .timestamp
-            .format("%Y-%m-%dT%H:%M:%S")
-            .to_string();
-        if st == id {
-            return Some((idx, pick(idx)));
-        }
-    }
-    None
+pub fn find_drive_files(summaries:&[RouteSummary],id:&str)->Option<(usize,Vec<String>)> {
+    let groups=group_summary_clips(summaries);
+    let index=resolve_group_index(summaries,&groups,id,true)?;
+    let mut seen=std::collections::HashSet::new();
+    let files=groups[index].iter().filter_map(|clip|
+        seen.insert(clip.summary.file.as_str()).then(||clip.summary.file.clone())).collect();
+    Some((index,files))
 }
 
-/// Full drive_key → member-file mapping for cloud tag sync.
-/// drive_key is the canonical start_time string
-/// (`drive_tags.drive_key` join key, same formatting as
-/// `find_drive_start_time`); files are the deduped parent clip paths.
-/// One grouper pass for the whole store — the sync engine maps each
-/// dirty drive to its member routeIds (push) and each changed cloud
-/// route back to its drive (pull) from this.
+pub struct DriveSelection {
+    pub index: usize,
+    pub files: Vec<String>,
+    pub clip_spans_ms: HashMap<String,i64>,
+    pub summary: DriveSummary,
+}
+
+pub fn resolve_drive_selection(summaries: &[RouteSummary], id: &str,
+    tags: &HashMap<String,Vec<String>>)->Option<DriveSelection> {
+    let groups=group_summary_clips(summaries);
+    let index=resolve_group_index(summaries,&groups,id,false)?;
+    let clips=&groups[index];
+    let mut files=Vec::new();let mut clip_spans_ms=HashMap::new();
+    for clip in clips {
+        if clip_spans_ms.insert(clip.summary.file.clone(),clip.clip_span_ms).is_none() {
+            files.push(clip.summary.file.clone());
+        }
+    }
+    Some(DriveSelection {index,files,clip_spans_ms,summary:build_summary_from_aggregates(clips,index,tags)})
+}
+
+fn resolve_group_index(summaries:&[RouteSummary], groups:&[Vec<SubClipSummary<'_>>],
+    id:&str, exact_legacy_membership:bool)->Option<usize> {
+    if let Ok(index)=id.parse::<usize>() {return (index<groups.len()).then_some(index)}
+    let current:Vec<_>=groups.iter().enumerate().filter(|(_,group)|group.first().is_some_and(|clip|
+        clip.timestamp.format("%Y-%m-%dT%H:%M:%S%.3f").to_string()==id)).map(|(index,_)|index).collect();
+    if current.len()==1 {return Some(current[0])}
+    if !current.is_empty() {return None}
+    let legacy=group_summary_clips_with_clock(summaries,false);
+    let old:Vec<_>=legacy.iter().filter(|group|group.first().is_some_and(|clip|
+        clip.timestamp.format("%Y-%m-%dT%H:%M:%S").to_string()==id)).collect();
+    if old.len()!=1 {return None}
+    let old=old[0];
+    let matching:Vec<_>=groups.iter().enumerate().filter(|(_,group)|group.iter().any(|new|old.iter().any(|old|
+        old.summary.file==new.summary.file && old.total_frames==new.total_frames
+            && old.start_frame<new.end_frame && new.start_frame<old.end_frame))).map(|(index,_)|index).collect();
+    if matching.len()!=1 {return None}
+    let index=matching[0];
+    if exact_legacy_membership && (old.len()!=groups[index].len() || !old.iter().zip(&groups[index]).all(|(a,b)|
+        a.summary.file==b.summary.file && a.start_frame==b.start_frame && a.end_frame==b.end_frame && a.total_frames==b.total_frames)) {
+        return None
+    }
+    Some(index)
+}
+
+/// The exact half-open frame window a drive occupies in one source clip.
+/// Retain these bounds when several independent drives share the same file.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct DriveClipWindow {
+    pub file: String,
+    pub start_frame: u32,
+    pub end_frame: u32,
+    pub total_frames: u32,
+}
+
+/// Read-only transition analysis for correcting shortened-clip clocks.
+/// It neither rewrites tag keys nor changes the active grouping policy.
+pub mod timing_compatibility;
+
+/// Drive keys use the same canonical start time as drive_tags. Unlike the
+/// legacy file-only map, this preserves each park-split segment's identity.
+pub fn drive_key_clip_windows(summaries: &[RouteSummary]) -> Vec<(String, Vec<DriveClipWindow>)> {
+    group_summary_clips(summaries).iter().filter_map(|group| {
+        let first=group.first()?;
+        let key=first.timestamp.format("%Y-%m-%dT%H:%M:%S%.3f").to_string();
+        let windows=group.iter().map(|clip| DriveClipWindow {
+            file:clip.summary.file.clone(),start_frame:clip.start_frame,
+            end_frame:clip.end_frame,total_frames:clip.total_frames,
+        }).collect();
+        Some((key,windows))
+    }).collect()
+}
+
+/// Legacy file membership for hydration and clip-wide tag compatibility.
+/// Scoped tag publication must retain drive_key_clip_windows instead.
 pub fn drive_key_file_map(summaries: &[RouteSummary]) -> Vec<(String, Vec<String>)> {
     let groups = group_summary_clips(summaries);
     let mut out = Vec::with_capacity(groups.len());
     for group in groups.iter() {
         let Some(first) = group.first() else { continue };
-        let key = first.timestamp.format("%Y-%m-%dT%H:%M:%S").to_string();
+        let key = first.timestamp.format("%Y-%m-%dT%H:%M:%S%.3f").to_string();
         let mut seen = std::collections::HashSet::new();
         let files: Vec<String> = group
             .iter()
@@ -559,29 +590,9 @@ pub fn build_summary_for_idx(
 /// the start_time key the list endpoint later read by — so tags were
 /// written but never displayed.
 pub fn find_drive_start_time(summaries: &[RouteSummary], id: &str) -> Option<String> {
-    let groups = group_summary_clips(summaries);
-
-    let key_of = |idx: usize| -> Option<String> {
-        groups
-            .get(idx)
-            .and_then(|g| g.first())
-            .map(|c| c.timestamp.format("%Y-%m-%dT%H:%M:%S").to_string())
-    };
-
-    if let Ok(idx) = id.parse::<usize>() {
-        if let Some(st) = key_of(idx) {
-            return Some(st);
-        }
-    }
-    for group in groups.iter() {
-        if let Some(first) = group.first() {
-            let st = first.timestamp.format("%Y-%m-%dT%H:%M:%S").to_string();
-            if st == id {
-                return Some(st);
-            }
-        }
-    }
-    None
+    let groups=group_summary_clips(summaries);
+    let index=resolve_group_index(summaries,&groups,id,true)?;
+    Some(groups[index].first()?.timestamp.format("%Y-%m-%dT%H:%M:%S%.3f").to_string())
 }
 
 /// Output of [`summon_check_candidates`].
@@ -786,6 +797,15 @@ pub fn build_single_drive_from_clips(
     tags: &HashMap<String, Vec<String>>,
     target_start: Option<&str>,
 ) -> Option<Drive> {
+    build_single_drive_from_clips_with_spans(routes,idx,tags,target_start,None)
+}
+
+/// Use parent spans computed from the complete history, including following
+/// parked clips not fetched for this drive's detail geometry.
+pub fn build_single_drive_from_clips_with_spans(
+    routes: &[Route], idx: i32, tags: &HashMap<String, Vec<String>>,
+    target_start: Option<&str>, spans: Option<&HashMap<String,i64>>,
+) -> Option<Drive> {
     if routes.is_empty() {
         return None;
     }
@@ -820,7 +840,11 @@ pub fn build_single_drive_from_clips(
             .map(|t| (t.timestamp, bounds_clip_span(&t.route.source, &t.route.file)))
             .collect();
         for (t, span) in timed.iter_mut().zip(clip_spans(&entries)) {
-            t.clip_span_ms = span;
+            t.clip_span_ms = if let Some(spans) = spans {
+                let selected=*spans.get(&t.route.file)?;
+                if !(1..=CLIP_DURATION_MS).contains(&selected) { return None }
+                selected
+            } else {span};
         }
     }
 
@@ -828,15 +852,18 @@ pub fn build_single_drive_from_clips(
     if sub_drives.is_empty() {
         return None;
     }
-    let pick = if sub_drives.len() == 1 {
+    let pick = if spans.is_some() {
+        let target=NaiveDateTime::parse_from_str(target_start?, "%Y-%m-%dT%H:%M:%S%.f").ok()?;
+        sub_drives.iter().position(|group|group.first().is_some_and(|clip|clip.timestamp==target))?
+    } else if sub_drives.len() == 1 {
         0
     } else if let Some(t) = target_start
-        .and_then(|s| NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%S").ok())
+        .and_then(|s| NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%S%.f").ok())
     {
         sub_drives
             .iter()
             .enumerate()
-            .min_by_key(|(_, g)| (g[0].timestamp - t).num_seconds().abs())
+            .min_by_key(|(_, g)| (g[0].timestamp - t).num_milliseconds().abs())
             .map(|(i, _)| i)
             .unwrap_or(0)
     } else {
@@ -888,7 +915,7 @@ pub(crate) fn is_event_folder_path(file: &str) -> bool {
 /// Clip timestamp parsed from the FILENAME component only. Event paths
 /// embed the event-folder timestamp first (`SentryClips/<event_ts>/<clip_ts>-
 /// front.mp4`), which a left-to-right `parse_file_timestamp` would win.
-pub(crate) fn parse_clip_timestamp(file_path: &str) -> Option<NaiveDateTime> {
+pub fn parse_clip_timestamp(file_path: &str) -> Option<NaiveDateTime> {
     let norm = file_path.replace('\\', "/");
     parse_file_timestamp(norm.rsplit('/').next().unwrap_or(&norm))
 }
@@ -1579,6 +1606,7 @@ pub(crate) struct PlannedDrive {
 struct TimedMeta {
     idx: usize,
     ts: NaiveDateTime,
+    clip_span_ms: i64,
 }
 
 /// group_clips over metadata. `metas` must be in the same order the
@@ -1595,7 +1623,7 @@ pub(crate) fn plan_overviews(metas: &[OverviewClipMeta]) -> Vec<PlannedDrive> {
         if is_event_folder_path(&m.file) {
             events.push(i);
         } else if let Some(ts) = parse_clip_timestamp(&m.file) {
-            timed.push(TimedMeta { idx: i, ts });
+            timed.push(TimedMeta { idx: i, ts, clip_span_ms: CLIP_DURATION_MS });
         }
     }
     timed.sort_by(|a, b| a.ts.cmp(&b.ts));
@@ -1625,7 +1653,7 @@ pub(crate) fn plan_overviews(metas: &[OverviewClipMeta]) -> Vec<PlannedDrive> {
         let mut admitted = 0usize;
         for k in select_gap_fill(&recent_ts, &keys) {
             let (ts, i) = &mut cands[k];
-            timed.push(TimedMeta { idx: i.take().unwrap(), ts: *ts });
+            timed.push(TimedMeta { idx: i.take().unwrap(), ts: *ts, clip_span_ms: CLIP_DURATION_MS });
             admitted += 1;
         }
         if admitted > 0 {
@@ -1634,6 +1662,12 @@ pub(crate) fn plan_overviews(metas: &[OverviewClipMeta]) -> Vec<PlannedDrive> {
     }
     if timed.is_empty() {
         return Vec::new();
+    }
+
+    let entries: Vec<_> = timed.iter().map(|tm|
+        (tm.ts, bounds_clip_span(&metas[tm.idx].source, &metas[tm.idx].file))).collect();
+    for (tm, span) in timed.iter_mut().zip(clip_spans(&entries)) {
+        tm.clip_span_ms = span;
     }
 
     let mut time_groups: Vec<Vec<TimedMeta>> = Vec::new();
@@ -1688,7 +1722,7 @@ fn plan_split_by_gear(
             current.push(whole_fragment(metas, tm));
             continue;
         }
-        match plan_clip_at_park_gaps(&m.gear_runs, m.n_points) {
+        match plan_clip_at_park_gaps(&m.gear_runs, m.n_points, tm.clip_span_ms) {
             None => {
                 // Mirrors the slicer: an unsplit gear-run clip is kept
                 // only when it has points.
@@ -1706,7 +1740,7 @@ fn plan_split_by_gear(
                         current.push(PlannedFragment {
                             meta_idx: tm.idx,
                             range: seg.range,
-                            timestamp: tm.ts + chrono::Duration::seconds(seg.offset_secs),
+                            timestamp: tm.ts + chrono::Duration::milliseconds(seg.offset_ms),
                         });
                     }
                 }
@@ -1830,7 +1864,7 @@ pub(crate) fn overview_from_fragments(
         points: downsample(&pts, max_points_per_drive),
         source: first.and_then(|f| metas[f.meta_idx].source.clone()),
         start_time: first
-            .map(|f| f.timestamp.format("%Y-%m-%dT%H:%M:%S").to_string())
+            .map(|f| f.timestamp.format("%Y-%m-%dT%H:%M:%S%.3f").to_string())
             .unwrap_or_default(),
     })
 }
@@ -1930,6 +1964,19 @@ struct ClipSegment {
     parked: bool,
 }
 
+// Round raw-frame boundaries once, using integer arithmetic, so adjacent
+// segments agree on their shared endpoint even at fractional milliseconds.
+fn frame_offset_ms(frame:u32,total:u32,span_ms:i64)->i64 {
+    if total==0 {return 0}
+    ((u64::from(frame)*span_ms.max(0) as u64+u64::from(total)/2)/u64::from(total)) as i64
+}
+fn frame_span_ms(start:u32,end:u32,total:u32,span_ms:i64)->i64 {
+    frame_offset_ms(end,total,span_ms)-frame_offset_ms(start,total,span_ms)
+}
+fn park_gap_frames(frames:u32,total:u32,span_ms:i64)->bool {
+    u64::from(frames)*span_ms.max(0) as u64 >= (PARK_GAP_SECONDS*1000.0) as u64*u64::from(total)
+}
+
 /// One planned fragment of a clip: point range + segment timestamp
 /// offset, or a park boundary marker. Pure index math over gear runs
 /// and the point COUNT — the single source of truth for the
@@ -1938,10 +1985,9 @@ struct ClipSegment {
 /// decoding point BLOBs.
 pub(crate) struct PlannedSeg {
     pub(crate) range: std::ops::Range<usize>,
-    pub(crate) offset_secs: i64,
-    /// This segment's share of the clip's raw frames — how much of the
-    /// clip's real wall-clock span it occupies.
-    pub(crate) span_frac: f64,
+    pub(crate) offset_ms: i64,
+    /// Difference between the rounded frame endpoints in the parent clock.
+    pub(crate) span_ms: i64,
     pub(crate) parked: bool,
 }
 
@@ -1950,13 +1996,13 @@ pub(crate) struct PlannedSeg {
 pub(crate) fn plan_clip_at_park_gaps(
     gear_runs: &[GearRun],
     n_points: usize,
+    clip_span_ms: i64,
 ) -> Option<Vec<PlannedSeg>> {
     let total_raw_frames: u32 = gear_runs.iter().map(|r| r.frames).sum();
     if total_raw_frames == 0 {
         return None;
     }
 
-    let seconds_per_frame = 60.0 / total_raw_frames as f64;
 
     // Identify raw segments that are park gaps
     struct RawSeg {
@@ -1968,8 +2014,7 @@ pub(crate) fn plan_clip_at_park_gaps(
     let mut raw_segs = Vec::new();
     let mut frame: u32 = 0;
     for run in gear_runs {
-        let duration = run.frames as f64 * seconds_per_frame;
-        let is_park_gap = run.gear == GEAR_PARK && duration >= PARK_GAP_SECONDS;
+        let is_park_gap = run.gear == GEAR_PARK && park_gap_frames(run.frames,total_raw_frames,clip_span_ms);
         raw_segs.push(RawSeg {
             start_frame: frame,
             end_frame: frame + run.frames,
@@ -2000,8 +2045,8 @@ pub(crate) fn plan_clip_at_park_gaps(
         if seg.parked {
             out.push(PlannedSeg {
                 range: 0..0,
-                offset_secs: 0,
-                span_frac: 0.0,
+                offset_ms: 0,
+                span_ms: 0,
                 parked: true,
             });
             continue;
@@ -2038,17 +2083,10 @@ pub(crate) fn plan_clip_at_park_gaps(
 
         out.push(PlannedSeg {
             range: start_idx..end_idx,
-            // Deliberately the NOMINAL minute, not the clip's real span.
-            // This offset lands in the segment's timestamp, which becomes
-            // the drive's start_time — and start_time is the key user
-            // drive tags are stored under (`drive_tags.drive_key`), with
-            // no fallback and no migration. Using the real span here
-            // would move drives and silently orphan every tag on them at
-            // the next cache rebuild. An imprecise label is worth less
-            // than the user's own data; the span below carries the real
-            // duration.
-            offset_secs: (start_frac * 60.0) as i64,
-            span_frac: end_frac - start_frac,
+            // Frame time is derived from the real parent span. Durable tag
+            // scopes are migrated separately rather than using a wrong clock.
+            offset_ms: frame_offset_ms(seg.start_frame,total_raw_frames,clip_span_ms),
+            span_ms: frame_span_ms(seg.start_frame,seg.end_frame,total_raw_frames,clip_span_ms),
             parked: false,
         });
     }
@@ -2058,7 +2096,7 @@ pub(crate) fn plan_clip_at_park_gaps(
 /// Analyse a clip's GearRuns and split its points at any Park gap >=
 /// PARK_GAP_SECONDS. Returns one or more segments.
 fn split_clip_at_park_gaps(clip: &TimedRoute) -> Vec<ClipSegment> {
-    let Some(plan) = plan_clip_at_park_gaps(&clip.route.gear_runs, clip.route.points.len())
+    let Some(plan) = plan_clip_at_park_gaps(&clip.route.gear_runs, clip.route.points.len(), clip.clip_span_ms)
     else {
         return vec![ClipSegment {
             route: clip.clone(),
@@ -2117,11 +2155,11 @@ fn split_clip_at_park_gaps(clip: &TimedRoute) -> Vec<ClipSegment> {
             Vec::new()
         };
 
-        let offset = chrono::Duration::seconds(seg.offset_secs);
+        let offset = chrono::Duration::milliseconds(seg.offset_ms);
         // The sub-segment lasts its own fraction of the parent's real
         // span, which is what the drive's end time and per-point
         // timestamps are built from.
-        let seg_span_ms = (clip.clip_span_ms as f64 * seg.span_frac).round() as i64;
+        let seg_span_ms = seg.span_ms;
 
         result.push(ClipSegment {
             route: TimedRoute {
@@ -3031,14 +3069,14 @@ fn build_drive_stats(
         Vec::new()
     };
 
-    let start_time_str = start_time.format("%Y-%m-%dT%H:%M:%S").to_string();
+    let start_time_str = start_time.format("%Y-%m-%dT%H:%M:%S%.3f").to_string();
     let drive_tags = tags.get(&start_time_str).cloned().unwrap_or_default();
 
     Drive {
         id: idx,
         date: first_clip.route.date.clone(),
         start_time: start_time_str,
-        end_time: end_time.format("%Y-%m-%dT%H:%M:%S").to_string(),
+        end_time: end_time.format("%Y-%m-%dT%H:%M:%S%.3f").to_string(),
         duration_ms,
         distance_mi: round2(total_distance_m / calc::M_PER_MILE),
         distance_km: round2(total_distance_m / 1000.0),
@@ -3111,7 +3149,7 @@ fn group_routes_overview(routes: Vec<Route>, max_points_per_drive: usize) -> Vec
         // produce different indices when sub-clip splitting occurs.
         let start_time = clips
             .first()
-            .map(|c| c.timestamp.format("%Y-%m-%dT%H:%M:%S").to_string())
+            .map(|c| c.timestamp.format("%Y-%m-%dT%H:%M:%S%.3f").to_string())
             .unwrap_or_default();
         result.push(RouteOverview {
             id: idx as i32,
@@ -3159,7 +3197,7 @@ fn build_fsd_analytics(summaries: &[DriveSummary], period: &str) -> FsdAnalytics
             }
             if let Some(ps) = period_start {
                 if let Ok(dt) =
-                    NaiveDateTime::parse_from_str(&d.start_time, "%Y-%m-%dT%H:%M:%S")
+                    NaiveDateTime::parse_from_str(&d.start_time, "%Y-%m-%dT%H:%M:%S%.f")
                 {
                     return dt.date() >= ps;
                 }
@@ -3208,7 +3246,7 @@ fn build_fsd_analytics(summaries: &[DriveSummary], period: &str) -> FsdAnalytics
             fsd_sessions += 1;
         }
 
-        if let Ok(dt) = NaiveDateTime::parse_from_str(&d.start_time, "%Y-%m-%dT%H:%M:%S") {
+        if let Ok(dt) = NaiveDateTime::parse_from_str(&d.start_time, "%Y-%m-%dT%H:%M:%S%.f") {
             let date_key = dt.format("%Y-%m-%d").to_string();
             let day_name = match dt.weekday() {
                 chrono::Weekday::Mon => "Mon",
@@ -3444,7 +3482,7 @@ pub fn hide_tessie_overlapping_sei(summaries: Vec<DriveSummary>) -> Vec<DriveSum
 }
 
 fn parse_iso_seconds(s: &str) -> Option<i64> {
-    NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%S")
+    NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%S%.f")
         .ok()
         .map(|dt| dt.and_utc().timestamp())
 }
@@ -3516,7 +3554,7 @@ pub(crate) fn parse_file_timestamp(file_path: &str) -> Option<NaiveDateTime> {
                 &s[14..16],
                 &s[17..19]
             );
-            if let Ok(dt) = NaiveDateTime::parse_from_str(&iso, "%Y-%m-%dT%H:%M:%S") {
+            if let Ok(dt) = NaiveDateTime::parse_from_str(&iso, "%Y-%m-%dT%H:%M:%S%.f") {
                 return Some(dt);
             }
         }
@@ -3587,7 +3625,7 @@ struct SubClipSummary<'a> {
     summary: &'a RouteSummary,
     /// Timestamp of the START of this sub-segment. For whole-clip wraps
     /// this is the parent clip's parsed file timestamp; for mid-clip
-    /// sub-segments it is offset by `start_frame * (60_000 ms / total_frames)`
+    /// sub-segments it is offset by the rounded real-time start-frame boundary
     /// so two sub-drives derived from the same clip get distinct, ordered
     /// start times.
     timestamp: NaiveDateTime,
@@ -3640,6 +3678,11 @@ impl<'a> SubClipSummary<'a> {
 /// park-gap clips produce the correct drive count and per-drive
 /// aggregates fraction-scale across the resulting drives.
 fn group_summary_clips<'a>(summaries: &'a [RouteSummary]) -> Vec<Vec<SubClipSummary<'a>>> {
+    group_summary_clips_with_clock(summaries, true)
+}
+
+// The legacy branch is retained for source-window migration and old-ID resolution.
+fn group_summary_clips_with_clock<'a>(summaries: &'a [RouteSummary], actual_span: bool) -> Vec<Vec<SubClipSummary<'a>>> {
     if summaries.is_empty() {
         return Vec::new();
     }
@@ -3718,9 +3761,8 @@ fn group_summary_clips<'a>(summaries: &'a [RouteSummary]) -> Vec<Vec<SubClipSumm
     }
 
     // Real clip spans over the whole sorted series, so the drive's end
-    // time reflects a recording that stopped early. Mirrors Drive's
-    // annotateClipSpans; the START offsets below stay nominal so drive
-    // tag keys never move.
+    // time reflects a recording that stopped early. The same span supplies
+    // Park thresholds and segment offsets; migration retains legacy tag scopes.
     {
         let entries: Vec<(NaiveDateTime, bool)> = timed
             .iter()
@@ -3754,7 +3796,7 @@ fn group_summary_clips<'a>(summaries: &'a [RouteSummary]) -> Vec<Vec<SubClipSumm
     // split (operates on sub-clips).
     let mut groups = Vec::new();
     for tg in time_groups {
-        for gear_group in split_summary_by_gear_state(tg) {
+        for gear_group in split_summary_by_gear_state_with_clock(tg, actual_span) {
             for sig_group in split_summary_by_external_signature(gear_group) {
                 groups.push(sig_group);
             }
@@ -3805,8 +3847,8 @@ fn split_summary_by_external_signature<'a>(
 /// Each produced sub-clip carries `(start_frame, end_frame, fraction)`
 /// so `build_summary_from_aggregates` can fraction-scale per-clip
 /// aggregates instead of dumping the whole clip's totals into one drive.
-fn split_summary_by_gear_state<'a>(
-    group: Vec<TimedSummary<'a>>,
+fn split_summary_by_gear_state_with_clock<'a>(
+    group: Vec<TimedSummary<'a>>, actual_span: bool,
 ) -> Vec<Vec<SubClipSummary<'a>>> {
     if group.is_empty() {
         return Vec::new();
@@ -3829,7 +3871,8 @@ fn split_summary_by_gear_state<'a>(
             continue;
         }
 
-        let spf = 60.0 / total_frames as f64;
+        let span_ms = if actual_span { clip.clip_span_ms } else { CLIP_DURATION_MS };
+        let spf = span_ms as f64 / 1000.0 / total_frames as f64;
 
         // Raw per-gear-run segments, marked parked iff GEAR_PARK and the
         // run lasts at least PARK_GAP_SECONDS.
@@ -3842,8 +3885,9 @@ fn split_summary_by_gear_state<'a>(
         let mut raw_segs: Vec<Seg> = Vec::with_capacity(clip.summary.gear_runs.len());
         let mut offset: u32 = 0;
         for run in &clip.summary.gear_runs {
-            let parked = run.gear == GEAR_PARK
-                && (run.frames as f64 * spf) >= PARK_GAP_SECONDS;
+            let parked = run.gear == GEAR_PARK && if actual_span {
+                park_gap_frames(run.frames,total_frames,span_ms)
+            } else {(run.frames as f64 * spf) >= PARK_GAP_SECONDS};
             raw_segs.push(Seg {
                 start: offset,
                 end: offset + run.frames,
@@ -3894,7 +3938,8 @@ fn split_summary_by_gear_state<'a>(
                     result.push(std::mem::take(&mut current));
                 }
             } else {
-                let seg_offset_ms = (seg.start as f64 * spf * 1000.0).round() as i64;
+                let seg_offset_ms = if actual_span {frame_offset_ms(seg.start,total_frames,span_ms)}
+                    else {(seg.start as f64 * spf * 1000.0).round() as i64};
                 current.push(SubClipSummary {
                     summary: clip.summary,
                     timestamp: clip.timestamp
@@ -4055,17 +4100,9 @@ fn build_summary_from_aggregates(
     // sub-segment's end_frame rather than always adding a full minute.
     let start_time = first_clip.timestamp;
     // The last segment's length comes from the parent clip's REAL span,
-    // so a drive ending on a recording that stopped early does not claim
-    // the rest of a nominal minute. The start offsets above stay nominal
-    // on purpose — start_time is the drive-tag key.
-    let last_spf_ms = if last_clip.total_frames > 0 {
-        last_clip.clip_span_ms as f64 / last_clip.total_frames as f64
-    } else {
-        0.0
-    };
-    let last_segment_len_ms = ((last_clip.end_frame - last_clip.start_frame) as f64
-        * last_spf_ms)
-        .round() as i64;
+    // so neither the start offset nor end time claims time beyond the source.
+    let last_segment_len_ms=frame_span_ms(last_clip.start_frame,last_clip.end_frame,
+        last_clip.total_frames,last_clip.clip_span_ms);
     let end_time = last_clip.timestamp + chrono::Duration::milliseconds(last_segment_len_ms);
     let duration_ms = (end_time - start_time).num_milliseconds();
 
@@ -4237,13 +4274,7 @@ fn build_summary_from_aggregates(
         pend_prev_ms = if whole_clip_end { a.fsd_pend_ms_end } else { None };
         prev_fsd_at_end = whole_clip_end && a.fsd_at_end;
         prev_end_ts = if whole_clip_end {
-            let sub_len_ms = if clip.total_frames > 0 {
-                ((clip.end_frame - clip.start_frame) as f64 * 60_000.0
-                    / clip.total_frames as f64)
-                    .round() as i64
-            } else {
-                60_000
-            };
+            let sub_len_ms=frame_span_ms(clip.start_frame,clip.end_frame,clip.total_frames,clip.clip_span_ms);
             Some(clip.timestamp + chrono::Duration::milliseconds(sub_len_ms))
         } else {
             None
@@ -4390,7 +4421,7 @@ fn build_summary_from_aggregates(
             assisted_dist_m,
         );
 
-    let start_time_str = start_time.format("%Y-%m-%dT%H:%M:%S").to_string();
+    let start_time_str = start_time.format("%Y-%m-%dT%H:%M:%S%.3f").to_string();
     let drive_tags = tags.get(&start_time_str).cloned().unwrap_or_default();
 
     // ── Safety Score for this drive ──
@@ -4432,7 +4463,7 @@ fn build_summary_from_aggregates(
         // UI's `new Date(date + "T00:00:00")` parses cleanly.
         date: start_time.format("%Y-%m-%d").to_string(),
         start_time: start_time_str,
-        end_time: end_time.format("%Y-%m-%dT%H:%M:%S").to_string(),
+        end_time: end_time.format("%Y-%m-%dT%H:%M:%S%.3f").to_string(),
         duration_ms,
         distance_mi: round2(total_dist_m / calc::M_PER_MILE),
         distance_km: round2(total_dist_m / 1000.0),
@@ -4663,6 +4694,69 @@ fn roll_up_telemetry(clips: &[SubClipSummary]) -> DriveTelemetryRollup {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn frame_clock_rounds_shared_boundaries_once() {
+        assert_eq!(frame_offset_ms(1,6,1000),167);
+        assert_eq!(frame_offset_ms(2,6,1000),333);
+        assert_eq!(frame_span_ms(1,2,6,1000),166);
+        assert_eq!((0..6).map(|start|frame_span_ms(start,start+1,6,1000)).sum::<i64>(),1000);
+        assert!(park_gap_frames(1,3,6000));
+        assert!(!park_gap_frames(1,3,5999));
+    }
+
+    #[test]
+    fn short_final_clip_selection_agrees_across_summary_detail_and_preview() {
+        let file="RecentClips/2026-01-01/2026-01-01_12-00-00-front.mp4";
+        let next="RecentClips/2026-01-01/2026-01-01_12-00-07-front.mp4";
+        let runs=[(4,20),(0,5),(4,35)];
+        let summaries=[clip_with_gear_runs(file,&runs,120.0),clip_with_gear_runs(next,&[(0,60)],0.0)];
+        let mut motion=span_route(file,60,60,37.0);motion.gear_runs=gr(&runs);
+        motion.gear_states=runs.iter().flat_map(|&(gear,frames)|vec![gear;frames as usize]).collect();
+        let mut parked=span_route(next,60,60,37.01);parked.gear_runs=gr(&[(0,60)]);parked.gear_states=vec![0;60];
+        parked.raw_park_count=60;
+        let tags=HashMap::new();
+        let selected=resolve_drive_selection(&summaries,"0",&tags).unwrap();
+        assert_eq!(selected.files,vec![file]);
+        assert_eq!(selected.summary.duration_ms,7000);
+        assert_eq!(selected.summary.start_time,"2026-01-01T12:00:00.000");
+        let detail=build_single_drive_from_clips_with_spans(&[motion.clone()],0,&tags,
+            Some(&selected.summary.start_time),Some(&selected.clip_spans_ms)).unwrap();
+        assert_eq!(detail.start_time,selected.summary.start_time);
+        assert_eq!(detail.end_time,selected.summary.end_time);
+        assert_eq!(detail.duration_ms,7000);
+        assert_eq!(detail.point_count,60,"no neighboring-frame inference from an absent bounding clip");
+        let routes=vec![motion,parked];
+        let previews=route_overviews(routes.clone(),100);
+        assert_eq!(previews.len(),1);
+        assert_eq!(previews[0].start_time,selected.summary.start_time);
+        let metas:Vec<_>=routes.iter().map(OverviewClipMeta::from_route).collect();
+        let planned=plan_overviews(&metas);
+        assert_eq!(planned.len(),1);
+        assert_eq!(planned[0].fragments[0].timestamp.format("%Y-%m-%dT%H:%M:%S%.3f").to_string(),selected.summary.start_time);
+        // A legacy bookmark may open the merged view. An old mutation target
+        // cannot silently expand from its original twenty frames to sixty.
+        assert!(resolve_drive_selection(&summaries,"2026-01-01T12:00:00",&tags).is_some());
+        assert!(find_drive_files(&summaries,"2026-01-01T12:00:00").is_none());
+        assert!(find_drive_start_time(&summaries,"2026-01-01T12:00:00").is_none());
+    }
+
+    #[test]
+    fn fractional_segment_start_has_the_same_frame_clock_in_every_view() {
+        let file="RecentClips/2026-01-01/2026-01-01_12-00-00-front.mp4";
+        let next="RecentClips/2026-01-01/2026-01-01_12-00-30-front.mp4";
+        let summaries=[clip_with_gear_runs(file,&[(0,1),(4,6)],120.0),clip_with_gear_runs(next,&[(0,60)],0.0)];
+        let mut route=span_route(file,7,7,37.0);route.gear_runs=gr(&[(0,1),(4,6)]);route.gear_states=vec![0,4,4,4,4,4,4];
+        let tags=HashMap::new();let selected=resolve_drive_selection(&summaries,"0",&tags).unwrap();
+        assert_eq!(selected.summary.start_time,"2026-01-01T12:00:04.286");
+        assert_eq!(selected.summary.duration_ms,25714);
+        let detail=build_single_drive_from_clips_with_spans(&[route],0,&tags,
+            Some(&selected.summary.start_time),Some(&selected.clip_spans_ms)).unwrap();
+        assert_eq!(detail.start_time,selected.summary.start_time);
+        assert_eq!(detail.end_time,selected.summary.end_time);
+        assert_eq!(detail.duration_ms,selected.summary.duration_ms);
+        assert_eq!(find_drive_start_time(&summaries,"2026-01-01T12:00:08"),Some(selected.summary.start_time));
+    }
 
     #[test]
     fn cross_clip_grace_removes_only_the_covered_prefix() {
@@ -5196,6 +5290,18 @@ mod tests {
         let summaries = vec![clip];
         let groups = group_summary_clips(&summaries);
         assert_eq!(groups.len(), 3, "multi-park-gap clip should split into 3 drives");
+        let windows=drive_key_clip_windows(&summaries);
+        assert_eq!(windows.len(),3);
+        assert_eq!(windows.iter().map(|(_,clips)| (clips[0].start_frame,clips[0].end_frame,clips[0].total_frames)).collect::<Vec<_>>(),
+            vec![(0,20,60),(25,40,60),(45,60,60)]);
+        assert!(windows.iter().all(|(_,clips)| clips.len()==1 && clips[0].file==summaries[0].file));
+        // File-only reverse maps collapse three distinct drives to one key.
+        let memberships=drive_key_file_map(&summaries);
+        let reverse:std::collections::HashMap<_,_>=memberships.iter().flat_map(|(key,files)|files.iter().map(move |file|(file,key))).collect();
+        assert_eq!(reverse.len(),1);
+        assert_ne!(windows[0].0,windows[1].0);
+        assert_ne!(windows[1].0,windows[2].0);
+
 
         // Each drive should get its slice of the clip's distance.
         // drive 1: 20/60 = 0.333 → 200m
@@ -6507,7 +6613,7 @@ mod tests {
         ]);
 
         for n_points in [6usize, 100, 1800] {
-            let plan = plan_clip_at_park_gaps(&runs, n_points).expect("clip has park gaps");
+            let plan = plan_clip_at_park_gaps(&runs, n_points, CLIP_DURATION_MS).expect("clip has park gaps");
             let motion: Vec<&PlannedSeg> = plan.iter().filter(|s| !s.parked).collect();
             assert_eq!(
                 motion.len(),
@@ -6524,8 +6630,8 @@ mod tests {
             // Offsets come from the FRAME bounds, so they do not move
             // with the point count — a one-point segment still reports
             // its true position in the clip.
-            let offsets: Vec<i64> = motion.iter().map(|s| s.offset_secs).collect();
-            assert_eq!(offsets, vec![0, 5, 23, 28], "n={n_points}");
+            let offsets: Vec<i64> = motion.iter().map(|s| s.offset_ms).collect();
+            assert_eq!(offsets, vec![0, 5000, 23000, 28000], "n={n_points}");
         }
     }
 
@@ -6534,7 +6640,7 @@ mod tests {
         // The one case that still skips: nothing to slice at all. The
         // guard must not panic or produce an out-of-range slice.
         let runs = gr(&[(1, 30), (GEAR_PARK, 120), (1, 960)]);
-        let plan = plan_clip_at_park_gaps(&runs, 0).expect("clip has a park gap");
+        let plan = plan_clip_at_park_gaps(&runs, 0, CLIP_DURATION_MS).expect("clip has a park gap");
         assert!(
             plan.iter().all(|s| s.parked),
             "a point-less clip yields no motion segments to slice"

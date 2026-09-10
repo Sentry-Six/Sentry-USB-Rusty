@@ -747,12 +747,22 @@ pub async fn get_backup(
     crate::json_error(StatusCode::NOT_FOUND, &format!("backup not found for date: {}", date)).into_response()
 }
 
-fn save_prefs_from_strings(src: &HashMap<String, String>) {
-    let mut prefs = crate::preferences::load_prefs();
-    for (k, v) in src {
-        prefs.insert(k.clone(), serde_json::Value::String(v.clone()));
-    }
-    crate::preferences::save_prefs(&prefs);
+fn restored_preferences(src:&HashMap<String,String>)->anyhow::Result<serde_json::Map<String,serde_json::Value>> {
+    src.iter().map(|(key,value)| {
+        let restored=if key=="charging_tag_rates" {
+            // Legacy backups flatten structured preferences into JSON strings.
+            // Restore this known object field without guessing other text types.
+            if value.trim().is_empty() {serde_json::json!({})} else {
+                let parsed:serde_json::Value=serde_json::from_str(value).map_err(|_|anyhow::anyhow!("Invalid saved charging rate plans"))?;
+                anyhow::ensure!(parsed.is_object() || parsed.is_null(),"Invalid saved charging rate plans");
+                parsed
+            }
+        } else {serde_json::Value::String(value.clone())};
+        Ok((key.clone(),restored))
+    }).collect()
+}
+fn save_restored_preferences(store:&sentryusb_drives::DriveStore,patch:&serde_json::Map<String,serde_json::Value>)->anyhow::Result<bool> {
+    crate::preferences::edit_prefs(store,|prefs| {prefs.extend(patch.clone());Ok(true)})
 }
 
 fn write_with_mode(path: &str, contents: &str, _mode: u32) -> std::io::Result<()> {
@@ -770,7 +780,7 @@ fn write_with_mode(path: &str, contents: &str, _mode: u32) -> std::io::Result<()
 ///
 /// Restore a backup envelope into configuration and credential files.
 pub async fn restore_backup(
-    State(_s): State<AppState>,
+    State(state): State<AppState>,
     body: String,
 ) -> (StatusCode, Json<serde_json::Value>) {
     let backup: BackupData = match serde_json::from_str(&body) {
@@ -789,6 +799,11 @@ pub async fn restore_backup(
         );
     }
 
+    let restored_prefs=match restored_preferences(&backup.preferences) {
+        Ok(prefs)=>prefs,
+        Err(_)=>return crate::json_error(StatusCode::BAD_REQUEST,"Invalid saved charging rate plans."),
+    };
+
     let _ = sentryusb_shell::run("bash", &["-c", "/root/bin/remountfs_rw"]).await;
 
     let config_path = sentryusb_config::find_config_path();
@@ -801,7 +816,10 @@ pub async fn restore_backup(
     info!("[backup] Restored config to {}", config_path);
 
     if !backup.preferences.is_empty() {
-        save_prefs_from_strings(&backup.preferences);
+        if save_restored_preferences(&state.drives.store,&restored_prefs).is_err() {
+            return crate::json_error(StatusCode::INTERNAL_SERVER_ERROR,"Config was restored, but preferences could not be saved.");
+        }
+        state.cloud.uploader.nudge();
         info!("[backup] Restored {} preferences", backup.preferences.len());
     }
 
@@ -888,4 +906,27 @@ pub async fn restore_backup(
         "hostname": backup.hostname,
         "config": active,
     })))
+}
+
+#[cfg(test)]
+mod restored_preference_tests {
+    use super::*;
+    use serde_json::json;
+    #[test]
+    fn legacy_rate_plan_json_is_restored_as_an_object_without_guessing_other_text_types() {
+        let plans=json!({"Home":{"rate":0.12,"offPeakRate":0.07,"start":"22:00","end":"06:00"},"Work":{"rate":0.2}});
+        let source=HashMap::from([("charging_tag_rates".into(),plans.to_string()),
+            ("charging_currency".into(),"CAD".into()),("notify_update".into(),"true".into()),
+            ("plain_text".into(),"{keep this text}".into())]);
+        let restored=restored_preferences(&source).unwrap();
+        assert_eq!(restored["charging_tag_rates"],plans);assert_eq!(restored["charging_currency"],"CAD");
+        assert_eq!(restored["notify_update"],json!("true"));assert_eq!(restored["plain_text"],"{keep this text}");
+    }
+    #[test]
+    fn malformed_rate_plans_fail_validation_instead_of_silently_losing_prices() {
+        for value in ["not json","[]","1","true"] {
+            assert!(restored_preferences(&HashMap::from([("charging_tag_rates".into(),value.into())])).is_err());
+        }
+        assert_eq!(restored_preferences(&HashMap::from([("charging_tag_rates".into(),String::new())])).unwrap()["charging_tag_rates"],json!({}));
+    }
 }

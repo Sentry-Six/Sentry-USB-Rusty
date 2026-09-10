@@ -12,7 +12,7 @@ use tracing::info;
 use sentryusb_cloud_crypto::{aad, aead, credentials, ids, kdf, x25519};
 
 use crate::client::CloudClient;
-use crate::state::{CloudStateInner, PairingProgress, PairingState};
+use crate::state::{CloudStateInner, PairingState};
 
 const HKDF_SALT_PAIR: &[u8] = b"sentrycloud-pair-v1";
 
@@ -22,22 +22,28 @@ const POLL_INTERVAL: Duration = Duration::from_millis(1500);
 const POLL_TIMEOUT: Duration = Duration::from_secs(60 * 11);
 
 pub async fn run(state: Arc<CloudStateInner>, code: String) -> Result<()> {
+    let attempt=state.begin_pairing().await?;
+    run_owned(state,code,attempt).await
+}
 
-    {
-        let creds = state.creds.lock().await;
-        if creds.is_some() {
-            return Err(anyhow!("already paired; unpair first"));
+/// Reserve the local attempt before acknowledging a background API request.
+pub async fn start(state:Arc<CloudStateInner>,code:String)->Result<()> {
+    let attempt=state.begin_pairing().await?;
+    tokio::spawn(async move {
+        if let Err(error)=run_owned(state,code,attempt).await {
+            tracing::warn!("cloud pairing did not complete: {}",error);
         }
-    }
+    });
+    Ok(())
+}
 
-    let cancel = Arc::new(Notify::new());
-    {
-        let mut g = state.pairing_cancel.lock().await;
-        *g = Some(cancel.clone());
-    }
+async fn run_owned(state:Arc<CloudStateInner>,code:String,attempt:Arc<Notify>)->Result<()> {
+    let result=run_attempt(state.clone(),code,attempt.clone()).await;
+    if result.is_err() {state.fail_pairing(&attempt).await;}
+    result
+}
 
-    set_state(&state, PairingState::Handshaking, None).await;
-
+async fn run_attempt(state:Arc<CloudStateInner>,code:String,cancel:Arc<Notify>)->Result<()> {
     let pi_eph = x25519::EphemeralPrivate::generate()
         .map_err(|e| anyhow!("ephemeral keypair: {}", e))?;
     let pi_eph_pub = pi_eph
@@ -56,27 +62,25 @@ pub async fn run(state: Arc<CloudStateInner>, code: String) -> Result<()> {
         pi_metadata: metadata,
     };
     let client = CloudClient::new(&state.cloud_base_url);
-    let resp = client
-        .post_json_anon("/api/pi/pair/handshake", &body)
-        .await
-        .map_err(|e| anyhow!("handshake POST: {}", e))?;
+    let resp=tokio::select! {
+        _=cancel.notified()=>return Err(anyhow!("pairing cancelled")),
+        response=client.post_json_anon("/api/pi/pair/handshake",&body)=>response.context("handshake POST")?,
+    };
     let resp = CloudClient::classify(resp).await.map_err(|e| {
         anyhow!("handshake rejected: {}", e)
     })?;
     drop(resp);
 
-    set_state(&state, PairingState::Polling, None).await;
+    state.pairing_progress(&cancel,PairingState::Polling).await?;
     let started = std::time::Instant::now();
     let mut poll_resp: Option<PollResponse> = None;
     while started.elapsed() < POLL_TIMEOUT {
 
-        if was_cancelled(&state).await {
-            return Err(anyhow!("pairing cancelled"));
-        }
-        let r = client
-            .get_with_header("/api/pi/pair/poll", ("X-Pairing-Code", &code))
-            .await
-            .map_err(|e| anyhow!("poll GET: {}", e))?;
+        state.pairing_progress(&cancel,PairingState::Polling).await?;
+        let r=tokio::select! {
+            _=cancel.notified()=>return Err(anyhow!("pairing cancelled")),
+            response=client.get_with_header("/api/pi/pair/poll",("X-Pairing-Code",&code))=>response.context("poll GET")?,
+        };
         match r.status().as_u16() {
             200 => {
                 let parsed: PollResponse =
@@ -144,29 +148,15 @@ pub async fn run(state: Arc<CloudStateInner>, code: String) -> Result<()> {
     )
     .map_err(|e| anyhow!("build credentials: {}", e))?;
 
-    state
-        .set_credentials(creds)
-        .await
-        .context("set credentials")?;
+    state.complete_pairing(&cancel,creds).await.context("complete pairing")?;
 
     state.notify.notify_one();
 
-    set_state(&state, PairingState::Complete, None).await;
     info!(
         "cloud pairing complete: piId={} userId={}",
         poll_resp.pi_id, poll_resp.user_id
     );
     Ok(())
-}
-
-async fn set_state(state: &CloudStateInner, st: PairingState, err: Option<String>) {
-    let mut p = state.pairing.lock().await;
-    *p = PairingProgress { state: st, error: err };
-}
-
-async fn was_cancelled(state: &CloudStateInner) -> bool {
-    let p = state.pairing.lock().await;
-    matches!(p.state, PairingState::Idle if p.error.as_deref() == Some("cancelled"))
 }
 
 #[derive(Serialize)]
@@ -278,3 +268,7 @@ mod tests {
         assert_eq!(info, expected);
     }
 }
+
+#[cfg(test)]
+#[path="pairing_attempt_tests.rs"]
+mod attempt_tests;

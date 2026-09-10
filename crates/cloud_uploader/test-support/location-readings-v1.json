@@ -1,0 +1,15 @@
+{
+  "valid": [
+    { "v": 1, "readings": [[0,40.125,-73.25,"Origin"],[12000,40.1251,-73.2501,"Bibliothèque"],[19000,40.1251,-73.2501,"Bibliothèque"],[60000,40.126,-73.251,"Destination"]] },
+    { "v": 1, "readings": [[10000,0.125,179.9999,"Harbour"],[11000,0.125,-179.9999,"Harbour"]] }
+  ],
+  "invalid": [
+    { "v": 2, "readings": [[1000,40.125,-73.25,"Library"]] },
+    { "v": 1, "readings": [] },
+    { "v": 1, "readings": [[1000,40.125,-73.25,"Library"],[1000,40.125,-73.25,"Library"]] },
+    { "v": 1, "readings": [[60001,40.125,-73.25,"Library"]] },
+    { "v": 1, "readings": [[1000,0,0,"Library"]] },
+    { "v": 1, "readings": [[1000,40.125,-181,"Library"]] },
+    { "v": 1, "readings": [[1000,40.125,-73.25,"Library\nStreet"]] }
+  ]
+}

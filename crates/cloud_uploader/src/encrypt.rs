@@ -26,6 +26,13 @@ pub fn encrypt_route(
     pi_id: &str,
     cached_route_id: Option<&str>,
 ) -> Result<EncryptedRoute> {
+    encrypt_route_with_locations(route, pi_key, user_id, pi_id, cached_route_id, None)
+}
+
+pub(crate) fn encrypt_route_with_locations(
+    route: &Route, pi_key: &[u8; 32], user_id: &str, pi_id: &str,
+    cached_route_id: Option<&str>, locations: Option<&crate::locations::LocationReadings>,
+) -> Result<EncryptedRoute> {
 
     let route_id = match cached_route_id {
         Some(c) => c.to_string(),
@@ -37,19 +44,37 @@ pub fn encrypt_route(
         .fill(&mut route_key_bytes)
         .map_err(|_| anyhow::anyhow!("rng failure for route key"))?;
 
-    let route_json = serde_json::to_vec(route).context("serialize Route to JSON")?;
+    let mut route_json = serde_json::to_vec(route).context("serialize Route to JSON")?;
+    let locations = locations.filter(|value| value.valid());
+    if let Some(locations) = locations {
+        let mut document = serde_json::to_value(route)?;
+        document["locationReadings"] = serde_json::to_value(locations)?;
+        let enriched = serde_json::to_vec(&document)?;
+        // Optional evidence must not turn an otherwise admissible upload into
+        // a permanent size rejection. The original body remains available.
+        if enriched.len() + 29 <= 256 * 1024 { route_json = enriched; }
+    }
     let blob_aad = aad::route_blob(user_id, pi_id, &route_id);
     let route_key = aead::Key::from_bytes(&route_key_bytes)?;
     let route_blob = aead::seal(&route_key, &blob_aad, &route_json)?;
 
-    let summary_json =
-        serde_json::to_vec(&route_summary_json(route)).context("serialize route summary")?;
-    let summary_aad = aad::route_summary(user_id, pi_id, &route_id);
-    let summary_ct = aead::seal(&route_key, &summary_aad, &summary_json)?;
-
     let wrap_aad = aad::route_key(user_id, pi_id, &route_id);
     let pi_key_obj = aead::Key::from_bytes(pi_key)?;
     let wrapped = aead::seal(&pi_key_obj, &wrap_aad, &route_key_bytes)?;
+
+    let mut summary = route_summary_json(route);
+    if let Some(locations) = locations {
+        summary["lr"] = serde_json::to_value(locations)?;
+        if serde_json::to_vec(&summary)?.len() + 29 > 4096 {
+            summary.as_object_mut().expect("summary object").remove("lr");
+        }
+    }
+    // Preserve location evidence before spending remaining space on precision.
+    crate::native_metrics::attach(&mut summary, route);
+    crate::summon_evidence::attach(&mut summary, route, user_id, pi_id, &route_id, &B64.encode(&wrapped));
+    let summary_json = serde_json::to_vec(&summary).context("serialize route summary")?;
+    let summary_aad = aad::route_summary(user_id, pi_id, &route_id);
+    let summary_ct = aead::seal(&route_key, &summary_aad, &summary_json)?;
 
     route_key_bytes.fill(0);
 
@@ -367,13 +392,15 @@ pub struct EncryptedCharge {
     pub mutable_ciphertext_b64: Option<String>,
 }
 
-/// The rewritable `{ tags, costOverride }` envelope plaintext.
+/// Rewritable tags, cost override and optional derived Home classification.
 /// camelCase to match the web client.
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct ChargeMutable {
     pub tags: Vec<String>,
     pub cost_override: Option<CostOverride>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub at_home: Option<bool>,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq)]
@@ -664,6 +691,7 @@ mod tests {
             energy_added_kwh: Some(1.0),
         }];
         let mutable = ChargeMutable {
+            at_home: None,
             tags: vec!["home".to_string()],
             cost_override: Some(CostOverride { amount: 4.20, currency: "$".to_string() }),
         };
@@ -858,6 +886,103 @@ mod tests {
             "locationNameStart", "locationNameEnd",
         ] {
             assert!(!json.contains(name), "BLE field {} leaked into no-telemetry blob: {}", name, json);
+        }
+    }
+}
+
+#[cfg(test)]
+mod location_encryption_tests {
+    use super::*;
+    use crate::locations::LocationReadings;
+    fn route() -> Route { Route {file:"2026-09-07_12-00-00-front.mp4".into(),points:vec![[40.0,-73.0],[40.0001,-73.0]],..Default::default()} }
+    fn locations() -> LocationReadings {LocationReadings {v:1,readings:vec![(12000,40.0,-73.0,"Library".into())]}}
+    fn decode(encrypted:&EncryptedRoute)->(serde_json::Value,serde_json::Value) {
+        let pi_key=aead::Key::from_bytes(&[7;32]).unwrap();
+        let raw=aead::open(&pi_key,&aad::route_key("user","pi",&encrypted.route_id),&B64.decode(&encrypted.wrapped_route_key_b64).unwrap()).unwrap();
+        let key:[u8;32]=raw.try_into().unwrap();
+        (open_json_b64(&key,&aad::route_blob("user","pi",&encrypted.route_id),&encrypted.route_blob_b64).unwrap(),
+         open_json_b64(&key,&aad::route_summary("user","pi",&encrypted.route_id),&encrypted.summary_ciphertext_b64).unwrap())
+    }
+    #[test]
+    fn original_key_and_aad_decrypt_both_optional_location_slots() {
+        let route=route();let evidence=locations();
+        let encrypted=encrypt_route_with_locations(&route,&[7;32],"user","pi",None,Some(&evidence)).unwrap();
+        let (mut body,mut summary)=decode(&encrypted);
+        let value=serde_json::to_value(&evidence).unwrap();
+        assert_eq!(body.as_object_mut().unwrap().remove("locationReadings"),Some(value.clone()));
+        assert_eq!(summary.as_object_mut().unwrap().remove("lr"),Some(value));
+        assert_eq!(body,serde_json::to_value(&route).unwrap());
+        let mut expected=route_summary_json(&route);crate::native_metrics::attach(&mut expected,&route);
+        assert_eq!(summary,expected);
+        assert_eq!(serde_json::from_value::<Route>(body).unwrap().file,route.file);
+    }
+    #[test]
+    fn optional_locations_cannot_make_an_admissible_body_exceed_upload_limits() {
+        let mut route=route();
+        let base=serde_json::to_vec(&route).unwrap().len();
+        route.date="x".repeat(256*1024-29-base-1);
+        let original_len=serde_json::to_vec(&route).unwrap().len();
+        assert!(original_len+29<=256*1024);
+        let encrypted=encrypt_route_with_locations(&route,&[7;32],"user","pi",None,Some(&locations())).unwrap();
+        assert!(B64.decode(&encrypted.route_blob_b64).unwrap().len()<=256*1024);
+        let (body,summary)=decode(&encrypted);
+        assert!(body.get("locationReadings").is_none());
+        assert_eq!(body,serde_json::to_value(&route).unwrap());
+        assert!(summary.get("lr").is_some());
+    }
+    #[test]
+    fn optional_locations_cannot_make_an_admissible_summary_exceed_4096_bytes() {
+        let mut route=route();let base=serde_json::to_vec(&route_summary_json(&route)).unwrap().len();
+        route.file.push_str(&"x".repeat(4096-29-base-1));
+        let encrypted=encrypt_route_with_locations(&route,&[7;32],"user","pi",None,Some(&locations())).unwrap();
+        assert!(B64.decode(&encrypted.summary_ciphertext_b64).unwrap().len()<=4096);
+        let (body,summary)=decode(&encrypted);
+        assert!(body.get("locationReadings").is_some());assert!(summary.get("lr").is_none());
+        let mut expected=route_summary_json(&route);crate::native_metrics::attach(&mut expected,&route);
+        assert_eq!(summary,expected);
+    }
+    #[test]
+    fn canonical_metrics_cannot_crowd_out_location_evidence_that_previously_fit() {
+        let mut route=route();let evidence=locations();let mut with_locations=route_summary_json(&route);
+        with_locations["lr"]=serde_json::to_value(&evidence).unwrap();
+        let size=serde_json::to_vec(&with_locations).unwrap().len();route.file.push_str(&"x".repeat(4096-29-size-1));
+        let encrypted=encrypt_route_with_locations(&route,&[7;32],"user","pi",None,Some(&evidence)).unwrap();
+        let (body,summary)=decode(&encrypted);
+        assert!(body.get("locationReadings").is_some());assert!(summary.get("lr").is_some());assert!(summary.get("nm").is_none());
+        assert!(B64.decode(encrypted.summary_ciphertext_b64).unwrap().len()<=4096);
+    }
+    #[test]
+    fn invalid_optional_evidence_does_not_change_original_fields() {
+        let mut evidence=locations();evidence.readings[0].0=-1;
+        let route=route();let encrypted=encrypt_route_with_locations(&route,&[7;32],"user","pi",None,Some(&evidence)).unwrap();
+        let (body,summary)=decode(&encrypted);
+        assert_eq!(body,serde_json::to_value(&route).unwrap());let mut expected=route_summary_json(&route);crate::native_metrics::attach(&mut expected,&route);
+        assert_eq!(summary,expected);
+    }
+}
+
+#[cfg(test)]
+mod home_mutable_vectors {
+    use super::*;
+    #[test]
+    fn home_metadata_opens_with_existing_keys_and_legacy_envelopes_remain_readable() {
+        let fixture:serde_json::Value=serde_json::from_str(include_str!("../test-support/chargingHomeMutableV1.json")).unwrap();
+        let key:[u8;32]=serde_json::from_value(fixture["key"].clone()).unwrap();
+        let aad=sentryusb_cloud_crypto::aad::charge_mutable(fixture["userId"].as_str().unwrap(),fixture["piId"].as_str().unwrap(),fixture["chargeId"].as_str().unwrap());
+        for vector in fixture["vectors"].as_array().unwrap() {
+            let doc:serde_json::Value=open_json_b64(&key,&aad,vector["envelope"].as_str().unwrap()).unwrap();
+            assert_eq!(doc,vector["document"]);
+            let parsed:ChargeMutable=serde_json::from_value(doc.clone()).unwrap();
+            assert_eq!(parsed.at_home,doc.get("atHome").and_then(serde_json::Value::as_bool));
+            assert_eq!(parsed.tags,vec!["Work".to_string()]);
+            assert_eq!(parsed.cost_override.as_ref().unwrap().amount,4.2);
+            if parsed.at_home.is_none() {assert!(serde_json::to_value(parsed).unwrap().get("atHome").is_none())}
+        }
+    }
+    #[test]
+    fn malformed_classification_is_not_silently_coerced() {
+        for value in [serde_json::json!("true"),serde_json::json!(1),serde_json::json!({})] {
+            assert!(serde_json::from_value::<ChargeMutable>(serde_json::json!({"tags":[],"costOverride":null,"atHome":value})).is_err());
         }
     }
 }

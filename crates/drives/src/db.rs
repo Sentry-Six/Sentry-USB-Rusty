@@ -12,21 +12,128 @@ use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 use anyhow::{Context, Result};
 use rusqlite::{params, Connection, OpenFlags, OptionalExtension, ToSql};
 
-/// Upsert a cloud-sync dirty row. `changed_at` is local wall-clock ms —
-/// used for last-writer-wins against the cloud, clamped server-side so
-/// a bad clock can't win forever.
-fn mark_mutable_dirty(conn: &Connection, kind: &str, key: &str) -> rusqlite::Result<usize> {
+#[cfg(test)]
+#[path = "cloud_mutable_tests.rs"]
+mod cloud_mutable_tests;
+
+#[path = "clock_migration.rs"]
+mod clock_migration;
+
+pub(crate) fn migrate_imported_clock_tags(conn:&Connection,tags:&std::collections::HashMap<String,Vec<String>>,
+    files:&std::collections::HashSet<String>)->Result<()> {
+    clock_migration::merge_import(conn,tags,files)
+}
+
+pub struct DriveMutableSyncSnapshot {
+    pub tags: Vec<String>,
+    pub intent: mutable_intent::Intent,
+}
+
+fn capture_drive_edit_scope(conn: &Connection, key: &str) -> Result<Option<crate::drive_edit_scope::Scope>> {
+    let summaries = select_all_route_summaries(conn)?;
+    let Some((_, windows)) = crate::grouper::drive_key_clip_windows(&summaries).into_iter()
+        .find(|(drive, _)| drive == key) else { return Ok(None) };
+    Ok(Some(capture_scope_windows(conn,&summaries,windows)?))
+}
+
+fn capture_scope_windows(conn:&Connection,summaries:&[RouteSummary],windows:Vec<crate::grouper::DriveClipWindow>)
+    ->Result<crate::drive_edit_scope::Scope> {
+    let files: std::collections::HashSet<_> = windows.iter().map(|window| window.file.as_str()).collect();
+    let mut sources = std::collections::BTreeMap::new();
+    let mut query = conn.prepare_cached("SELECT cloud_route_id,cloud_wrapped_route_key,cloud_uploaded_at FROM routes WHERE file=?1")?;
+    for summary in summaries.iter().filter(|summary| files.contains(summary.file.as_str())) {
+        let (id, content_key, uploaded_at) = query.query_row([&summary.file], |row|
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?;
+        sources.insert(summary.file.clone(), crate::drive_edit_scope::Source {
+            runs: summary.gear_runs.iter().flat_map(|run| [u32::from(run.gear), run.frames]).collect(),
+            id, key: content_key, uploaded_at,
+        });
+    }
+    anyhow::ensure!(sources.len()==files.len(),"selected legacy source is missing");
+    for window in &windows {
+        let runs=&sources[&window.file].runs;
+        let total=runs.chunks_exact(2).try_fold(0u32,|sum,run| {
+            anyhow::ensure!(run[1]>0,"invalid legacy source run");
+            sum.checked_add(run[1]).context("legacy frame count overflow")
+        })?.max(1);
+        anyhow::ensure!(window.total_frames==total && window.start_frame<window.end_frame && window.end_frame<=total,
+            "legacy source frame window changed");
+    }
+    Ok(crate::drive_edit_scope::Scope { version: 1, windows, sources })
+}
+
+fn read_drive_edit_scope(conn: &Connection, key: &str) -> Result<Option<Option<crate::drive_edit_scope::Scope>>> {
+    let raw: Option<String> = conn.query_row("SELECT payload FROM mutable_drive_scope WHERE kind='drive' AND key=?1",
+        [key], |row| row.get(0)).optional()?;
+    raw.map(|raw| serde_json::from_str(&raw).context("unreadable queued drive scope")).transpose()
+}
+
+/// Original local source and an authenticated Cloud wrapped key.
+pub struct VerifiedRouteSyncKey {
+    pub file: String,
+    pub route_id: String,
+    pub expected_key: Option<String>,
+    pub uploaded_at: i64,
+    pub wrapped_key: String,
+}
+
+fn install_verified_route_keys(conn: &Connection, sources: &[VerifiedRouteSyncKey]) -> Result<()> {
+    for source in sources {
+        let local: Option<(Option<String>, Option<String>, Option<i64>)> = conn.query_row(
+            "SELECT cloud_route_id,cloud_wrapped_route_key,cloud_uploaded_at FROM routes WHERE file=?1",
+            params![source.file], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?))).optional()?;
+        anyhow::ensure!(local.is_some_and(|(id,key,at)| id.as_deref()==Some(source.route_id.as_str())
+            && key==source.expected_key && at==Some(source.uploaded_at) && source.uploaded_at>0), "route identity changed during tag sync");
+        anyhow::ensure!(!source.wrapped_key.is_empty()
+            && source.expected_key.as_ref().is_none_or(|key| key==&source.wrapped_key), "route key changed during tag sync");
+    }
+    for source in sources {
+        conn.execute("UPDATE routes SET cloud_wrapped_route_key=?1 WHERE file=?2 AND cloud_wrapped_route_key IS NULL",
+            params![source.wrapped_key,source.file])?;
+    }
+    Ok(())
+}
+
+pub struct ChargeUploadMutableSnapshot {
+    pub tags: Vec<String>,
+    pub cost: Option<(f64, String)>,
+    pub changed_at: Option<i64>,
+}
+
+pub struct ChargeMutableSyncSnapshot {
+    pub tags: Vec<String>,
+    pub cost: Option<(f64, String)>,
+    pub upload: Option<(String, String, i64)>,
+    pub intent: mutable_intent::Intent,
+}
+
+/// Queue generation also supplies the Pi's LWW timestamp. Keep it strictly
+/// increasing across acknowledgements and clock corrections. Callers commit
+/// data, this clock and the queue row in the same SQLite transaction.
+fn mark_mutable_dirty(conn: &Connection, kind: &str, key: &str) -> Result<usize> {
     let now_ms = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
         .unwrap_or(0);
-    conn.execute(
+    mark_mutable_dirty_at(conn, kind, key, now_ms)
+}
+
+fn mark_mutable_dirty_at(conn: &Connection, kind: &str, key: &str, now_ms: i64) -> Result<usize> {
+    const CLOCK: &str = "cloud_mutable_local_clock_ms";
+    let last = match crate::schema::meta_get(conn, CLOCK)? {
+        Some(value) => value.parse::<i64>().context("invalid local mutable clock")?,
+        None => conn.query_row("SELECT COALESCE(MAX(changed_at), 0) FROM mutable_dirty", [], |row| row.get(0))?,
+    };
+    let changed_at = now_ms.max(last.checked_add(1).context("local mutable clock exhausted")?);
+    crate::schema::meta_set(conn, CLOCK, &changed_at.to_string())?;
+    Ok(conn.execute(
         "INSERT INTO mutable_dirty(kind, key, changed_at) VALUES(?1, ?2, ?3) \
          ON CONFLICT(kind, key) DO UPDATE SET changed_at = excluded.changed_at",
-        params![kind, key, now_ms],
-    )
+        params![kind, key, changed_at],
+    )?)
 }
 use crate::archive_mount_lock;
+use crate::mutable_intent::{self, Edit as MutableEdit};
 use tracing::{debug, info, warn};
 
 use crate::aggregate::compute_route_aggregates;
@@ -129,7 +236,8 @@ const ARCHIVE_SYNC_EXPORT_DATE_KEY: &str = "archive_sync_export_date";
 // braking/turning ratios (v19 denominator columns), rebalanced weights,
 // hour-weighted late-night miles. Stale v10 caches hold v1-formula
 // scores computed from absolute rates.
-const DRIVE_LIST_CACHE_ALGO_VERSION: &str = "12";
+// v13: real parent spans for Park thresholds/segment clocks and millisecond IDs.
+const DRIVE_LIST_CACHE_ALGO_VERSION: &str = "13";
 
 /// Version tag for the per-clip aggregate FORMULA (compute_route_aggregates).
 /// Distinct from the cache algo version above: this gates a one-shot
@@ -602,6 +710,15 @@ impl DriveStore {
                 )?;
             }
 
+            let clock_changed={
+                // The separate telemetry daemon can commit while the frame
+                // plan is being read. Reserve the writer before those reads:
+                // a deferred WAL snapshot cannot upgrade after another commit.
+                let tx=mg.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+                let changed=clock_migration::install(&tx,None).context("load: migrate drive frame clock tags")?;
+                tx.commit()?;changed
+            };
+
             // Checkpoint the WAL after any import/backfill writes so the
             // subsequent grouper query runs against the main DB file with
             // no large WAL to walk through.
@@ -616,7 +733,7 @@ impl DriveStore {
             // rewrites aggregate columns without touching updated_at or
             // row counts, so the validity marker still matches a cache
             // built from the OLD formula's numbers.
-            if !formula_gate_fired && is_drive_cache_valid(&mg)? {
+            if !formula_gate_fired && !clock_changed && is_drive_cache_valid(&mg)? {
                 info!("[drives] Drive list cache is current; skipping rebuild on startup");
             } else {
                 rebuild_drive_list_cache(&mg).context("load: build drive cache")?;
@@ -938,6 +1055,21 @@ impl DriveStore {
         })
     }
 
+    /// Read one full route and related rows in the same SQLite snapshot.
+    /// Background enrichment uses this to bind clip data and timestamped
+    /// telemetry without holding a connection across network requests.
+    pub fn with_route_snapshot<F, R>(&self, file: &str, read: F) -> Result<R>
+    where F: FnOnce(Option<Route>, &Connection) -> Result<R> {
+        self.with_read_conn(|conn| {
+            let tx = conn.unchecked_transaction()?;
+            let mut routes = select_routes_by_files(&tx, &[file])?;
+            anyhow::ensure!(routes.len() <= 1, "ambiguous route snapshot");
+            let result = read(routes.pop(), &tx)?;
+            tx.commit()?;
+            Ok(result)
+        })
+    }
+
     /// Files of every **driving** event-folder route row — i.e. the
     /// Saved/Sentry clips the gap-fill spliced into a drive to cover a
     /// RecentClips recording hole. Normal drive routes are keyed under
@@ -1008,7 +1140,11 @@ impl DriveStore {
     pub fn replace_data(&self, data: &StoreData) -> Result<()> {
         let mut conn = self.conn.lock().unwrap();
         let tx = conn.transaction()?;
+        // Freeze any pre-import legacy outbox against the original sources.
+        clock_migration::install(&tx,None)?;
         for stmt in &[
+            "DELETE FROM drive_clock_legacy_keys",
+            "DELETE FROM drive_clock_migrations",
             "DELETE FROM routes",
             "DELETE FROM processed_files",
             "DELETE FROM drive_tags",
@@ -1048,6 +1184,8 @@ impl DriveStore {
                 }
             }
         }
+        schema::meta_del(&tx,clock_migration::VERSION_KEY)?;
+        clock_migration::install(&tx,Some(&data.drive_tags))?;
         tx.commit()?;
         let _ = conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE)");
         drop(conn);
@@ -1076,7 +1214,7 @@ impl DriveStore {
 
         let mut drive_tags = std::collections::HashMap::<String, Vec<String>>::new();
         {
-            let mut stmt = conn.prepare_cached("SELECT drive_key, tag FROM drive_tags")?;
+            let mut stmt = conn.prepare_cached("SELECT drive_key, tag FROM drive_tags WHERE NOT EXISTS (SELECT 1 FROM drive_clock_legacy_keys WHERE key=drive_tags.drive_key)")?;
             let rows = stmt
                 .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))?;
             for r in rows {
@@ -1105,9 +1243,57 @@ impl DriveStore {
         self.set_drive_tags_inner(drive_key, tags, false)
     }
 
-    fn set_drive_tags_inner(&self, drive_key: &str, tags: &[String], mark_dirty: bool) -> Result<()> {
+    /// Apply complete per-drive projections from authenticated member states.
+    /// Source changes abort the transaction; any local edit remains pending.
+    pub fn apply_projected_drive_tags(
+        &self, source_revision: i64, sources: &[VerifiedRouteSyncKey],
+        drives: &[(String, Vec<String>)],
+    ) -> Result<()> {
         let mut conn = self.conn.lock().unwrap();
         let tx = conn.transaction()?;
+        let current: i64 = tx.query_row(
+            "SELECT revision FROM mutable_route_source_clock WHERE id=1", [], |row| row.get(0))?;
+        anyhow::ensure!(current == source_revision, "drive sources changed while reading Cloud tags");
+        install_verified_route_keys(&tx,sources)?;
+        let mut changed = Vec::new();
+        for (drive_key,tags) in drives {
+            if mutable_intent::queued(&tx,"drive",drive_key)?.is_some() { continue; }
+            tx.execute("DELETE FROM drive_tags WHERE drive_key=?1",params![drive_key])?;
+            for tag in tags.iter().filter(|tag| !tag.is_empty()) {
+                tx.execute("INSERT OR IGNORE INTO drive_tags(drive_key,tag) VALUES(?1,?2)",params![drive_key,tag])?;
+            }
+            changed.push(drive_key);
+        }
+        tx.commit()?;
+        drop(conn);
+        for drive_key in changed {
+            if !self.patch_cached_drive_tags(drive_key)? {
+                self.drive_cache_dirty.store(true,Ordering::Release);
+            }
+        }
+        Ok(())
+    }
+
+    fn set_drive_tags_inner(&self, drive_key: &str, tags: &[String], mark_dirty: bool) -> Result<()> {
+        let write=|conn:&mut Connection| -> Result<()> {
+        let tx = conn.transaction()?;
+        let before = tx.prepare_cached("SELECT tag FROM drive_tags WHERE drive_key=?1 ORDER BY tag")?
+            .query_map(params![drive_key], |row| row.get::<_,String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
+        let was_queued = mutable_intent::queued(&tx, "drive", drive_key)?;
+        let scope = if mark_dirty {
+            let captured = read_drive_edit_scope(&tx, drive_key)?;
+            if was_queued.is_none() || captured.is_some() {
+                let current = capture_drive_edit_scope(&tx, drive_key)?;
+                if let Some(previous) = captured {
+                    anyhow::ensure!(match (&previous, &current) {
+                        (Some(old), Some(new)) => old.matches(new),
+                        (None, None) => true,
+                        _ => false,
+                    }, "queued drive frames changed; refresh before editing");
+                }
+                Some(current)
+            } else { None } // Never certify the lost scope of an older queue.
+        } else { None };
         tx.execute(
             "DELETE FROM drive_tags WHERE drive_key = ?1",
             params![drive_key],
@@ -1125,9 +1311,15 @@ impl DriveStore {
         }
         if mark_dirty {
             mark_mutable_dirty(&tx, "drive", drive_key)?;
+            mutable_intent::record(&tx, "drive", drive_key, was_queued, &mutable_intent::tag_edit(&before, tags))?;
+            if let Some(scope) = scope {
+                tx.execute("INSERT OR IGNORE INTO mutable_drive_scope(kind,key,payload) VALUES('drive',?1,?2)",
+                    params![drive_key, serde_json::to_string(&scope)?])?;
+            }
         }
-        tx.commit()?;
-        drop(conn);
+        tx.commit()?;Ok(())
+        };
+        self.with_edit_conn(mark_dirty,write)?;
 
         // Tags never enter grouping, stats, FSD analytics, or the map
         // overview (RouteOverview has no tags field) — they are joined
@@ -1135,17 +1327,17 @@ impl DriveStore {
         // startTime. So a tag edit patches the cached list in place
         // instead of dirtying everything, which used to re-run the full
         // grouper AND the overview rebuild per tag click.
-        if !self.patch_cached_drive_tags(drive_key, tags)? {
+        if !self.patch_cached_drive_tags(drive_key)? {
             self.drive_cache_dirty.store(true, Ordering::Release);
         }
         Ok(())
     }
 
-    /// Patch `tags` for the drive whose startTime is `drive_key` directly
+    /// Patch current stored tags for the drive whose startTime is `drive_key` directly
     /// in the cached list JSON. False → caller must dirty the cache (no
     /// cache yet, cache already dirty, or the key isn't a visible drive —
     /// e.g. one hidden by the Tessie/SEI overlap filter).
-    fn patch_cached_drive_tags(&self, drive_key: &str, tags: &[String]) -> Result<bool> {
+    fn patch_cached_drive_tags(&self, drive_key: &str) -> Result<bool> {
         // rebuild_lock so a concurrent rebuild can't write a list built
         // from pre-edit tag rows after we patch (lock order: rebuild_lock
         // before conn, as everywhere else).
@@ -1153,8 +1345,10 @@ impl DriveStore {
         if self.drive_cache_dirty.load(Ordering::Acquire) {
             return Ok(false);
         }
-        let Some(json) = self.with_read_conn(|conn| schema::meta_get(conn, "drive_list_cache"))?
-        else {
+        // Read tags and publish their cached projection under the same writer
+        // lock. A delayed remote callback must not paint over a newer local edit.
+        let conn = self.conn.lock().unwrap();
+        let Some(json) = schema::meta_get(&conn, "drive_list_cache")? else {
             return Ok(false);
         };
         if json.is_empty() {
@@ -1171,7 +1365,9 @@ impl DriveStore {
         // Every drive with this key, not just the first: two visible
         // signature-split drives can share a start_time, and a full
         // rebuild applies the tag map to all of them.
-        let clean: Vec<String> = tags.iter().filter(|t| !t.is_empty()).cloned().collect();
+        let clean = conn.prepare_cached("SELECT tag FROM drive_tags WHERE drive_key = ?1 ORDER BY tag")?
+            .query_map(params![drive_key], |row| row.get::<_, String>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
         let mut hit = false;
         for entry in list.iter_mut().filter(|d| d.start_time == drive_key) {
             entry.tags = clean.clone();
@@ -1181,7 +1377,6 @@ impl DriveStore {
             return Ok(false);
         }
         let patched = serde_json::to_string(&list)?;
-        let conn = self.conn.lock().unwrap();
         schema::meta_set(&conn, "drive_list_cache", &patched)?;
         Ok(true)
     }
@@ -1194,8 +1389,7 @@ impl DriveStore {
         )?;
         let out = stmt
             .query_map(params![drive_key], |row| row.get::<_, String>(0))?
-            .filter_map(|r| r.ok())
-            .collect();
+            .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(out)
     }
 
@@ -1218,7 +1412,7 @@ impl DriveStore {
     /// Every tag name in use, sorted and deduplicated.
     pub fn get_all_tag_names(&self) -> Result<Vec<String>> {
         let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare_cached("SELECT DISTINCT tag FROM drive_tags ORDER BY tag")?;
+        let mut stmt = conn.prepare_cached("SELECT DISTINCT tag FROM drive_tags WHERE NOT EXISTS (SELECT 1 FROM drive_clock_legacy_keys WHERE key=drive_tags.drive_key) ORDER BY tag")?;
         let tags = stmt
             .query_map([], |row| row.get::<_, String>(0))?
             .filter_map(|r| r.ok())
@@ -1243,9 +1437,62 @@ impl DriveStore {
         self.set_charge_tags_inner(session_ts, tags, false)
     }
 
-    fn set_charge_tags_inner(&self, session_ts: i64, tags: &[String], mark_dirty: bool) -> Result<()> {
+    /// Apply one Cloud envelope atomically. Recheck local edits and the upload
+    /// identity under the writer lock, after network/decryption work finishes.
+    pub fn apply_charge_mutable_from_sync(
+        &self,
+        session_ts: i64,
+        cloud_charge_id: &str,
+        wrapped_charge_key: &str,
+        tags: &[String],
+        cost: Option<(f64, String)>,
+        _updated_at_ms: i64,
+    ) -> Result<()> {
         let mut conn = self.conn.lock().unwrap();
         let tx = conn.transaction()?;
+        let upload: Option<(String, String)> = tx.query_row(
+            "SELECT cloud_charge_id, wrapped_charge_key FROM charge_uploads WHERE session_ts = ?1",
+            params![session_ts], |row| Ok((row.get(0)?, row.get(1)?)),
+        ).optional()?;
+        let Some((id, key)) = upload else { return Ok(()) };
+        anyhow::ensure!(id == cloud_charge_id && (key.is_empty() || key == wrapped_charge_key),
+            "charge upload identity changed during sync");
+        let dirty: Option<i64> = tx.query_row(
+            "SELECT changed_at FROM mutable_dirty WHERE kind = 'charge' AND key = ?1",
+            params![session_ts.to_string()], |row| row.get(0),
+        ).optional()?;
+        if dirty.is_some() {
+            return Ok(());
+        }
+        if key.is_empty() {
+            tx.execute("UPDATE charge_uploads SET wrapped_charge_key=?1 WHERE session_ts=?2",params![wrapped_charge_key,session_ts])?;
+        }
+        tx.execute("DELETE FROM charge_tags WHERE session_ts = ?1", params![session_ts])?;
+        for tag in tags.iter().filter(|tag| !tag.is_empty()) {
+            tx.execute("INSERT OR IGNORE INTO charge_tags(session_ts, tag) VALUES(?1, ?2)",
+                params![session_ts, tag])?;
+        }
+        match cost {
+            Some((amount, currency)) => {
+                anyhow::ensure!(amount.is_finite() && amount >= 0.0, "invalid synced charge cost");
+                tx.execute(
+                    "INSERT INTO charge_costs(session_ts, amount, currency) VALUES(?1, ?2, ?3) \
+                     ON CONFLICT(session_ts) DO UPDATE SET amount = ?2, currency = ?3",
+                    params![session_ts, amount, currency],
+                )?;
+            }
+            None => { tx.execute("DELETE FROM charge_costs WHERE session_ts = ?1", params![session_ts])?; }
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    fn set_charge_tags_inner(&self, session_ts: i64, tags: &[String], mark_dirty: bool) -> Result<()> {
+        self.with_edit_conn(mark_dirty,|conn| {
+        let tx = conn.transaction()?;
+        let before = tx.prepare_cached("SELECT tag FROM charge_tags WHERE session_ts=?1 ORDER BY tag")?
+            .query_map(params![session_ts], |row| row.get::<_,String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
+        let was_queued = mutable_intent::queued(&tx, "charge", &session_ts.to_string())?;
         tx.execute(
             "DELETE FROM charge_tags WHERE session_ts = ?1",
             params![session_ts],
@@ -1263,9 +1510,11 @@ impl DriveStore {
         }
         if mark_dirty {
             mark_mutable_dirty(&tx, "charge", &session_ts.to_string())?;
+            mutable_intent::record(&tx, "charge", &session_ts.to_string(), was_queued, &mutable_intent::tag_edit(&before, tags))?;
         }
         tx.commit()?;
         Ok(())
+        })
     }
 
     /// ADD one tag to many sessions in a SINGLE transaction.
@@ -1288,21 +1537,21 @@ impl DriveStore {
         if session_ts.is_empty() {
             return Ok(0);
         }
-        let mut conn = self.conn.lock().unwrap();
+        self.with_durable_conn(|conn| {
         let tx = conn.transaction()?;
-        {
-            let mut stmt = tx.prepare(
-                "INSERT OR IGNORE INTO charge_tags(session_ts, tag) VALUES(?1, ?2)",
-            )?;
-            for ts in session_ts {
-                stmt.execute(params![ts, tag])?;
-            }
-        }
         for ts in session_ts {
+            let before = tx.prepare_cached("SELECT tag FROM charge_tags WHERE session_ts=?1 ORDER BY tag")?
+                .query_map(params![ts], |row| row.get::<_,String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
+            let was_queued = mutable_intent::queued(&tx, "charge", &ts.to_string())?;
+            tx.execute("INSERT OR IGNORE INTO charge_tags(session_ts,tag) VALUES(?1,?2)",params![ts,tag])?;
+            let mut after = before.clone();
+            if !after.iter().any(|value| value == tag) { after.push(tag.to_string()); }
             mark_mutable_dirty(&tx, "charge", &ts.to_string())?;
+            mutable_intent::record(&tx, "charge", &ts.to_string(), was_queued, &mutable_intent::tag_edit(&before, &after))?;
         }
         tx.commit()?;
         Ok(session_ts.len())
+        })
     }
 
     /// Tags for one charge session, or an empty vec.
@@ -1313,8 +1562,7 @@ impl DriveStore {
         )?;
         let out = stmt
             .query_map(params![session_ts], |row| row.get::<_, String>(0))?
-            .filter_map(|r| r.ok())
-            .collect();
+            .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(out)
         })
     }
@@ -1376,22 +1624,30 @@ impl DriveStore {
         cost: Option<(f64, String)>,
         mark_dirty: bool,
     ) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
+        self.with_edit_conn(mark_dirty,|conn| {
+        let tx = conn.transaction()?;
+        let before = tx.query_row("SELECT amount,currency FROM charge_costs WHERE session_ts=?1", params![session_ts],
+            |row| Ok((row.get::<_,f64>(0)?,row.get::<_,Option<String>>(1)?.unwrap_or_default()))).optional()?;
+        let was_queued = mutable_intent::queued(&tx, "charge", &session_ts.to_string())?;
+        let edit = MutableEdit::CostOverride { before: mutable_intent::cost_value(&before)?, after: mutable_intent::cost_value(&cost)? };
         match cost {
-            Some((amount, currency)) => conn.execute(
+            Some((amount, currency)) => tx.execute(
                 "INSERT INTO charge_costs(session_ts, amount, currency) VALUES(?1, ?2, ?3) \
                  ON CONFLICT(session_ts) DO UPDATE SET amount = ?2, currency = ?3",
                 params![session_ts, amount, currency],
             )?,
-            None => conn.execute(
+            None => tx.execute(
                 "DELETE FROM charge_costs WHERE session_ts = ?1",
                 params![session_ts],
             )?,
         };
         if mark_dirty {
-            mark_mutable_dirty(&conn, "charge", &session_ts.to_string())?;
+            mark_mutable_dirty(&tx, "charge", &session_ts.to_string())?;
+            mutable_intent::record(&tx, "charge", &session_ts.to_string(), was_queued, &edit)?;
         }
+        tx.commit()?;
         Ok(())
+        })
     }
 
     /// Manual cost override for one charge session, if set.
@@ -1441,9 +1697,12 @@ impl DriveStore {
     /// Queue the per-Pi rate config for cloud push. Called by the api
     /// crate whenever a `charging_*` preference changes.
     pub fn mark_rate_config_dirty(&self) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
-        mark_mutable_dirty(&conn, "rate", "")?;
+        self.with_durable_conn(|conn| {
+        let tx = conn.transaction()?;
+        mark_mutable_dirty(&tx, "rate", "")?;
+        tx.commit()?;
         Ok(())
+        })
     }
 
     /// Every locally-changed mutable awaiting push: (kind, key, changed_at ms).
@@ -1463,15 +1722,369 @@ impl DriveStore {
         })
     }
 
+    pub fn mutable_route_source_revision(&self) -> Result<i64> {
+        self.with_locked_conn(|conn| Ok(conn.query_row(
+            "SELECT revision FROM mutable_route_source_clock WHERE id=1", [], |row| row.get(0))?))
+    }
+
+    /// Confirm against the exact route-table generation used to freeze drive
+    /// membership. Ingestion after that snapshot leaves the edit queued.
+    pub fn confirm_drive_mutable_push(&self, drive_key: &str, through: i64,
+        source_revision: i64, confirmed_tags: &[String],
+    ) -> Result<bool> {
+        self.confirm_drive_mutable_push_with_receipt(drive_key,through,source_revision,confirmed_tags,&[],None)
+    }
+
+    /// Retire a confirmed scoped publication with its exact durable receipt.
+    /// The caller has revalidated all frozen windows against this source epoch.
+    pub fn confirm_drive_mutable_push_with_receipt(&self, drive_key: &str, through: i64,
+        source_revision: i64, confirmed_tags: &[String], sources: &[VerifiedRouteSyncKey],
+        receipt: Option<(&str,&str)>,
+    ) -> Result<bool> {
+        self.confirm_drive_mutable_push_with_projection(drive_key,through,source_revision,confirmed_tags,sources,receipt,&[])
+    }
+
+    /// Confirm the original edited scope and refresh independently read current
+    /// display groups in one transaction. Other queued edits retain their local
+    /// view; source/receipt failure cannot partly retire or update either view.
+    pub fn confirm_drive_mutable_push_with_projection(&self, drive_key: &str, through: i64,
+        source_revision: i64, confirmed_tags: &[String], sources: &[VerifiedRouteSyncKey],
+        receipt: Option<(&str,&str)>, current_drives: &[(String,Vec<String>)],
+    ) -> Result<bool> {
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction()?;
+        let current_source: i64 = tx.query_row("SELECT revision FROM mutable_route_source_clock WHERE id=1", [], |row| row.get(0))?;
+        if current_source != source_revision { return Ok(false) }
+        if let Some((key,expected)) = receipt {
+            if schema::meta_get(&tx,key)?.as_deref()!=Some(expected) {return Ok(false)}
+        }
+        let queued = mutable_intent::queued(&tx, "drive", drive_key)?;
+        if !queued.is_some_and(|at| at >= through) { return Ok(false) }
+        install_verified_route_keys(&tx,sources)?;
+        let intent = mutable_intent::read(&tx, "drive", drive_key)?;
+        let legacy: Option<Option<i64>> = tx.query_row("SELECT legacy_through FROM mutable_intent_state WHERE kind='drive' AND key=?1",
+            params![drive_key], |row| row.get(0)).optional()?;
+        let unknown_newer = queued.is_some_and(|at| at > through)
+            && legacy.map(|at| at.is_some_and(|at| at > through)).unwrap_or(true);
+        if !unknown_newer {
+            let mut tags: std::collections::BTreeSet<String> = confirmed_tags.iter().cloned().collect();
+            for (at, edit) in &intent.edits {
+                if *at <= through { continue }
+                if let MutableEdit::Tags {added,removed} = edit {
+                    for tag in removed { tags.remove(tag); }
+                    tags.extend(added.iter().cloned());
+                }
+            }
+            tx.execute("DELETE FROM drive_tags WHERE drive_key=?1",params![drive_key])?;
+            for tag in tags.into_iter().filter(|tag| !tag.is_empty()) {
+                tx.execute("INSERT OR IGNORE INTO drive_tags(drive_key,tag) VALUES(?1,?2)",params![drive_key,tag])?;
+            }
+        }
+        mutable_intent::retire(&tx,"drive",drive_key,through)?;
+        tx.execute("DELETE FROM mutable_dirty WHERE kind='drive' AND key=?1 AND changed_at=?2",params![drive_key,through])?;
+        let mut changed=vec![drive_key.to_string()];
+        for (current_key,tags) in current_drives {
+            if mutable_intent::queued(&tx,"drive",current_key)?.is_some() {continue}
+            tx.execute("DELETE FROM drive_tags WHERE drive_key=?1",params![current_key])?;
+            for tag in tags.iter().filter(|tag|!tag.is_empty()) {
+                tx.execute("INSERT OR IGNORE INTO drive_tags(drive_key,tag) VALUES(?1,?2)",params![current_key,tag])?;
+            }
+            changed.push(current_key.clone());
+        }
+        if let Some((key,_))=receipt {schema::meta_del(&tx,key)?;}
+        tx.commit()?;
+        drop(conn);
+        changed.sort();changed.dedup();
+        for key in changed {
+            if !self.patch_cached_drive_tags(&key)? { self.drive_cache_dirty.store(true,Ordering::Release); }
+        }
+        Ok(true)
+    }
+
+    /// Read a queued drive's tags at its exact generation. A newer edit waits
+    /// for the next sweep instead of being published with an older timestamp.
+    pub fn drive_mutable_for_sync(&self, drive_key: &str, changed_at: i64) -> Result<Option<DriveMutableSyncSnapshot>> {
+        self.with_locked_conn(|conn| {
+            let tx = conn.unchecked_transaction()?;
+            let matches: bool = tx.query_row(
+                "SELECT EXISTS(SELECT 1 FROM mutable_dirty WHERE kind='drive' AND key=?1 AND changed_at=?2)",
+                params![drive_key, changed_at], |row| row.get(0))?;
+            if !matches { return Ok(None) }
+            let tags = tx.prepare_cached("SELECT tag FROM drive_tags WHERE drive_key=?1 ORDER BY tag")?
+                .query_map(params![drive_key], |row| row.get::<_, String>(0))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            let intent = mutable_intent::read(&tx, "drive", drive_key)?;
+            tx.commit()?;
+            Ok(Some(DriveMutableSyncSnapshot { tags, intent }))
+        })
+    }
+
+    pub fn drive_tags_for_sync(&self, drive_key: &str, changed_at: i64) -> Result<Option<Vec<String>>> {
+        Ok(self.drive_mutable_for_sync(drive_key, changed_at)?.map(|snapshot| snapshot.tags))
+    }
+
+    /// None: an older queue without recorded evidence. Some(None): the drive
+    /// was unresolved when edited and must not attach itself to a later drive.
+    pub fn drive_edit_scope(&self, drive_key: &str) -> Result<Option<Option<crate::drive_edit_scope::Scope>>> {
+        self.with_read_conn(|conn| read_drive_edit_scope(conn, drive_key))
+    }
+
+    /// Tags, cost and upload identity share one SQLite snapshot and queue stamp.
+    pub fn charge_mutable_for_sync(&self, session_ts: i64, changed_at: i64) -> Result<Option<ChargeMutableSyncSnapshot>> {
+        self.with_locked_conn(|conn| {
+            let tx = conn.unchecked_transaction()?;
+            let matches: bool = tx.query_row(
+                "SELECT EXISTS(SELECT 1 FROM mutable_dirty WHERE kind='charge' AND key=?1 AND changed_at=?2)",
+                params![session_ts.to_string(), changed_at], |row| row.get(0))?;
+            if !matches { return Ok(None) }
+            let tags = tx.prepare_cached("SELECT tag FROM charge_tags WHERE session_ts=?1 ORDER BY tag")?
+                .query_map(params![session_ts], |row| row.get::<_, String>(0))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            let cost = tx.query_row("SELECT amount, currency FROM charge_costs WHERE session_ts=?1",
+                params![session_ts], |row| Ok((row.get(0)?, row.get::<_, Option<String>>(1)?.unwrap_or_default()))).optional()?;
+            let upload = tx.query_row("SELECT cloud_charge_id, wrapped_charge_key, uploaded_at FROM charge_uploads WHERE session_ts=?1",
+                params![session_ts], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?))).optional()?;
+            let intent = mutable_intent::read(&tx, "charge", &session_ts.to_string())?;
+            tx.commit()?;
+            Ok(Some(ChargeMutableSyncSnapshot { tags, cost, upload, intent }))
+        })
+    }
+
+    fn with_edit_conn<F,T>(&self,durable:bool,f:F)->Result<T>
+    where F:FnOnce(&mut Connection)->Result<T> {
+        if durable {self.with_durable_conn(f)} else {
+            let mut conn=self.conn.lock().unwrap();f(&mut conn)
+        }
+    }
+
+    /// Flush publication intent before an external side effect. Ordinary
+    /// telemetry retains its configured sync mode; this short critical section
+    /// uses at least FULL and restores the previous mode on success or error.
+    pub fn with_durable_conn<F,T>(&self,f:F)->Result<T>
+    where F:FnOnce(&mut Connection)->Result<T> {
+        let mut conn=self.conn.lock().unwrap();
+        anyhow::ensure!(conn.is_autocommit(),"durable publication requires its own transaction");
+        let previous:i64=conn.query_row("PRAGMA synchronous",[],|row|row.get(0))?;
+        conn.pragma_update(None,"synchronous",previous.max(2))?;
+        let result=f(&mut conn);
+        let restored=conn.pragma_update(None,"synchronous",previous);
+        match result {
+            Ok(value)=>{restored.context("restore SQLite sync mode")?;Ok(value)},
+            Err(error)=>{
+                if let Err(restore)=restored {warn!("restore SQLite sync mode failed: {}",restore);}
+                Err(error)
+            }
+        }
+    }
+
+    /// Queue existing rates for an absent Cloud document without changing the
+    /// preferences file. The caller holds its preferences lock after recovery.
+    pub fn queue_initial_rate_config(&self, doc:&serde_json::Value)->Result<bool> {
+        let doc=crate::rate_intent::initial_document(doc)?;
+        if doc.as_object().is_some_and(serde_json::Map::is_empty) {return Ok(false)}
+        self.with_durable_conn(|conn| {
+            let tx=conn.transaction()?;
+            anyhow::ensure!(schema::meta_get(&tx,mutable_intent::RATE_PREFERENCES_JOURNAL)?.is_none(),
+                "rate preference publication already pending");
+            if mutable_intent::queued(&tx,"rate","")?.is_some() {return Ok(false)}
+            mark_mutable_dirty(&tx,"rate","")?;
+            mutable_intent::record(&tx,"rate","",None,&MutableEdit::RateConfig {
+                before:serde_json::json!({}),after:doc,force:false,required_tag:None,
+            })?;
+            tx.commit()?;Ok(true)
+        })
+    }
+
+    /// Persist a rate-only file publication and its outgoing field intent
+    /// before the preferences file is changed. The caller owns its file lock.
+    pub fn stage_rate_preferences(&self,before:&serde_json::Value,after:&serde_json::Value,force:bool,journal:&str)->Result<()> {
+        self.stage_rate_preferences_with_tag(before,after,force,None,journal)
+    }
+    pub fn stage_rate_preferences_with_tag(&self,before:&serde_json::Value,after:&serde_json::Value,
+        force:bool,required_tag:Option<&str>,journal:&str)->Result<()> {
+        if let Some(tag)=required_tag {
+            anyhow::ensure!(!tag.trim().is_empty() && !force && after.get("charging_tag_rates")
+                .and_then(|plans|plans.as_object()).is_some_and(|plans|plans.contains_key(tag)),"required rate plan is missing");
+        }
+        for value in [before,after] {
+            let map=value.as_object().context("rate preferences must be an object")?;
+            anyhow::ensure!(map.keys().all(|key|mutable_intent::RATE_KEYS.contains(&key.as_str())),"unrelated preferences cannot enter rate intent");
+        }
+        self.with_durable_conn(|conn| {
+        let tx=conn.transaction()?;
+        anyhow::ensure!(schema::meta_get(&tx,mutable_intent::RATE_PREFERENCES_JOURNAL)?.is_none(),"rate preference publication already pending");
+        let previous=mutable_intent::queued(&tx,"rate","")?;
+        mark_mutable_dirty(&tx,"rate","")?;
+        mutable_intent::record(&tx,"rate","",previous,&MutableEdit::RateConfig {before:before.clone(),after:after.clone(),force,required_tag:required_tag.map(str::to_owned)})?;
+        schema::meta_set(&tx,mutable_intent::RATE_PREFERENCES_JOURNAL,journal)?;
+        tx.commit()?;Ok(())
+        })
+    }
+
     /// Drop a dirty row after a successful push — only if `changed_at`
     /// still matches (a newer local edit during the push stays queued).
     pub fn clear_mutable_dirty(&self, kind: &str, key: &str, changed_at: i64) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
-        conn.execute(
-            "DELETE FROM mutable_dirty WHERE kind = ?1 AND key = ?2 AND changed_at = ?3",
-            params![kind, key, changed_at],
-        )?;
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction()?;
+        if mutable_intent::queued(&tx, kind, key)?.is_some_and(|at| at >= changed_at) {
+            mutable_intent::retire(&tx, kind, key, changed_at)?;
+            tx.execute("DELETE FROM mutable_dirty WHERE kind=?1 AND key=?2 AND changed_at=?3", params![kind,key,changed_at])?;
+        }
+        tx.commit()?;
         Ok(())
+    }
+
+    /// A late acknowledgement must not retire an edit targeting a replacement
+    /// upload, even when the local session timestamp and edit stamp are reused.
+    pub fn clear_charge_mutable_dirty_if_source(
+        &self, session_ts: i64, changed_at: i64, cloud_charge_id: &str,
+        wrapped_charge_key: &str, uploaded_at: i64,
+    ) -> Result<()> {
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction()?;
+        let key = session_ts.to_string();
+        let matches: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM charge_uploads WHERE session_ts=?1 AND cloud_charge_id=?2 AND wrapped_charge_key=?3 AND uploaded_at=?4)",
+            params![session_ts,cloud_charge_id,wrapped_charge_key,uploaded_at], |row| row.get(0))?;
+        if matches && mutable_intent::queued(&tx, "charge", &key)?.is_some_and(|at| at >= changed_at) {
+            mutable_intent::retire(&tx, "charge", &key, changed_at)?;
+            tx.execute("DELETE FROM mutable_dirty WHERE kind='charge' AND key=?1 AND changed_at=?2",params![key,changed_at])?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Adopt a confirmed merged Cloud document and retire only its sent intent.
+    /// Newer local operations are replayed before publishing the local values.
+    pub fn confirm_charge_mutable_push(
+        &self, session_ts: i64, through: i64, cloud_charge_id: &str,
+        wrapped_charge_key: &str, uploaded_at: i64,
+        confirmed_tags: &[String], confirmed_cost: Option<(f64, String)>,
+    ) -> Result<bool> {
+        self.confirm_charge_mutable_push_with_receipt(session_ts, through, cloud_charge_id,
+            wrapped_charge_key, uploaded_at, confirmed_tags, confirmed_cost, None)
+    }
+
+    /// Retire the exact durable publication receipt with its confirmed fields.
+    /// A replacement receipt belongs to another attempt and must remain intact.
+    pub fn confirm_charge_mutable_push_with_receipt(
+        &self, session_ts: i64, through: i64, cloud_charge_id: &str,
+        wrapped_charge_key: &str, uploaded_at: i64,
+        confirmed_tags: &[String], confirmed_cost: Option<(f64, String)>,
+        receipt: Option<(&str, &str)>,
+    ) -> Result<bool> {
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction()?;
+        if let Some((key, expected)) = receipt {
+            if crate::schema::meta_get(&tx, key)?.as_deref() != Some(expected) { return Ok(false) }
+        }
+        let key = session_ts.to_string();
+        let source_matches: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM charge_uploads WHERE session_ts=?1 AND cloud_charge_id=?2 AND wrapped_charge_key=?3 AND uploaded_at=?4)",
+            params![session_ts,cloud_charge_id,wrapped_charge_key,uploaded_at], |row| row.get(0))?;
+        let queued = mutable_intent::queued(&tx, "charge", &key)?;
+        if !source_matches || !queued.is_some_and(|at| at >= through) { return Ok(false) }
+        let intent = mutable_intent::read(&tx, "charge", &key)?;
+        let legacy: Option<Option<i64>> = tx.query_row(
+            "SELECT legacy_through FROM mutable_intent_state WHERE kind='charge' AND key=?1",
+            params![key], |row| row.get(0)).optional()?;
+        let unknown_newer = queued.is_some_and(|at| at > through)
+            && legacy.map(|at| at.is_some_and(|at| at > through)).unwrap_or(true);
+        if !unknown_newer {
+            let mut tags: std::collections::BTreeSet<String> = confirmed_tags.iter().cloned().collect();
+            let mut preserve_cost = false;
+            for (at, edit) in &intent.edits {
+                if *at <= through { continue }
+                match edit {
+                    MutableEdit::Tags { added, removed } => {
+                        for tag in removed { tags.remove(tag); }
+                        tags.extend(added.iter().cloned());
+                    }
+                    MutableEdit::CostOverride { .. } => preserve_cost = true,
+                    MutableEdit::RateConfig { .. } => anyhow::bail!("rate intent cannot acknowledge a charge edit"),
+                }
+            }
+            tx.execute("DELETE FROM charge_tags WHERE session_ts=?1", params![session_ts])?;
+            for tag in crate::charging::strip_reserved_tags(tags.into_iter().collect()) {
+                if !tag.is_empty() {
+                    tx.execute("INSERT OR IGNORE INTO charge_tags(session_ts,tag) VALUES(?1,?2)",params![session_ts,tag])?;
+                }
+            }
+            if !preserve_cost {
+                mutable_intent::cost_value(&confirmed_cost)?;
+                match confirmed_cost {
+                    Some((amount,currency)) => {
+                        tx.execute("INSERT INTO charge_costs(session_ts,amount,currency) VALUES(?1,?2,?3) ON CONFLICT(session_ts) DO UPDATE SET amount=?2,currency=?3",
+                            params![session_ts,amount,currency])?;
+                    }
+                    None => { tx.execute("DELETE FROM charge_costs WHERE session_ts=?1",params![session_ts])?; }
+                }
+            }
+        }
+        mutable_intent::retire(&tx, "charge", &key, through)?;
+        tx.execute("DELETE FROM mutable_dirty WHERE kind='charge' AND key=?1 AND changed_at=?2",params![key,through])?;
+        if let Some((key, _)) = receipt { crate::schema::meta_del(&tx, key)?; }
+        tx.commit()?;
+        Ok(true)
+    }
+
+    /// Capture initial-upload mutable values and the queue generation together.
+    /// A later edit must never be retired under an earlier value snapshot.
+    pub fn charge_mutable_for_upload(&self, session_ts: i64) -> Result<ChargeUploadMutableSnapshot> {
+        self.with_locked_conn(|conn| {
+            let tx=conn.unchecked_transaction()?;
+            let tags=tx.prepare_cached("SELECT tag FROM charge_tags WHERE session_ts=?1 ORDER BY tag")?
+                .query_map(params![session_ts],|row|row.get::<_,String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
+            let cost=tx.query_row("SELECT amount,currency FROM charge_costs WHERE session_ts=?1",params![session_ts],
+                |row|Ok((row.get(0)?,row.get::<_,Option<String>>(1)?.unwrap_or_default()))).optional()?;
+            mutable_intent::cost_value(&cost)?;
+            let changed_at=mutable_intent::queued(&tx,"charge",&session_ts.to_string())?;
+            tx.commit()?;
+            Ok(ChargeUploadMutableSnapshot {tags,cost,changed_at})
+        })
+    }
+
+    /// A duplicate response confirms existence, not this upload's new key or
+    /// mutable fields. Empty wrapped key explicitly means not yet reconciled.
+    pub fn confirm_charge_upload(
+        &self, session_ts: i64, cloud_charge_id: &str, stored_key: Option<&str>,
+        uploaded_at: i64, included_generation: Option<i64>,
+    ) -> Result<bool> {
+        let mut conn=self.conn.lock().unwrap();let tx=conn.transaction()?;
+        let deleted:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM charge_delete_outbox WHERE session_ts=?1)",params![session_ts],|row|row.get(0))?;
+        if deleted {return Ok(false)}
+        let existing:Option<(String,String)>=tx.query_row("SELECT cloud_charge_id,wrapped_charge_key FROM charge_uploads WHERE session_ts=?1",
+            params![session_ts],|row|Ok((row.get(0)?,row.get(1)?))).optional()?;
+        if let Some((id,key))=&existing {
+            if id!=cloud_charge_id || stored_key.is_some_and(|stored| key!=stored) {return Ok(false)}
+        } else {
+            tx.execute("INSERT INTO charge_uploads(session_ts,cloud_charge_id,wrapped_charge_key,uploaded_at) VALUES(?1,?2,?3,?4)",
+                params![session_ts,cloud_charge_id,stored_key.unwrap_or(""),uploaded_at])?;
+        }
+        if stored_key.is_some() {
+            if let Some(through)=included_generation {
+                let key=session_ts.to_string();
+                if mutable_intent::queued(&tx,"charge",&key)?.is_some_and(|at|at>=through) {
+                    mutable_intent::retire(&tx,"charge",&key,through)?;
+                    tx.execute("DELETE FROM mutable_dirty WHERE kind='charge' AND key=?1 AND changed_at=?2",params![key,through])?;
+                }
+            }
+        }
+        tx.commit()?;Ok(true)
+    }
+
+    /// Install only an unknown key, after the caller authenticated the current
+    /// Cloud envelope. Keep the original upload marker and newer sources intact.
+    pub fn backfill_charge_upload_key(
+        &self, session_ts: i64, cloud_charge_id: &str, uploaded_at: i64, verified_key: &str,
+    ) -> Result<bool> {
+        anyhow::ensure!(!verified_key.is_empty(),"empty verified charge key");
+        let mut conn=self.conn.lock().unwrap();let tx=conn.transaction()?;
+        let matches:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM charge_uploads WHERE session_ts=?1 AND cloud_charge_id=?2 AND uploaded_at=?3 AND (wrapped_charge_key='' OR wrapped_charge_key=?4) AND NOT EXISTS(SELECT 1 FROM charge_delete_outbox WHERE session_ts=?1))",
+            params![session_ts,cloud_charge_id,uploaded_at,verified_key],|row|row.get(0))?;
+        if !matches {return Ok(false)}
+        tx.execute("UPDATE charge_uploads SET wrapped_charge_key=?1 WHERE session_ts=?2 AND wrapped_charge_key=''",params![verified_key,session_ts])?;
+        tx.commit()?;Ok(true)
     }
 
     /// Record a successful charge upload (or, with `uploaded_at = -1`,
@@ -1697,6 +2310,8 @@ impl DriveStore {
     pub fn clear_all_drives(&self) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         for stmt in &[
+            "DELETE FROM drive_clock_legacy_keys",
+            "DELETE FROM drive_clock_migrations",
             "DELETE FROM routes",
             "DELETE FROM processed_files",
             "DELETE FROM drive_tags",
@@ -2333,7 +2948,7 @@ impl DriveStore {
         let Some(cutoff) = cutoff.or_else(|| {
             let first = stamped.first()?.0;
             let last_end = kept.last().and_then(|d| {
-                chrono::NaiveDateTime::parse_from_str(&d.end_time, "%Y-%m-%dT%H:%M:%S").ok()
+                chrono::NaiveDateTime::parse_from_str(&d.end_time, "%Y-%m-%dT%H:%M:%S%.f").ok()
             });
             match last_end {
                 Some(e) if (first - e).num_milliseconds() >= quiet_ms => Some(first),
@@ -2365,7 +2980,7 @@ impl DriveStore {
         // Splice: prefix strictly before the cut is untouched; sanity
         // check the boundary, then renumber suffix ids to continue the
         // global enumeration.
-        let cutoff_str = cutoff.format("%Y-%m-%dT%H:%M:%S").to_string();
+        let cutoff_str = cutoff.format("%Y-%m-%dT%H:%M:%S%.3f").to_string();
         kept.retain(|d| d.start_time < cutoff_str);
         if kept
             .last()
@@ -5588,7 +6203,7 @@ mod tests {
             .unwrap();
 
         // Sanity: grouper sees one drive whose start_time is the
-        // parsed-from-filename `%Y-%m-%dT%H:%M:%S` form.
+        // millisecond start-time identity.
         let (drive_id, drive_start_time) = store
             .with_route_summaries(|s| {
                 let drives = grouper::group_summaries_fast(s, &std::collections::HashMap::new());
@@ -5596,19 +6211,20 @@ mod tests {
             })
             .unwrap();
         assert_eq!(drive_id, 0);
-        assert_eq!(drive_start_time, "2025-01-15T12:30:45");
+        assert_eq!(drive_start_time, "2025-01-15T12:30:45.000");
 
         // The resolver must translate the numeric URL id into the
         // start_time the grouper joins on.
         let resolved = store
             .with_route_summaries(|s| grouper::find_drive_start_time(s, "0"))
             .unwrap();
-        assert_eq!(resolved.as_deref(), Some("2025-01-15T12:30:45"));
-        // And accept the start_time form too (single_drive does).
+        assert_eq!(resolved.as_deref(), Some("2025-01-15T12:30:45.000"));
+        // The old whole-second key remains an alias when its exact membership
+        // is unchanged; writes still use the current canonical key.
         let resolved_st = store
             .with_route_summaries(|s| grouper::find_drive_start_time(s, "2025-01-15T12:30:45"))
             .unwrap();
-        assert_eq!(resolved_st.as_deref(), Some("2025-01-15T12:30:45"));
+        assert_eq!(resolved_st.as_deref(), Some("2025-01-15T12:30:45.000"));
         // Bogus id resolves to None — handler returns 404.
         let bogus = store
             .with_route_summaries(|s| grouper::find_drive_start_time(s, "999"))

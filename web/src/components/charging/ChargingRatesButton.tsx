@@ -7,7 +7,7 @@ import {
 } from "@/hooks/useChargingRates"
 import { cn } from "@/lib/utils"
 
-const TIME_RE = /^\d{1,2}:\d{2}$/
+const TIME_RE = /^([01]?\d|2[0-3]):[0-5]\d$/
 
 // Sunday-first to match the Tessie day picker (S M T W T F S).
 const DAY_LABELS = ["S", "M", "T", "W", "T", "F", "S"]
@@ -37,6 +37,7 @@ const MONTHS = [
 
 // String drafts allow numeric fields to be temporarily empty.
 interface ScheduleDraft {
+  sourceIndex?: number
   label: string
   start: string
   end: string
@@ -69,7 +70,7 @@ export function ChargingRatesButton({
   tags: string[]
   onSaved?: () => void
 }) {
-  const { rates, loading, save } = useChargingRates()
+  const { rates, loading, error: loadError, save, refresh } = useChargingRates()
   const [open, setOpen] = useState(false)
 
   const [currency, setCurrency] = useState("$")
@@ -79,16 +80,19 @@ export function ChargingRatesButton({
   const [busy, setBusy] = useState(false)
   const [saveError, setSaveError] = useState<string | null>(null)
 
-  const openEditor = () => {
+  const openEditor = async () => {
     setSaveError(null)
+    const rates = await refresh()
+    if (!rates) return
     setCurrency(rates.currency)
     setDefaultRate(rates.defaultRate != null ? String(rates.defaultRate) : "")
-    const draft: Record<string, PlanDraft> = {}
+    const draft: Record<string, PlanDraft> = Object.create(null)
     const seed = (tag: string) => {
-      const plan = rates.tags[tag]
+      const plan = Object.hasOwn(rates.tags, tag) ? rates.tags[tag] : undefined
       draft[tag] = {
         flat: plan?.flat != null ? String(plan.flat) : "",
         schedules: (plan?.schedules ?? []).map((s) => ({
+          sourceIndex: s.sourceIndex,
           label: s.label,
           start: s.start,
           end: s.end,
@@ -102,7 +106,7 @@ export function ChargingRatesButton({
     }
     for (const t of tags) seed(t)
     // Preserve plans for tags absent from the current session list.
-    for (const t of Object.keys(rates.tags)) if (!(t in draft)) seed(t)
+    for (const t of Object.keys(rates.tags)) if (!Object.hasOwn(draft, t)) seed(t)
     setPlans(draft)
     setExpanded(new Set())
     setOpen(true)
@@ -111,11 +115,11 @@ export function ChargingRatesButton({
   useEffect(() => {
     if (!open) return
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setOpen(false)
+      if (e.key === "Escape" && !busy) setOpen(false)
     }
     document.addEventListener("keydown", onKey)
     return () => document.removeEventListener("keydown", onKey)
-  }, [open])
+  }, [open, busy])
 
   const updatePlan = (tag: string, next: PlanDraft) =>
     setPlans((prev) => ({ ...prev, [tag]: next }))
@@ -129,14 +133,18 @@ export function ChargingRatesButton({
     })
 
   const onSave = async () => {
-    // Equal bounds create a zero-width half-open interval.
+    // Keep legacy all-day schedules intact; new ones should use a flat rate.
     for (const [tag, plan] of Object.entries(plans)) {
       for (const s of plan.schedules) {
+        const original = Object.hasOwn(rates.tags, tag)
+          ? rates.tags[tag].schedules.find(item => item.sourceIndex === s.sourceIndex)
+          : undefined
         if (
           parseRate(s.rate) != null &&
           TIME_RE.test(s.start) &&
           TIME_RE.test(s.end) &&
-          s.start === s.end
+          s.start === s.end &&
+          !(original && original.start === s.start && original.end === s.end)
         ) {
           setSaveError(
             `"${tag}": schedule start and end times can't match (${s.start}). ` +
@@ -149,14 +157,17 @@ export function ChargingRatesButton({
     setSaveError(null)
     setBusy(true)
     try {
-      const tagsOut: Record<string, TagRate> = {}
+      for (const value of [defaultRate, ...Object.values(plans).map(plan => plan.flat)]) {
+        if (value.trim() && parseRate(value) == null) throw new Error("Enter a rate of zero or more.")
+      }
+      const tagsOut: Record<string, TagRate> = Object.create(null)
       for (const [tag, plan] of Object.entries(plans)) {
         const flat = parseRate(plan.flat)
         const schedules: RateSchedule[] = []
         for (const s of plan.schedules) {
           const rate = parseRate(s.rate)
           if (rate == null || !TIME_RE.test(s.start) || !TIME_RE.test(s.end)) {
-            continue
+            throw new Error(`"${tag}": complete each schedule or remove it before saving.`)
           }
           // All or no selected days serialize as every day.
           const days =
@@ -164,7 +175,8 @@ export function ChargingRatesButton({
               ? []
               : [...s.days].sort((a, b) => a - b)
           schedules.push({
-            label: s.label.trim(),
+            sourceIndex: s.sourceIndex,
+            label: s.label,
             start: s.start,
             end: s.end,
             days,
@@ -173,10 +185,7 @@ export function ChargingRatesButton({
             rate,
           })
         }
-        // Omit plans without a flat rate or valid schedule.
-        if (flat != null || schedules.length > 0) {
-          tagsOut[tag] = { flat, schedules }
-        }
+        tagsOut[tag] = { flat, schedules }
       }
       await save({
         currency: currency.trim() || "$",
@@ -185,6 +194,8 @@ export function ChargingRatesButton({
       })
       setOpen(false)
       onSaved?.()
+    } catch (error) {
+      setSaveError(error instanceof Error ? error.message : "Rates could not be saved.")
     } finally {
       setBusy(false)
     }
@@ -204,10 +215,11 @@ export function ChargingRatesButton({
         Rates
       </button>
 
+      {loadError && <span role="alert" className="text-xs text-rose-300">{loadError}</span>}
       {open && (
         <div
           className="fixed inset-0 z-[2000] flex items-stretch justify-center bg-black/60 backdrop-blur-sm sm:items-center sm:p-4"
-          onClick={() => setOpen(false)}
+          onClick={() => { if (!busy) setOpen(false) }}
         >
           <div
             className="flex h-[100dvh] w-full flex-col border-white/10 bg-slate-950 shadow-2xl sm:h-auto sm:max-h-[90vh] sm:max-w-2xl sm:rounded-2xl sm:border"
@@ -220,14 +232,15 @@ export function ChargingRatesButton({
               <button
                 type="button"
                 aria-label="Close"
-                onClick={() => setOpen(false)}
+                disabled={busy}
+                onClick={() => { if (!busy) setOpen(false) }}
                 className="rounded-md p-1 text-slate-400 hover:bg-white/5 hover:text-slate-200"
               >
                 <CloseIcon className="h-4 w-4" />
               </button>
             </div>
 
-            <div className="flex-1 space-y-4 overflow-y-auto px-4 py-4">
+            <fieldset disabled={busy} className="min-w-0 flex-1 space-y-4 overflow-y-auto px-4 py-4">
               <div className="flex gap-3">
                 <Labeled label="Symbol" className="w-20">
                   <input
@@ -281,16 +294,16 @@ export function ChargingRatesButton({
                   </div>
                 )}
               </div>
-            </div>
+            </fieldset>
 
             <div className="flex items-center justify-end gap-2 border-t border-white/10 px-4 py-3">
               {saveError && (
-                <span className="mr-auto text-xs text-rose-300">{saveError}</span>
+                <span role="alert" className="mr-auto text-xs text-rose-300">{saveError}</span>
               )}
               <button
                 type="button"
                 disabled={busy}
-                onClick={() => setOpen(false)}
+                onClick={() => { if (!busy) setOpen(false) }}
                 className="rounded-lg border border-white/10 bg-white/[0.03] px-4 py-1.5 text-xs font-medium text-slate-300 hover:bg-white/[0.06] disabled:opacity-50"
               >
                 Cancel
@@ -592,7 +605,7 @@ const inputClass =
 const timeClass =
   "rounded-md border border-white/10 bg-slate-950/60 px-2 py-1 text-sm text-slate-100 [color-scheme:dark] focus:border-emerald-400/40 focus:outline-none"
 
-// Blank, invalid, and negative inputs clear the stored rate.
+// Only an intentionally blank input clears a stored rate.
 function parseRate(s: string): number | null {
   const t = s.trim()
   if (t === "") return null

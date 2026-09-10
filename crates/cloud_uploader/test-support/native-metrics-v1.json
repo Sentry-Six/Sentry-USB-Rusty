@@ -1,0 +1,462 @@
+[
+  {
+    "name": "full precision",
+    "value": {
+      "v": 1,
+      "dM": 62.376,
+      "fdM": 53.207,
+      "adM": 0,
+      "tdM": 0,
+      "ap0": 1,
+      "first": [
+        40,
+        -73
+      ],
+      "last": [
+        40.0001,
+        -73
+      ]
+    },
+    "valid": true
+  },
+  {
+    "name": "stationary unknown mode",
+    "value": {
+      "v": 1,
+      "dM": 0,
+      "fdM": 0,
+      "adM": 0,
+      "tdM": 0,
+      "ap0": null,
+      "first": null,
+      "last": null
+    },
+    "valid": true
+  },
+  {
+    "name": "v invalid 2",
+    "value": {
+      "v": 2,
+      "dM": 62.376,
+      "fdM": 53.207,
+      "adM": 0,
+      "tdM": 0,
+      "ap0": 1,
+      "first": [
+        40,
+        -73
+      ],
+      "last": [
+        40.0001,
+        -73
+      ]
+    },
+    "valid": false
+  },
+  {
+    "name": "dM invalid 62.376",
+    "value": {
+      "v": 1,
+      "dM": "62.376",
+      "fdM": 53.207,
+      "adM": 0,
+      "tdM": 0,
+      "ap0": 1,
+      "first": [
+        40,
+        -73
+      ],
+      "last": [
+        40.0001,
+        -73
+      ]
+    },
+    "valid": false
+  },
+  {
+    "name": "dM invalid None",
+    "value": {
+      "v": 1,
+      "dM": null,
+      "fdM": 53.207,
+      "adM": 0,
+      "tdM": 0,
+      "ap0": 1,
+      "first": [
+        40,
+        -73
+      ],
+      "last": [
+        40.0001,
+        -73
+      ]
+    },
+    "valid": false
+  },
+  {
+    "name": "fdM invalid -1",
+    "value": {
+      "v": 1,
+      "dM": 62.376,
+      "fdM": -1,
+      "adM": 0,
+      "tdM": 0,
+      "ap0": 1,
+      "first": [
+        40,
+        -73
+      ],
+      "last": [
+        40.0001,
+        -73
+      ]
+    },
+    "valid": false
+  },
+  {
+    "name": "fdM invalid 64",
+    "value": {
+      "v": 1,
+      "dM": 62.376,
+      "fdM": 64,
+      "adM": 0,
+      "tdM": 0,
+      "ap0": 1,
+      "first": [
+        40,
+        -73
+      ],
+      "last": [
+        40.0001,
+        -73
+      ]
+    },
+    "valid": false
+  },
+  {
+    "name": "adM invalid 20",
+    "value": {
+      "v": 1,
+      "dM": 62.376,
+      "fdM": 53.207,
+      "adM": 20,
+      "tdM": 0,
+      "ap0": 1,
+      "first": [
+        40,
+        -73
+      ],
+      "last": [
+        40.0001,
+        -73
+      ]
+    },
+    "valid": false
+  },
+  {
+    "name": "ap0 invalid 4",
+    "value": {
+      "v": 1,
+      "dM": 62.376,
+      "fdM": 53.207,
+      "adM": 0,
+      "tdM": 0,
+      "ap0": 4,
+      "first": [
+        40,
+        -73
+      ],
+      "last": [
+        40.0001,
+        -73
+      ]
+    },
+    "valid": false
+  },
+  {
+    "name": "ap0 invalid 1",
+    "value": {
+      "v": 1,
+      "dM": 62.376,
+      "fdM": 53.207,
+      "adM": 0,
+      "tdM": 0,
+      "ap0": "1",
+      "first": [
+        40,
+        -73
+      ],
+      "last": [
+        40.0001,
+        -73
+      ]
+    },
+    "valid": false
+  },
+  {
+    "name": "first invalid [91, 0]",
+    "value": {
+      "v": 1,
+      "dM": 62.376,
+      "fdM": 53.207,
+      "adM": 0,
+      "tdM": 0,
+      "ap0": 1,
+      "first": [
+        91,
+        0
+      ],
+      "last": [
+        40.0001,
+        -73
+      ]
+    },
+    "valid": false
+  },
+  {
+    "name": "last invalid [0, 0]",
+    "value": {
+      "v": 1,
+      "dM": 62.376,
+      "fdM": 53.207,
+      "adM": 0,
+      "tdM": 0,
+      "ap0": 1,
+      "first": [
+        40,
+        -73
+      ],
+      "last": [
+        0,
+        0
+      ]
+    },
+    "valid": false
+  },
+  {
+    "name": "last invalid [40]",
+    "value": {
+      "v": 1,
+      "dM": 62.376,
+      "fdM": 53.207,
+      "adM": 0,
+      "tdM": 0,
+      "ap0": 1,
+      "first": [
+        40,
+        -73
+      ],
+      "last": [
+        40
+      ]
+    },
+    "valid": false
+  },
+  {
+    "name": "extra invalid True",
+    "value": {
+      "v": 1,
+      "dM": 62.376,
+      "fdM": 53.207,
+      "adM": 0,
+      "tdM": 0,
+      "ap0": 1,
+      "first": [
+        40,
+        -73
+      ],
+      "last": [
+        40.0001,
+        -73
+      ],
+      "extra": true
+    },
+    "valid": false
+  },
+  {
+    "name": "missing v",
+    "value": {
+      "dM": 62.376,
+      "fdM": 53.207,
+      "adM": 0,
+      "tdM": 0,
+      "ap0": 1,
+      "first": [
+        40,
+        -73
+      ],
+      "last": [
+        40.0001,
+        -73
+      ]
+    },
+    "valid": false
+  },
+  {
+    "name": "missing dM",
+    "value": {
+      "v": 1,
+      "fdM": 53.207,
+      "adM": 0,
+      "tdM": 0,
+      "ap0": 1,
+      "first": [
+        40,
+        -73
+      ],
+      "last": [
+        40.0001,
+        -73
+      ]
+    },
+    "valid": false
+  },
+  {
+    "name": "missing fdM",
+    "value": {
+      "v": 1,
+      "dM": 62.376,
+      "adM": 0,
+      "tdM": 0,
+      "ap0": 1,
+      "first": [
+        40,
+        -73
+      ],
+      "last": [
+        40.0001,
+        -73
+      ]
+    },
+    "valid": false
+  },
+  {
+    "name": "missing adM",
+    "value": {
+      "v": 1,
+      "dM": 62.376,
+      "fdM": 53.207,
+      "tdM": 0,
+      "ap0": 1,
+      "first": [
+        40,
+        -73
+      ],
+      "last": [
+        40.0001,
+        -73
+      ]
+    },
+    "valid": false
+  },
+  {
+    "name": "missing tdM",
+    "value": {
+      "v": 1,
+      "dM": 62.376,
+      "fdM": 53.207,
+      "adM": 0,
+      "ap0": 1,
+      "first": [
+        40,
+        -73
+      ],
+      "last": [
+        40.0001,
+        -73
+      ]
+    },
+    "valid": false
+  },
+  {
+    "name": "missing ap0",
+    "value": {
+      "v": 1,
+      "dM": 62.376,
+      "fdM": 53.207,
+      "adM": 0,
+      "tdM": 0,
+      "first": [
+        40,
+        -73
+      ],
+      "last": [
+        40.0001,
+        -73
+      ]
+    },
+    "valid": false
+  },
+  {
+    "name": "missing first",
+    "value": {
+      "v": 1,
+      "dM": 62.376,
+      "fdM": 53.207,
+      "adM": 0,
+      "tdM": 0,
+      "ap0": 1,
+      "last": [
+        40.0001,
+        -73
+      ]
+    },
+    "valid": false
+  },
+  {
+    "name": "missing last",
+    "value": {
+      "v": 1,
+      "dM": 62.376,
+      "fdM": 53.207,
+      "adM": 0,
+      "tdM": 0,
+      "ap0": 1,
+      "first": [
+        40,
+        -73
+      ]
+    },
+    "valid": false
+  },
+  {
+    "name": "wrong shape NoneType",
+    "value": null,
+    "valid": false
+  },
+  {
+    "name": "wrong shape list",
+    "value": [],
+    "valid": false
+  },
+  {
+    "name": "wrong shape list",
+    "value": [
+      1,
+      62.376,
+      53.207,
+      0,
+      0,
+      1,
+      [
+        40,
+        -73
+      ],
+      [
+        40.0001,
+        -73
+      ]
+    ],
+    "valid": false
+  },
+  {
+    "name": "wrong shape dict",
+    "value": {},
+    "valid": false
+  },
+  {
+    "name": "wrong shape int",
+    "value": 0,
+    "valid": false
+  }
+]

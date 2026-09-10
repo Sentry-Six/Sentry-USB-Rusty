@@ -1,0 +1,382 @@
+[
+  {
+    "name": "legacy tag removal affects only the first drive",
+    "totalFrames": 60,
+    "before": [
+      "Work"
+    ],
+    "ranges": [
+      [
+        0,
+        20
+      ]
+    ],
+    "added": [],
+    "removed": [
+      "Work"
+    ],
+    "after": {
+      "version": 2,
+      "totalFrames": 60,
+      "defaultTags": [
+        "Work"
+      ],
+      "spans": [
+        {
+          "startFrame": 0,
+          "endFrame": 20,
+          "tags": []
+        }
+      ]
+    },
+    "views": [
+      {
+        "ranges": [
+          [
+            0,
+            20
+          ]
+        ],
+        "tags": []
+      },
+      {
+        "ranges": [
+          [
+            25,
+            40
+          ]
+        ],
+        "tags": [
+          "Work"
+        ]
+      },
+      {
+        "ranges": [
+          [
+            45,
+            60
+          ]
+        ],
+        "tags": [
+          "Work"
+        ]
+      }
+    ]
+  },
+  {
+    "name": "middle drive addition preserves both neighbors",
+    "totalFrames": 60,
+    "before": [],
+    "ranges": [
+      [
+        25,
+        40
+      ]
+    ],
+    "added": [
+      "Errand"
+    ],
+    "removed": [],
+    "after": {
+      "version": 2,
+      "totalFrames": 60,
+      "defaultTags": [],
+      "spans": [
+        {
+          "startFrame": 25,
+          "endFrame": 40,
+          "tags": [
+            "Errand"
+          ]
+        }
+      ]
+    },
+    "views": [
+      {
+        "ranges": [
+          [
+            0,
+            20
+          ]
+        ],
+        "tags": []
+      },
+      {
+        "ranges": [
+          [
+            25,
+            40
+          ]
+        ],
+        "tags": [
+          "Errand"
+        ]
+      },
+      {
+        "ranges": [
+          [
+            45,
+            60
+          ]
+        ],
+        "tags": []
+      }
+    ]
+  },
+  {
+    "name": "overlapping selection keeps old values outside the edit and unknown root fields",
+    "totalFrames": 60,
+    "before": {
+      "version": 2,
+      "totalFrames": 60,
+      "defaultTags": [
+        "Base"
+      ],
+      "spans": [
+        {
+          "startFrame": 10,
+          "endFrame": 30,
+          "tags": [
+            "Remote"
+          ]
+        }
+      ],
+      "extension": {
+        "keep": true
+      }
+    },
+    "ranges": [
+      [
+        20,
+        35
+      ],
+      [
+        30,
+        40
+      ]
+    ],
+    "added": [
+      "Local"
+    ],
+    "removed": [
+      "Remote"
+    ],
+    "after": {
+      "version": 2,
+      "totalFrames": 60,
+      "defaultTags": [
+        "Base"
+      ],
+      "spans": [
+        {
+          "startFrame": 10,
+          "endFrame": 20,
+          "tags": [
+            "Remote"
+          ]
+        },
+        {
+          "startFrame": 20,
+          "endFrame": 30,
+          "tags": [
+            "Local"
+          ]
+        },
+        {
+          "startFrame": 30,
+          "endFrame": 40,
+          "tags": [
+            "Base",
+            "Local"
+          ]
+        }
+      ],
+      "extension": {
+        "keep": true
+      }
+    },
+    "views": [
+      {
+        "ranges": [
+          [
+            0,
+            10
+          ]
+        ],
+        "tags": [
+          "Base"
+        ]
+      },
+      {
+        "ranges": [
+          [
+            10,
+            20
+          ]
+        ],
+        "tags": [
+          "Remote"
+        ]
+      },
+      {
+        "ranges": [
+          [
+            20,
+            40
+          ]
+        ],
+        "tags": [
+          "Base",
+          "Local"
+        ]
+      },
+      {
+        "ranges": [
+          [
+            40,
+            60
+          ]
+        ],
+        "tags": [
+          "Base"
+        ]
+      }
+    ]
+  },
+  {
+    "name": "adjacent equal spans coalesce and matching defaults disappear",
+    "totalFrames": 60,
+    "before": {
+      "version": 2,
+      "totalFrames": 60,
+      "defaultTags": [],
+      "spans": [
+        {
+          "startFrame": 0,
+          "endFrame": 10,
+          "tags": [
+            "Trip"
+          ]
+        },
+        {
+          "startFrame": 10,
+          "endFrame": 20,
+          "tags": [
+            "Trip"
+          ]
+        },
+        {
+          "startFrame": 40,
+          "endFrame": 50,
+          "tags": [
+            "Drop"
+          ]
+        }
+      ]
+    },
+    "ranges": [
+      [
+        40,
+        50
+      ]
+    ],
+    "added": [],
+    "removed": [
+      "Drop"
+    ],
+    "after": {
+      "version": 2,
+      "totalFrames": 60,
+      "defaultTags": [],
+      "spans": [
+        {
+          "startFrame": 0,
+          "endFrame": 20,
+          "tags": [
+            "Trip"
+          ]
+        }
+      ]
+    },
+    "views": [
+      {
+        "ranges": [
+          [
+            0,
+            20
+          ]
+        ],
+        "tags": [
+          "Trip"
+        ]
+      },
+      {
+        "ranges": [
+          [
+            20,
+            60
+          ]
+        ],
+        "tags": []
+      }
+    ]
+  },
+  {
+    "name": "unicode ordering and half open boundaries are identical",
+    "totalFrames": 2,
+    "before": [],
+    "ranges": [
+      [
+        0,
+        1
+      ]
+    ],
+    "added": [
+      "😀",
+      "é",
+      "A",
+      "😀"
+    ],
+    "removed": [],
+    "after": {
+      "version": 2,
+      "totalFrames": 2,
+      "defaultTags": [],
+      "spans": [
+        {
+          "startFrame": 0,
+          "endFrame": 1,
+          "tags": [
+            "A",
+            "é",
+            "😀"
+          ]
+        }
+      ]
+    },
+    "views": [
+      {
+        "ranges": [
+          [
+            0,
+            1
+          ]
+        ],
+        "tags": [
+          "A",
+          "é",
+          "😀"
+        ]
+      },
+      {
+        "ranges": [
+          [
+            1,
+            2
+          ]
+        ],
+        "tags": []
+      }
+    ]
+  }
+]

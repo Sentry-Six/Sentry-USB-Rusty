@@ -1,0 +1,57 @@
+{
+  "description": "Synthetic Node AES-GCM + actual browser AAD constructors; fixed test keys/nonces. Identical copies in Cloud and Rusty.",
+  "userId": "pi-sync-vector-owner",
+  "piId": "pi-sync-vector-pi",
+  "piKeyB64": "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc=",
+  "expected": {
+    "charge": {
+      "tags": [
+        "Roadtrip"
+      ],
+      "costOverride": {
+        "amount": 4.25,
+        "currency": "CAD"
+      }
+    },
+    "route": [
+      "Work"
+    ],
+    "rate": {
+      "charging_default_rate": 0.15,
+      "charging_currency": "CAD"
+    }
+  },
+  "wire": {
+    "ok": true,
+    "items": [
+      {
+        "kind": "charge",
+        "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "revision": "1",
+        "updatedAtMs": 15,
+        "ciphertext": "AQEBAQEBAQEBAQEBAUgQ7PzNdDaOmuXhI0XiC6HCUvUEdJTqSkpsDaKE6/Rh1bXml8niHq+fx0biSbMqu1cdJGxd+oztCU0/kImAu0ukAgQc3vwnT4n7gLBQa2SfmCqgw+4=",
+        "wrappedKey": "AQICAgICAgICAgICAvUeXcFIoi57ArhvLRK/2ZsTveAOUuK8LhNZj77ri8Vzwxph83m/I73PA/pAE5iyeg=="
+      },
+      {
+        "kind": "rateConfig",
+        "id": "pi-sync-vector-pi",
+        "revision": "1",
+        "updatedAtMs": 15,
+        "ciphertext": "AQMDAwMDAwMDAwMDA7RvoT6lvONk5CHrVowW0OVe3MBrO1o5KxQnHDiOMZ55gUi/ndXh8VIV7qmA1sli29nGD0XylcIfrf05d+ighDwFHjGHyMYfCg=="
+      },
+      {
+        "kind": "route",
+        "id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "revision": "1",
+        "updatedAtMs": 15,
+        "ciphertext": "AQQEBAQEBAQEBAQEBPfzAiFInjue1xTf+sy9PIK8m+8WnN5Jcg==",
+        "wrappedKey": "AQUFBQUFBQUFBQUFBVD85g+wKdW5Yuq9BkmZqVLr+I4h2JR2Oul+VHmMZIC9Xk8BCvrXS44s+ZFP9Sur3w=="
+      }
+    ],
+    "nextCursor": null,
+    "sync": {
+      "version": 2,
+      "revision": "1"
+    }
+  }
+}

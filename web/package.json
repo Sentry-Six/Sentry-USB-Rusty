@@ -8,7 +8,7 @@
     "build": "tsc -b && vite build",
     "lint": "eslint .",
     "icons": "node scripts/icons/generate.mjs",
-    "test": "node --experimental-strip-types --test src/lib/bleHealth.test.ts src/lib/charge-format.test.ts src/lib/safetyPeriod.test.ts && tsx --tsconfig tsconfig.app.json --test src/pages/SafetyScore.test.tsx",
+    "test": "node --experimental-strip-types --test src/lib/bleHealth.test.ts src/lib/charge-format.test.ts src/lib/safetyPeriod.test.ts src/lib/cloud-sync-status.test.ts src/lib/charging-rate-editor.test.ts && tsx --tsconfig tsconfig.app.json --test src/pages/SafetyScore.test.tsx src/components/charging/ChargingRatesButton.test.tsx",
     "test:ble-health": "node --experimental-strip-types --test src/lib/bleHealth.test.ts",
     "preview": "vite preview"
   },

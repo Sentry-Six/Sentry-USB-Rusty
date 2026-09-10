@@ -171,6 +171,7 @@ where
         routes: usize,
         processed_files: usize,
         drive_tags: usize,
+        imported_tags: HashMap<String,Vec<String>>,
         telemetry_samples: usize,
         charge_tags: usize,
         charge_costs: usize,
@@ -328,6 +329,7 @@ where
                             }
                         }
                         ctx.drive_tags = tags.len();
+                        for (key,labels) in tags {ctx.imported_tags.entry(key).or_default().extend(labels);}
                     }
                     "telemetrySamples" => {
                         map.next_value_seed(SampleSeq(&mut *ctx))?;
@@ -381,6 +383,7 @@ where
         routes: 0,
         processed_files: 0,
         drive_tags: 0,
+        imported_tags: HashMap::new(),
         telemetry_samples: 0,
         charge_tags: 0,
         charge_costs: 0,
@@ -424,6 +427,7 @@ where
         );
     }
 
+    crate::db::migrate_imported_clock_tags(&tx,&ctx.imported_tags,ctx.seen_files)?;
     on_progress(stats.routes);
     tx.commit()?;
 
@@ -792,7 +796,7 @@ pub fn export_json<W: Write>(conn: &Connection, writer: &mut W) -> Result<()> {
 
     let drive_tags = {
         let mut stmt = conn
-            .prepare("SELECT drive_key, tag FROM drive_tags ORDER BY drive_key, tag")?;
+            .prepare("SELECT drive_key, tag FROM drive_tags WHERE NOT EXISTS (SELECT 1 FROM drive_clock_legacy_keys WHERE key=drive_tags.drive_key) ORDER BY drive_key, tag")?;
         let rows =
             stmt.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))?;
         let mut out: std::collections::BTreeMap<String, Vec<String>> =

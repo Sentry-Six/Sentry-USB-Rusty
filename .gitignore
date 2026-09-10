@@ -13,3 +13,14 @@ docs/superpowers
 /crates/sentryusb/static/
 /graphify-out
 /.worktrees/
+
+# Local credentials and signing material must stay outside source control.
+.env
+.env.*
+!.env.example
+!.env.*.example
+*.p8
+*.p12
+*.pfx
+*.key
+.secrets/

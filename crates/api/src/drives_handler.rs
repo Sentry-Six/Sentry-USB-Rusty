@@ -179,47 +179,47 @@ fn single_drive_blocking(
     store: std::sync::Arc<sentryusb_drives::DriveStore>,
     id: String,
 ) -> (StatusCode, Json<serde_json::Value>) {
-    let tags = store.get_all_drive_tags().unwrap_or_default();
-
-    // Resolve files and the canonical list summary in one pass; overlay its
-    // aggregates because point-walk and per-clip calculations can drift.
-    let (idx, files, summary) = match store
-        .with_route_summaries(|summaries| {
-            let resolved = grouper::find_drive_files(summaries, &id);
-            let summary =
-                resolved
-                    .as_ref()
-                    .and_then(|(i, _)| grouper::build_summary_for_idx(summaries, *i, &tags));
-            resolved.map(|(i, f)| (i, f, summary))
-        }) {
-        Ok(Some((i, f, s))) => (i, f, s),
-        Ok(None) => {
-            return crate::json_error(
-                StatusCode::NOT_FOUND,
-                &format!(
-                    "drive not found: summary lookup returned None for id='{}'",
-                    id
-                ),
-            )
-        }
-        Err(e) => return crate::json_error(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()),
+    let source_revision=match store.mutable_route_source_revision() {
+        Ok(revision)=>revision,
+        Err(error)=>return crate::json_error(StatusCode::INTERNAL_SERVER_ERROR,&error.to_string()),
     };
+    let tags=match store.get_all_drive_tags() {
+        Ok(tags)=>tags,
+        Err(error)=>return crate::json_error(StatusCode::INTERNAL_SERVER_ERROR,&error.to_string()),
+    };
+    // Resolve summary, file membership and bounded parent spans in one grouping
+    // pass. A parked following clip may bound this drive without belonging to it.
+    let selected=match store.with_route_summaries(|summaries|
+        grouper::resolve_drive_selection(summaries,&id,&tags)) {
+        Ok(Some(selected))=>selected,
+        Ok(None)=>return crate::json_error(StatusCode::NOT_FOUND,"drive selection not found or ambiguous"),
+        Err(error)=>return crate::json_error(StatusCode::INTERNAL_SERVER_ERROR,&error.to_string()),
+    };
+    let idx=selected.index;
+    let files=selected.files;
+    let spans=selected.clip_spans_ms;
+    let summary=Some(selected.summary);
 
     let file_refs: Vec<&str> = files.iter().map(|s| s.as_str()).collect();
     let file_count = file_refs.len();
 
-    match store.with_routes_by_files(&file_refs, |routes| {
+    let built=store.with_routes_by_files(&file_refs, |routes| {
         (
             routes.len(),
             // Scope shared clips to the requested park-split segment.
-            grouper::build_single_drive_from_clips(
+            grouper::build_single_drive_from_clips_with_spans(
                 routes,
                 idx as i32,
                 &tags,
                 summary.as_ref().map(|s| s.start_time.as_str()),
+                Some(&spans),
             ),
         )
-    }) {
+    });
+    if store.mutable_route_source_revision().ok()!=Some(source_revision) {
+        return crate::json_error(StatusCode::CONFLICT,"drive changed while loading; refresh and retry");
+    }
+    match built {
         Ok((_, Some(mut drive))) => {
             if let Some(s) = summary.as_ref() {
                 // Keep per-point fields from the BLOB walk and headline fields canonical.
@@ -244,11 +244,8 @@ fn single_drive_blocking(
                 drive.tacc_distance_km = s.tacc_distance_km;
                 drive.tacc_distance_mi = s.tacc_distance_mi;
                 drive.assisted_percent = s.assisted_percent;
-                // Duration too: the summary path sees the whole clip
-                // series and so knows each clip's real span, while this
-                // rebuild only fetched the drive's own clips and has to
-                // assume a nominal minute for the last one. Overlaying
-                // keeps the detail page's duration identical to the list.
+                // The detail builder now receives those same bounded spans;
+                // retain the canonical headline overlay with the other totals.
                 drive.duration_ms = s.duration_ms;
                 // Summon classification requires summary segment bounds.
                 drive.summon = s.summon;
@@ -996,11 +993,13 @@ pub async fn set_drive_tags(
 ) -> (StatusCode, Json<serde_json::Value>) {
     // ID resolution groups all summaries, so keep it off the reactor.
     let store = state.drives.store.clone();
-    tokio::task::spawn_blocking(move || set_drive_tags_blocking(store, id, body.tags))
+    let response=tokio::task::spawn_blocking(move || set_drive_tags_blocking(store, id, body.tags))
         .await
         .unwrap_or_else(|_| {
             crate::json_error(StatusCode::INTERNAL_SERVER_ERROR, "set tags task failed")
-        })
+        });
+    if response.0.is_success() {state.cloud.uploader.nudge();}
+    response
 }
 
 fn set_drive_tags_blocking(

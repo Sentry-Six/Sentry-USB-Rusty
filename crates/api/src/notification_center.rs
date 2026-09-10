@@ -125,25 +125,26 @@ fn load_settings() -> NotificationSettings {
     }
 }
 
-fn save_settings(s: &NotificationSettings) {
-    let mut prefs = crate::preferences::load_prefs();
+fn save_settings(store:&sentryusb_drives::DriveStore,s:&NotificationSettings)->anyhow::Result<bool> {
+    crate::preferences::edit_prefs(store,|prefs| {
     let put = |prefs: &mut serde_json::Map<String, serde_json::Value>, k: &str, v: bool| {
         prefs.insert(k.to_string(), serde_json::Value::String(
             if v { "true".to_string() } else { "false".to_string() },
         ));
     };
-    put(&mut prefs, "notify_archive_start", s.archive_start);
-    put(&mut prefs, "notify_archive_complete", s.archive_complete);
-    put(&mut prefs, "notify_archive_error", s.archive_error);
-    put(&mut prefs, "notify_temperature", s.temperature);
-    put(&mut prefs, "notify_keep_awake_failure", s.keep_awake);
-    put(&mut prefs, "notify_update", s.update);
-    put(&mut prefs, "notify_drives", s.drives);
-    put(&mut prefs, "notify_rtc_battery", s.rtc_battery);
-    put(&mut prefs, "notify_music_sync", s.music_sync);
-    put(&mut prefs, "notify_keep_accessory", s.keep_accessory);
-    put(&mut prefs, "notify_storage_repair", s.storage_repair);
-    crate::preferences::save_prefs(&prefs);
+    put(prefs, "notify_archive_start", s.archive_start);
+    put(prefs, "notify_archive_complete", s.archive_complete);
+    put(prefs, "notify_archive_error", s.archive_error);
+    put(prefs, "notify_temperature", s.temperature);
+    put(prefs, "notify_keep_awake_failure", s.keep_awake);
+    put(prefs, "notify_update", s.update);
+    put(prefs, "notify_drives", s.drives);
+    put(prefs, "notify_rtc_battery", s.rtc_battery);
+    put(prefs, "notify_music_sync", s.music_sync);
+    put(prefs, "notify_keep_accessory", s.keep_accessory);
+    put(prefs, "notify_storage_repair", s.storage_repair);
+    Ok(true)
+    })
 }
 
 /// GET /api/notifications/settings
@@ -153,15 +154,18 @@ pub async fn get_settings(State(_s): State<AppState>) -> (StatusCode, Json<serde
 
 /// PUT /api/notifications/settings
 pub async fn update_settings(
-    State(_s): State<AppState>,
+    State(state): State<AppState>,
     body: String,
 ) -> (StatusCode, Json<serde_json::Value>) {
     let settings: NotificationSettings = match serde_json::from_str(&body) {
         Ok(s) => s,
         Err(_) => return crate::json_error(StatusCode::BAD_REQUEST, "Invalid request body"),
     };
-    save_settings(&settings);
-    crate::json_ok()
+    let store=state.drives.store.clone();
+    match tokio::task::spawn_blocking(move||save_settings(&store,&settings)).await {
+        Ok(Ok(_))=>crate::json_ok(),
+        _=>crate::json_error(StatusCode::INTERNAL_SERVER_ERROR,"Notification settings could not be saved."),
+    }
 }
 
 #[derive(Deserialize)]

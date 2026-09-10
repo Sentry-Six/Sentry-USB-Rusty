@@ -22,7 +22,7 @@ use sentryusb_drives::charging::{
 };
 #[cfg(test)]
 use sentryusb_drives::charging::{
-    integrate_power_kwh, is_actively_charging, session_coord, FAST_CHARGE_THRESHOLD_KW,
+    integrate_power_kwh, is_actively_charging,
     SESSION_GAP_SECS,
 };
 
@@ -157,8 +157,8 @@ struct RateConfig {
 }
 
 impl RateConfig {
-    fn load() -> Self {
-        let prefs = crate::preferences::load_prefs();
+    fn load(store:&sentryusb_drives::DriveStore) -> anyhow::Result<Self> {
+        let prefs = crate::preferences::load_prefs_checked(store)?;
         let currency = prefs
             .get("charging_currency")
             .and_then(|v| v.as_str())
@@ -172,22 +172,25 @@ impl RateConfig {
             .and_then(|v| v.as_object())
             .map(|m| m.iter().map(|(k, v)| (k.clone(), parse_tag_rate(v))).collect())
             .unwrap_or_default();
-        Self {
+        Ok(Self {
             currency,
             default_rate,
             tags,
-        }
+        })
     }
 
     /// Copy the Home rate to a freeze label, returning whether cloud sync must
     /// be nudged. Check label reuse under the prefs lock to avoid repricing
     /// unrelated sessions during a concurrent rate edit.
     fn copy_home_rate_to(
+        store: &sentryusb_drives::DriveStore,
         tag: &str,
         label_in_use: impl FnOnce() -> anyhow::Result<bool>,
     ) -> anyhow::Result<bool> {
-        crate::preferences::update_prefs(|prefs| match home_rate_copy_plan(prefs, tag) {
-            RateCopy::Nothing => Ok(false),
+        crate::preferences::update_rate_plan(store, tag, |prefs| match home_rate_copy_plan(prefs, tag) {
+            // Freezing under an already-priced label must still publish that
+            // rate with the new tags; queue it before releasing the prefs lock.
+            RateCopy::Nothing => Ok(tag_is_priced(prefs, tag)),
             RateCopy::Conflict(why) => anyhow::bail!("{why}"),
             RateCopy::Copy(rate) => {
                 if label_in_use()? {
@@ -392,37 +395,25 @@ use sentryusb_drives::charging::{strip_reserved_tags, HOME_TAG};
 /// Home geofence (lat, lon, radius_m) for the auto "Home" charge tag. Center
 /// is shared with keep-accessory (`KEEP_ACCESSORY_HOME_LAT/LON`); `None` when
 /// unset, leaving the feature inert.
-fn home_geofence() -> Option<(f64, f64, f64)> {
-    let config_path = sentryusb_config::find_config_path();
-    let (active, commented) = sentryusb_config::parse_file(config_path).ok()?;
-    let g = |k: &str| sentryusb_config::get_config_value(&active, &commented, k);
-    // Match BLE at_home's coordinate validation.
-    let lat = g("KEEP_ACCESSORY_HOME_LAT")
-        .and_then(|s| s.trim().parse::<f64>().ok())
-        .filter(|v| (-90.0..=90.0).contains(v))?;
-    // Older configs may contain a world-copy longitude.
-    let lon = g("KEEP_ACCESSORY_HOME_LON")
-        .and_then(|s| s.trim().parse::<f64>().ok())
-        .filter(|v| v.is_finite())
-        .map(crate::normalize_lon)?;
-    // Reject malformed radii that could classify every session as home.
-    let radius = g("KEEP_ACCESSORY_HOME_RADIUS_M")
-        .and_then(|s| s.trim().parse::<f64>().ok())
-        .filter(|r| r.is_finite() && *r > 0.0 && *r <= 100_000.0)
-        .unwrap_or(HOME_TAG_RADIUS_M);
-    Some((lat, lon, radius))
+pub(crate) fn checked_home_geofence() -> anyhow::Result<Option<sentryusb_drives::home::HomeGeofence>> {
+    let config_path=sentryusb_config::find_config_path();
+    let (active,commented)=sentryusb_config::parse_file(config_path)?;
+    let get=|key:&str|sentryusb_config::get_config_value(&active,&commented,key);
+    parse_home_geofence(get("KEEP_ACCESSORY_HOME_LAT"),get("KEEP_ACCESSORY_HOME_LON"),get("KEEP_ACCESSORY_HOME_RADIUS_M"))
 }
-
-/// Great-circle distance in meters (haversine). Local copy, as in `away_mode`.
-fn distance_m(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> f64 {
-    const EARTH_R_M: f64 = 6_371_000.0;
-    let (p1, p2) = (lat1.to_radians(), lat2.to_radians());
-    let dphi = (lat2 - lat1).to_radians();
-    let dlambda = (lon2 - lon1).to_radians();
-    let a = (dphi / 2.0).sin().powi(2) + p1.cos() * p2.cos() * (dlambda / 2.0).sin().powi(2);
-    2.0 * EARTH_R_M * a.sqrt().min(1.0).asin()
+fn parse_home_geofence(lat:Option<String>,lon:Option<String>,radius:Option<String>)->anyhow::Result<Option<sentryusb_drives::home::HomeGeofence>> {
+    let lat=lat.filter(|value|!value.trim().is_empty());let lon=lon.filter(|value|!value.trim().is_empty());
+    if lat.is_none() && lon.is_none() {return Ok(None)}
+    let lat=lat.ok_or_else(||anyhow::anyhow!("Home latitude is missing"))?.trim().parse::<f64>()?;
+    let lon=lon.ok_or_else(||anyhow::anyhow!("Home longitude is missing"))?.trim().parse::<f64>()?;
+    let radius=match radius.filter(|value|!value.trim().is_empty()) {
+        Some(value)=>value.trim().parse::<f64>()?,None=>HOME_TAG_RADIUS_M,
+    };
+    Ok(Some(sentryusb_drives::home::HomeGeofence::new(lat,lon,radius)?))
 }
-
+fn home_geofence()->Option<(f64,f64,f64)> {
+    checked_home_geofence().ok().flatten().map(|home|home.tuple())
+}
 
 /// What freezing under `tag` should do to the rate map.
 #[derive(Debug, PartialEq)]
@@ -511,7 +502,7 @@ pub(crate) fn sessions_losing_home(
     store: &sentryusb_drives::db::DriveStore,
     new_home: Option<(f64, f64, f64)>,
 ) -> anyhow::Result<Vec<i64>> {
-    let old_home = match home_geofence() {
+    let old_home = match checked_home_geofence()?.map(|home|home.tuple()) {
         Some(h) => h,
         None => return Ok(Vec::new()), // no home configured: nothing was ever Home
     };
@@ -547,7 +538,7 @@ pub(crate) fn freeze_home_sessions(
     }
     // Resolve rate conflicts before writing tags; exact matching mirrors apply_rates.
     let id_set: std::collections::HashSet<i64> = ids.iter().copied().collect();
-    RateConfig::copy_home_rate_to(tag, || {
+    let rates_dirty = RateConfig::copy_home_rate_to(store, tag, || {
         // A failed reuse check aborts. SQLite and prefs lack a shared lock, so a
         // narrow concurrent tag edit can cause recoverable repricing, not data loss.
         Ok(store
@@ -555,13 +546,8 @@ pub(crate) fn freeze_home_sessions(
             .iter()
             .any(|(id, tags)| !id_set.contains(id) && tags.iter().any(|t| t == tag)))
     })?;
-    // Mark before tag writes whenever the label is priced. A pull replaces an
-    // unmarked rate map, and retries may see the prior rate copy as unchanged.
-    // Failure leaves only an inert orphan rate, so abort.
-    let rates_dirty = tag_is_priced(&crate::preferences::load_prefs(), tag);
-    if rates_dirty {
-        store.mark_rate_config_dirty()?;
-    }
+    // The rate generation is already queued under the preferences lock,
+    // including when a retry reuses an existing priced label.
     let n = store.add_charge_tag_bulk(&ids, tag)?;
     Ok(Frozen { tagged: n, rates_dirty })
 }
@@ -582,14 +568,9 @@ pub(crate) struct Frozen {
 }
 
 /// True when a session's charge location falls inside the home geofence.
-fn is_home_charge(lat: Option<f64>, lon: Option<f64>, home: Option<(f64, f64, f64)>) -> bool {
-    match (lat, lon, home) {
-        (Some(la), Some(lo), Some((hla, hlo, r))) => {
-            // Normalize consistently with the BLE at_home path.
-            distance_m(la, crate::normalize_lon(lo), hla, hlo) <= r
-        }
-        _ => false,
-    }
+fn is_home_charge(lat:Option<f64>,lon:Option<f64>,home:Option<(f64,f64,f64)>)->bool {
+    home.and_then(|(lat,lon,radius)|sentryusb_drives::home::HomeGeofence::new(lat,lon,radius).ok())
+        .is_some_and(|home|home.contains(lat,lon))
 }
 
 /// Backstop for a charging phase left behind when BLE misses the terminal poll.
@@ -610,12 +591,12 @@ pub async fn list_charging(State(state): State<AppState>) -> axum::response::Res
         .get((), move || {
             let build = || -> anyhow::Result<Vec<ChargeSessionSummary>> {
                 let rows = store.with_read_conn(|conn| load_charge_rows(conn, 0, None))?;
-                let rates = RateConfig::load();
+                let rates = RateConfig::load(&store)?;
                 // Parse the geofence once per cache miss; the rendered JSON cache
                 // applies home changes on its next refresh.
-                let home = home_geofence();
-                let tag_map = store.get_all_charge_tags().unwrap_or_default();
-                let cost_map = store.get_all_charge_costs().unwrap_or_default();
+                let home = checked_home_geofence()?.map(|home|home.tuple());
+                let tag_map = store.get_all_charge_tags()?;
+                let cost_map = store.get_all_charge_costs()?;
                 let mut sessions: Vec<ChargeSessionSummary> = group_sessions(rows)
                     .iter()
                     .map(|s| {
@@ -676,11 +657,11 @@ pub async fn single_charging(
             };
 
             let mut summary = summarize(&session);
-            let stored = store.get_charge_tags(summary.id).unwrap_or_default();
+            let stored = store.get_charge_tags(summary.id)?;
             let at_home =
-                is_home_charge(summary.location_lat, summary.location_lon, home_geofence());
-            let override_cost = store.get_charge_cost(summary.id).unwrap_or_default();
-            apply_rates(&mut summary, &session, stored, at_home, &RateConfig::load());
+                is_home_charge(summary.location_lat, summary.location_lon, checked_home_geofence()?.map(|home|home.tuple()));
+            let override_cost = store.get_charge_cost(summary.id)?;
+            apply_rates(&mut summary, &session, stored, at_home, &RateConfig::load(&store)?);
             apply_cost_override(&mut summary, override_cost);
 
             let points: Vec<ChargePoint> = session
@@ -1082,6 +1063,7 @@ pub async fn set_charge_tags(
     match tokio::task::spawn_blocking(move || store.set_charge_tags(id, &tags)).await {
         Ok(Ok(())) => {
             invalidate_charging_list();
+            state.cloud.uploader.nudge();
             crate::json_ok()
         }
         Ok(Err(e)) => crate::json_error(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()),
@@ -1104,21 +1086,20 @@ pub async fn set_charge_cost(
     Path(id): Path<i64>,
     Json(body): Json<SetChargeCostRequest>,
 ) -> (StatusCode, Json<serde_json::Value>) {
-    let cost = match body.amount {
-        Some(a) if a.is_finite() && a >= 0.0 => Some((a, RateConfig::load().currency)),
-        // Malformed amounts must not masquerade as a successful clear.
-        Some(_) => {
-            return crate::json_error(
-                StatusCode::BAD_REQUEST,
-                "amount must be a non-negative number",
-            );
-        }
-        None => None,
-    };
-    let store = state.drives.store.clone();
-    match tokio::task::spawn_blocking(move || store.set_charge_cost(id, cost)).await {
+    if body.amount.is_some_and(|amount|!amount.is_finite() || amount<0.0) {
+        return crate::json_error(StatusCode::BAD_REQUEST,"amount must be a non-negative number");
+    }
+    let store=state.drives.store.clone();
+    match tokio::task::spawn_blocking(move|| -> anyhow::Result<()> {
+        let cost=match body.amount {
+            Some(amount)=>Some((amount,RateConfig::load(&store)?.currency)),
+            None=>None,
+        };
+        store.set_charge_cost(id,cost)
+    }).await {
         Ok(Ok(())) => {
             invalidate_charging_list();
+            state.cloud.uploader.nudge();
             crate::json_ok()
         }
         Ok(Err(e)) => crate::json_error(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()),
@@ -2082,5 +2063,22 @@ mod tests {
             let p = mk(&format!(r#"{{"charging_tag_rates":{{"Old House":{junk}}}}}"#));
             assert!(!tag_is_priced(&p, "Old House"), "junk rate {junk} is not a price");
         }
+    }
+}
+
+#[cfg(test)]
+mod checked_home_config_tests {
+    use super::*;
+    #[test]
+    fn empty_home_is_distinct_from_broken_or_incomplete_configuration() {
+        let text=|value:&str|Some(value.to_string());
+        assert_eq!(parse_home_geofence(None,None,None).unwrap(),None);
+        assert_eq!(parse_home_geofence(text(" "),text(""),None).unwrap(),None);
+        assert!(parse_home_geofence(text("0"),None,None).is_err());
+        assert!(parse_home_geofence(text("broken"),text("0"),None).is_err());
+        assert!(parse_home_geofence(text("0"),text("0"),text("broken")).is_err());
+        assert!(parse_home_geofence(text("0"),text("0"),text("NaN")).is_err());
+        let home=parse_home_geofence(text("0"),text("360"),None).unwrap().unwrap();
+        assert!(home.contains(Some(0.0),Some(0.0)));assert_eq!(home.radius_m,HOME_TAG_RADIUS_M);
     }
 }

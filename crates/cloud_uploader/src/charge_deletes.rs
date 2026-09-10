@@ -74,6 +74,7 @@ pub async fn sweep_once(state: Arc<CloudStateInner>) -> Result<u32> {
             pi_id: creds_snapshot.pi_id.clone(),
             charge_ids: batch.iter().map(|(_, id, _)| id.clone()).collect(),
         };
+        { let _guard=state.current_credentials(&creds_snapshot).await?; }
         let resp = client
             .post_json_bearer("/api/pi/charges/bulk-delete", &body)
             .await
@@ -83,7 +84,7 @@ pub async fn sweep_once(state: Arc<CloudStateInner>) -> Result<u32> {
         match status.as_u16() {
             401 => {
                 warn!("charge delete: 401, wiping credentials");
-                state.handle_remote_revoke().await;
+                state.handle_remote_revoke(&creds_snapshot).await;
                 return Err(anyhow!("auth rejected; pi unpaired"));
             }
             403 => {
@@ -94,7 +95,7 @@ pub async fn sweep_once(state: Arc<CloudStateInner>) -> Result<u32> {
                     return Err(anyhow!("user_suspended; charge deletes paused"));
                 }
                 warn!("charge delete: 403, wiping credentials");
-                state.handle_remote_revoke().await;
+                state.handle_remote_revoke(&creds_snapshot).await;
                 return Err(anyhow!("auth rejected; pi unpaired"));
             }
             // Keep rows queued when the endpoint is unavailable.
@@ -110,6 +111,7 @@ pub async fn sweep_once(state: Arc<CloudStateInner>) -> Result<u32> {
         }
 
         let parsed: DeleteResponse = resp.json().await.map_err(|e| anyhow!("parse charge delete response: {}", e))?;
+        let _pairing_guard=state.current_credentials(&creds_snapshot).await?;
         let now_unix = crate::state::now_ms() / 1000;
         for result in &parsed.results {
             let Some((session_ts, was_settled)) = by_id.get(&result.charge_id) else {

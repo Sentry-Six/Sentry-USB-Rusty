@@ -1,0 +1,27 @@
+{
+  "userId": "synthetic-owner-a",
+  "piId": "synthetic-tag-pi",
+  "routeId": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "dekB64": "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=",
+  "piKeyB64": "HhKx9ESi1smzummUbyxF3TG5YIzsJeWfosie7PK9pvg=",
+  "contentKeyB64": "CQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQk=",
+  "wrappedRouteKey": "AQQEBAQEBAQEBAQEBAE4tA00da1KQtzpji513c799Fd+9XtK+kzD6t5mCR/0MTt9ObOn70YkV8Co75pnGg==",
+  "tagsCiphertext": "AQUFBQUFBQUFBQUFBfEEB8TcR768wYq+M9C0O1O0VcAzeat1IiwGb8zxTR0ada3e1sey26lxViyXWtuCa80gn8oethYmJh71QMd7cWeRBTluHQNfij3eVbr1HkKazMZcpj9e7VdfDufj+HCIXWNzUfZjnlaFzHTYiYV3qss058Ue29dbaJxNsGE/FJpWdt+STNFyzPhGg/zOOb3Clk3l+rsxTA==",
+  "document": {
+    "version": 2,
+    "totalFrames": 60,
+    "defaultTags": [
+      "Work"
+    ],
+    "spans": [
+      {
+        "startFrame": 0,
+        "endFrame": 20,
+        "tags": []
+      }
+    ],
+    "extension": {
+      "retained": true
+    }
+  }
+}

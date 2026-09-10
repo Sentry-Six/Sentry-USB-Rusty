@@ -1,0 +1,324 @@
+{
+  "version": 1,
+  "cases": [
+    {
+      "name": "complete native frame runs",
+      "route": {
+        "file": "2026-09-09_12-00-00-front.mp4",
+        "date": "2026-09-09",
+        "points": [],
+        "rawFrameCount": 1000,
+        "flagRuns": [
+          {
+            "flags": 0,
+            "frames": 1000,
+            "maxMps": 2.0
+          }
+        ],
+        "apRuns": [
+          {
+            "ap": 0,
+            "frames": 100
+          },
+          {
+            "ap": 1,
+            "frames": 800
+          },
+          {
+            "ap": 0,
+            "frames": 100
+          }
+        ],
+        "gearRuns": [
+          {
+            "gear": 0,
+            "frames": 100
+          },
+          {
+            "gear": 1,
+            "frames": 800
+          },
+          {
+            "gear": 0,
+            "frames": 100
+          }
+        ]
+      },
+      "summary": {
+        "gr": [
+          0,
+          100,
+          1,
+          800,
+          0,
+          100
+        ],
+        "extension": {
+          "keep": true
+        }
+      },
+      "expected": {
+        "v": 1,
+        "u": "owner",
+        "p": "pi",
+        "r": "route",
+        "w": "wrapped-key",
+        "n": 1000,
+        "f": [
+          [
+            0,
+            1000,
+            2.0
+          ]
+        ],
+        "a": [
+          [
+            0,
+            100
+          ],
+          [
+            1,
+            800
+          ],
+          [
+            0,
+            100
+          ]
+        ],
+        "g": [
+          [
+            0,
+            100
+          ],
+          [
+            1,
+            800
+          ],
+          [
+            0,
+            100
+          ]
+        ]
+      }
+    },
+    {
+      "name": "raw frame mismatch",
+      "route": {
+        "file": "2026-09-09_12-00-00-front.mp4",
+        "date": "2026-09-09",
+        "points": [],
+        "rawFrameCount": 999,
+        "flagRuns": [
+          {
+            "flags": 0,
+            "frames": 1000,
+            "maxMps": 2.0
+          }
+        ],
+        "apRuns": [
+          {
+            "ap": 0,
+            "frames": 100
+          },
+          {
+            "ap": 1,
+            "frames": 800
+          },
+          {
+            "ap": 0,
+            "frames": 100
+          }
+        ],
+        "gearRuns": [
+          {
+            "gear": 0,
+            "frames": 100
+          },
+          {
+            "gear": 1,
+            "frames": 800
+          },
+          {
+            "gear": 0,
+            "frames": 100
+          }
+        ]
+      },
+      "summary": {
+        "gr": [
+          0,
+          100,
+          1,
+          800,
+          0,
+          100
+        ],
+        "extension": {
+          "keep": true
+        }
+      },
+      "expected": null
+    },
+    {
+      "name": "incomplete AP",
+      "route": {
+        "file": "2026-09-09_12-00-00-front.mp4",
+        "date": "2026-09-09",
+        "points": [],
+        "rawFrameCount": 1000,
+        "flagRuns": [
+          {
+            "flags": 0,
+            "frames": 1000,
+            "maxMps": 2.0
+          }
+        ],
+        "apRuns": [
+          {
+            "ap": 1,
+            "frames": 999
+          }
+        ],
+        "gearRuns": [
+          {
+            "gear": 0,
+            "frames": 100
+          },
+          {
+            "gear": 1,
+            "frames": 800
+          },
+          {
+            "gear": 0,
+            "frames": 100
+          }
+        ]
+      },
+      "summary": {
+        "gr": [
+          0,
+          100,
+          1,
+          800,
+          0,
+          100
+        ],
+        "extension": {
+          "keep": true
+        }
+      },
+      "expected": null
+    },
+    {
+      "name": "missing flags",
+      "route": {
+        "file": "2026-09-09_12-00-00-front.mp4",
+        "date": "2026-09-09",
+        "points": [],
+        "rawFrameCount": 1000,
+        "flagRuns": [],
+        "apRuns": [
+          {
+            "ap": 0,
+            "frames": 100
+          },
+          {
+            "ap": 1,
+            "frames": 800
+          },
+          {
+            "ap": 0,
+            "frames": 100
+          }
+        ],
+        "gearRuns": [
+          {
+            "gear": 0,
+            "frames": 100
+          },
+          {
+            "gear": 1,
+            "frames": 800
+          },
+          {
+            "gear": 0,
+            "frames": 100
+          }
+        ]
+      },
+      "summary": {
+        "gr": [
+          0,
+          100,
+          1,
+          800,
+          0,
+          100
+        ],
+        "extension": {
+          "keep": true
+        }
+      },
+      "expected": null
+    },
+    {
+      "name": "imported source",
+      "route": {
+        "file": "2026-09-09_12-00-00-front.mp4",
+        "date": "2026-09-09",
+        "points": [],
+        "rawFrameCount": 1000,
+        "flagRuns": [
+          {
+            "flags": 0,
+            "frames": 1000,
+            "maxMps": 2.0
+          }
+        ],
+        "apRuns": [
+          {
+            "ap": 0,
+            "frames": 100
+          },
+          {
+            "ap": 1,
+            "frames": 800
+          },
+          {
+            "ap": 0,
+            "frames": 100
+          }
+        ],
+        "gearRuns": [
+          {
+            "gear": 0,
+            "frames": 100
+          },
+          {
+            "gear": 1,
+            "frames": 800
+          },
+          {
+            "gear": 0,
+            "frames": 100
+          }
+        ],
+        "source": "tessie"
+      },
+      "summary": {
+        "gr": [
+          0,
+          100,
+          1,
+          800,
+          0,
+          100
+        ],
+        "extension": {
+          "keep": true
+        }
+      },
+      "expected": null
+    }
+  ]
+}

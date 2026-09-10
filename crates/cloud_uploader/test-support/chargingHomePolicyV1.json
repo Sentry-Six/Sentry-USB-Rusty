@@ -1,0 +1,115 @@
+[
+  {
+    "name": "equator and missing fixes",
+    "policy": {
+      "version": 1,
+      "location": {
+        "latitude": 0,
+        "longitude": 0,
+        "radiusM": 120
+      }
+    },
+    "points": [
+      [
+        0,
+        0,
+        true
+      ],
+      [
+        0,
+        360,
+        true
+      ],
+      [
+        0.0005,
+        0.0005,
+        true
+      ],
+      [
+        0.01,
+        0,
+        false
+      ],
+      [
+        null,
+        0,
+        false
+      ],
+      [
+        0,
+        null,
+        false
+      ],
+      [
+        91,
+        0,
+        false
+      ]
+    ]
+  },
+  {
+    "name": "date line",
+    "policy": {
+      "version": 1,
+      "location": {
+        "latitude": 0,
+        "longitude": 179.9998,
+        "radiusM": 120
+      }
+    },
+    "points": [
+      [
+        0,
+        -179.9998,
+        true
+      ],
+      [
+        0,
+        179.9,
+        false
+      ]
+    ]
+  },
+  {
+    "name": "smaller configured radius",
+    "policy": {
+      "version": 1,
+      "location": {
+        "latitude": 0,
+        "longitude": 179.9998,
+        "radiusM": 20
+      }
+    },
+    "points": [
+      [
+        0,
+        -179.9998,
+        false
+      ],
+      [
+        0,
+        179.9998,
+        true
+      ]
+    ]
+  },
+  {
+    "name": "explicitly disabled",
+    "policy": {
+      "version": 1,
+      "location": null
+    },
+    "points": [
+      [
+        0,
+        0,
+        false
+      ],
+      [
+        45,
+        -80,
+        false
+      ]
+    ]
+  }
+]

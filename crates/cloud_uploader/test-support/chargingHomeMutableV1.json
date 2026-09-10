@@ -1,0 +1,91 @@
+{
+  "userId": "synthetic-owner",
+  "piId": "synthetic-pi",
+  "chargeId": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "key": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+    10,
+    11,
+    12,
+    13,
+    14,
+    15,
+    16,
+    17,
+    18,
+    19,
+    20,
+    21,
+    22,
+    23,
+    24,
+    25,
+    26,
+    27,
+    28,
+    29,
+    30,
+    31
+  ],
+  "vectors": [
+    {
+      "name": "legacy",
+      "document": {
+        "tags": [
+          "Work"
+        ],
+        "costOverride": {
+          "amount": 4.2,
+          "currency": "CAD"
+        },
+        "extension": {
+          "keep": true
+        }
+      },
+      "envelope": "AQEBAQEBAQEBAQEBAdPQaCfJ2GkZP8+hGLzS7boM4ZFUD/ZKXI92MHdqDHCF50zstOL3WaqWqXWF+WzcC9f0AyKJ4zRHehjD8QCJrBP+lzpoIJz4O8dUZ3+DAPbzKAo4zOBLugSKU2JsU8lO05nRoqoTvShAkD0="
+    },
+    {
+      "name": "home",
+      "document": {
+        "tags": [
+          "Work"
+        ],
+        "costOverride": {
+          "amount": 4.2,
+          "currency": "CAD"
+        },
+        "extension": {
+          "keep": true
+        },
+        "atHome": true
+      },
+      "envelope": "AQICAgICAgICAgICAjKFKwjxTar+7V734gRzAWXgCm3a3qoTYZCn9ZdBEvhOMMvMA+cgN4cnLKNqEw5r+KvauQ9wQ52s+1C2n9jUbPsHq374KMqhRjbwCfNZOxN4/qYrGVpELPiF0y/9Nxxhg5jGrY3Wt8uCSpGDztfBR8QkvTalWk0QfA=="
+    },
+    {
+      "name": "away",
+      "document": {
+        "tags": [
+          "Work"
+        ],
+        "costOverride": {
+          "amount": 4.2,
+          "currency": "CAD"
+        },
+        "extension": {
+          "keep": true
+        },
+        "atHome": false
+      },
+      "envelope": "AQMDAwMDAwMDAwMDA5J8axdQGqabAOBcqTIjvNOVaUi3bOFwLIV/URG/wXZaNnSVn6mMc8fnzzR0YEeLaOAhXbPK8hmRapFwIFlnH3mGpAXJxcE/iATfD1DDzYF2Za/83DGwV+s/pWZ1s3ovAcukk7ou/jbYc18aEFeGUIvaxYPEysu05nA="
+    }
+  ]
+}

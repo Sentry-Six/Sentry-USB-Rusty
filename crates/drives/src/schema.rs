@@ -581,12 +581,59 @@ pub const CHARGE_DELETE_OUTBOX_TABLE: &[&str] = &[
 /// wins against the server. Rows are deleted after a successful push
 /// (only if changed_at is unchanged — a newer edit re-queues). Writes
 /// from sync PULL application bypass this table (no echo loop).
+/// The child tables retain ordered field operations and an explicit boundary
+/// for legacy, untracked edits. They contain local tag/cost data and cascade
+/// only when their parent queue is retired; existing user records are unchanged.
 pub const MUTABLE_DIRTY_TABLE: &[&str] = &[
     "CREATE TABLE IF NOT EXISTS mutable_dirty (
         kind       TEXT NOT NULL,
         key        TEXT NOT NULL,
         changed_at INTEGER NOT NULL,
         PRIMARY KEY (kind, key)
+    ) WITHOUT ROWID",
+    "CREATE TABLE IF NOT EXISTS mutable_route_source_clock (
+        id INTEGER PRIMARY KEY CHECK(id=1), revision INTEGER NOT NULL DEFAULT 0
+    )",
+    "INSERT OR IGNORE INTO mutable_route_source_clock(id,revision) VALUES(1,0)",
+    "CREATE TRIGGER IF NOT EXISTS mutable_route_source_insert AFTER INSERT ON routes BEGIN
+        UPDATE mutable_route_source_clock SET revision=revision+1 WHERE id=1; END",
+    "CREATE TRIGGER IF NOT EXISTS mutable_route_source_update AFTER UPDATE ON routes BEGIN
+        UPDATE mutable_route_source_clock SET revision=revision+1 WHERE id=1; END",
+    "CREATE TRIGGER IF NOT EXISTS mutable_route_source_delete AFTER DELETE ON routes BEGIN
+        UPDATE mutable_route_source_clock SET revision=revision+1 WHERE id=1; END",
+    "CREATE TABLE IF NOT EXISTS mutable_intent_state (
+        kind TEXT NOT NULL, key TEXT NOT NULL, legacy_through INTEGER,
+        PRIMARY KEY(kind,key),
+        FOREIGN KEY(kind,key) REFERENCES mutable_dirty(kind,key) ON DELETE CASCADE
+    ) WITHOUT ROWID",
+    "CREATE TABLE IF NOT EXISTS mutable_intent_events (
+        kind TEXT NOT NULL, key TEXT NOT NULL, changed_at INTEGER NOT NULL, payload TEXT NOT NULL,
+        PRIMARY KEY(kind,key,changed_at),
+        FOREIGN KEY(kind,key) REFERENCES mutable_dirty(kind,key) ON DELETE CASCADE
+    ) WITHOUT ROWID",
+];
+
+/// Optional scope evidence for new drive edits. Existing queues remain
+/// explicitly unscoped until reconciled using their original grouping policy.
+/// A JSON null records an unresolved drive; it must not bind to a future drive
+/// that happens to acquire the same key. Queue retirement cascades this row.
+pub const DRIVE_EDIT_SCOPE_TABLE: &[&str] = &[
+    "CREATE TABLE IF NOT EXISTS mutable_drive_scope (
+        kind TEXT NOT NULL CHECK(kind='drive'), key TEXT NOT NULL, payload TEXT NOT NULL,
+        PRIMARY KEY(kind,key),
+        FOREIGN KEY(kind,key) REFERENCES mutable_dirty(kind,key) ON DELETE CASCADE
+    ) WITHOUT ROWID",
+];
+
+/// Recovery snapshots for the drive clock transition, separate from the live
+/// display projection. Inactive legacy keys must not be exported as live tags.
+pub const DRIVE_CLOCK_MIGRATION_TABLE: &[&str] = &[
+    "CREATE TABLE IF NOT EXISTS drive_clock_migrations (
+        id INTEGER PRIMARY KEY, snapshot TEXT NOT NULL
+    )",
+    "CREATE TABLE IF NOT EXISTS drive_clock_legacy_keys (
+        key TEXT PRIMARY KEY, migration_id INTEGER NOT NULL,
+        FOREIGN KEY(migration_id) REFERENCES drive_clock_migrations(id) ON DELETE CASCADE
     ) WITHOUT ROWID",
 ];
 
@@ -719,6 +766,8 @@ pub fn migrate(conn: &Connection) -> Result<()> {
     for stmt in CHARGE_UPLOADS_TABLE
         .iter()
         .chain(MUTABLE_DIRTY_TABLE.iter())
+        .chain(DRIVE_EDIT_SCOPE_TABLE.iter())
+        .chain(DRIVE_CLOCK_MIGRATION_TABLE.iter())
         .chain(CHARGE_DELETE_OUTBOX_TABLE.iter())
     {
         conn.execute(stmt, []).with_context(|| {

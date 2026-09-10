@@ -9,6 +9,8 @@ import {
   WarningIcon,
 } from "@/components/icons"
 import { wsClient } from "@/lib/ws"
+import { cloudSyncNotice } from "@/lib/cloud-sync-status"
+import type { MutableSyncStatus } from "@/lib/cloud-sync-status"
 import { Pill, LiveDot } from "@/components/ui/Pill"
 
 type CloudStatus = {
@@ -17,12 +19,14 @@ type CloudStatus = {
   totalUploadedRouteCount: number
   lastUploadAt: string | null
   lastUploadError: string | null
+  mutableSync?: MutableSyncStatus
   pairingState: string
 }
 
 /** Compact dashboard status linking to the full Cloud settings. */
 export function CloudStatusBar() {
   const [status, setStatus] = useState<CloudStatus | null>(null)
+  const [statusUnavailable, setStatusUnavailable] = useState(false)
   // The regional pairing prompt is dismissible; settings remain accessible.
   const [dismissed, setDismissed] = useState(() => {
     try {
@@ -35,27 +39,44 @@ export function CloudStatusBar() {
   useEffect(() => {
     let mounted = true
     let timer: ReturnType<typeof setTimeout> | null = null
+    let fetching = false
+    let refreshQueued = false
 
     async function refetch() {
+      if (!mounted) return
+      if (fetching) { refreshQueued = true; return }
+      fetching = true
+      if (timer) clearTimeout(timer)
       try {
         const res = await fetch("/api/cloud/status")
         if (!res.ok) throw new Error()
         const data = await res.json()
         if (!mounted) return
+        setStatusUnavailable(false)
         setStatus(data)
-        const fast = data.paired && data.pendingRouteCount > 0
+        const fast = data.paired && (data.pendingRouteCount > 0 || data.mutableSync?.running)
         if (timer) clearTimeout(timer)
         timer = setTimeout(refetch, fast ? 2000 : 30000)
       } catch {
         if (mounted) {
+          setStatusUnavailable(true)
           if (timer) clearTimeout(timer)
           timer = setTimeout(refetch, 5000)
+        }
+      } finally {
+        fetching = false
+        if (refreshQueued && mounted) {
+          refreshQueued = false
+          void refetch()
         }
       }
     }
 
     refetch()
     const unsubStatus = wsClient.subscribe("cloud_status_changed", () => {
+      if (mounted) refetch()
+    })
+    const unsubSync = wsClient.subscribe("cloud_sync_changed", () => {
       if (mounted) refetch()
     })
     const unsubUpload = wsClient.subscribe("cloud_upload", () => {
@@ -67,6 +88,7 @@ export function CloudStatusBar() {
       if (timer) clearTimeout(timer)
       unsubStatus()
       unsubUpload()
+      unsubSync()
     }
   }, [])
 
@@ -106,6 +128,22 @@ export function CloudStatusBar() {
           <CloseIcon className="h-4 w-4" />
         </button>
       </div>
+    )
+  }
+
+  const syncNotice = cloudSyncNotice(status.mutableSync, statusUnavailable)
+  if (syncNotice && (syncNotice.warning || status.pendingRouteCount === 0)) {
+    return (
+      <Link to={linkTo} className="glass-card glass-card-hover cloud-bar group transition-colors">
+        <span className={`${syncNotice.warning ? "halo-amber" : "halo-accent"} inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg`}>
+          {syncNotice.warning ? <WarningIcon className="h-4 w-4" /> : <CloudIcon className="h-4 w-4" />}
+        </span>
+        <div className="min-w-0 flex-1" role="status">
+          <div className="t-md">{syncNotice.title}</div>
+          <div className="t-xs">{syncNotice.detail}</div>
+        </div>
+        <ChevronRightIcon className="h-4 w-4 shrink-0 text-slate-600" />
+      </Link>
     )
   }
 

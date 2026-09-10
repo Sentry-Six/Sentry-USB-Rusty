@@ -103,8 +103,9 @@ pub struct ChargeSessionSummary {
     /// tag/rate engine. Lets the UI show the cost as manually set and skip
     /// the "set a rate" hint.
     pub cost_overridden: bool,
-    /// Charged inside the configured home geofence. Set by the api crate;
-    /// `false` in the cloud blob. Drives the auto "Home" chip + Home rate.
+    /// Charged inside the configured Home geofence for local API responses.
+    /// Cloud summary/blob retain the historical false default; authoritative
+    /// Cloud classification is the optional atHome field in the mutable slot.
     pub at_home: bool,
 }
 

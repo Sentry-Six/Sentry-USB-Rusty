@@ -9,6 +9,8 @@ import {
 } from "@/components/icons"
 import { cn } from "@/lib/utils"
 import { wsClient } from "@/lib/ws"
+import { cloudSyncNotice } from "@/lib/cloud-sync-status"
+import type { MutableSyncStatus } from "@/lib/cloud-sync-status"
 
 type CloudPairingState = "idle" | "handshaking" | "polling" | "complete" | "error"
 
@@ -19,6 +21,7 @@ type CloudStatus = {
   pairedAt: string | null
   lastUploadAt: string | null
   lastUploadError: string | null
+  mutableSync?: MutableSyncStatus
   pendingRouteCount: number
   totalUploadedRouteCount: number
   dekRotationGeneration: number | null
@@ -33,6 +36,7 @@ type Props = {
 
 export default function CloudPairingSection({ compact = false }: Props) {
   const [status, setStatus] = useState<CloudStatus | null>(null)
+  const [statusUnavailable, setStatusUnavailable] = useState(false)
   const [code, setCode] = useState("")
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -45,8 +49,14 @@ export default function CloudPairingSection({ compact = false }: Props) {
   useEffect(() => {
     let mounted = true
     let timer: ReturnType<typeof setTimeout> | null = null
+    let fetching = false
+    let refreshQueued = false
 
     async function refetch() {
+      if (!mounted) return
+      if (fetching) { refreshQueued = true; return }
+      fetching = true
+      if (timer) clearTimeout(timer)
       try {
         const res = await fetch("/api/cloud/status")
         if (!res.ok) throw new Error(`HTTP ${res.status}`)
@@ -60,12 +70,20 @@ export default function CloudPairingSection({ compact = false }: Props) {
               }
             : null,
         )
+        setStatusUnavailable(false)
         setStatus(data)
         scheduleNext(data)
       } catch {
         if (mounted) {
+          setStatusUnavailable(true)
           if (timer) clearTimeout(timer)
           timer = setTimeout(refetch, 5000)
+        }
+      } finally {
+        fetching = false
+        if (refreshQueued && mounted) {
+          refreshQueued = false
+          void refetch()
         }
       }
     }
@@ -76,13 +94,16 @@ export default function CloudPairingSection({ compact = false }: Props) {
       const pairing =
         data?.pairingState === "handshaking" ||
         data?.pairingState === "polling"
-      const uploading = data?.paired && data.pendingRouteCount > 0
+      const uploading = data?.paired && (data.pendingRouteCount > 0 || data.mutableSync?.running)
       timer = setTimeout(refetch, pairing ? 1000 : uploading ? 3000 : 30000)
     }
 
     refetch()
 
     const unsubStatus = wsClient.subscribe("cloud_status_changed", () => {
+      if (mounted) refetch()
+    })
+    const unsubSync = wsClient.subscribe("cloud_sync_changed", () => {
       if (mounted) refetch()
     })
     const unsubUpload = wsClient.subscribe("cloud_upload", () => {
@@ -94,6 +115,7 @@ export default function CloudPairingSection({ compact = false }: Props) {
       if (timer) clearTimeout(timer)
       unsubStatus()
       unsubUpload()
+      unsubSync()
     }
   }, [])
 
@@ -153,6 +175,7 @@ export default function CloudPairingSection({ compact = false }: Props) {
     }
   }
 
+  const syncNotice = cloudSyncNotice(status?.mutableSync, statusUnavailable)
   const paired = status?.paired ?? false
   const pairingState = status?.pairingState ?? "idle"
   const inFlight =
@@ -294,6 +317,24 @@ export default function CloudPairingSection({ compact = false }: Props) {
               <Stat label="Pi ID" value={status.piId?.slice(0, 8) ?? "—"} mono />
               <Stat label="Last upload" value={lastUploadDisplay ?? "—"} />
             </div>
+
+            {syncNotice && (
+              <div className={cn("flex items-start gap-2 rounded-md border p-2", syncNotice.warning
+                ? "border-amber-500/30 bg-amber-500/5" : "border-white/10 bg-white/5")}>
+                <div className="min-w-0 flex-1 text-[11px]" role="status">
+                  <p className="font-medium text-slate-200">{syncNotice.title}</p>
+                  <p className="text-slate-400">{syncNotice.detail}</p>
+                </div>
+                {!statusUnavailable && !status.mutableSync?.running && (
+                  <button type="button" onClick={retryUpload} disabled={retrying}
+                    className="flex shrink-0 items-center gap-1 rounded-md border border-white/15 px-2 py-1 text-[11px] text-slate-200 hover:bg-white/5 disabled:opacity-50"
+                    title="Sync queued changes now">
+                    <RotateRightIcon className="h-3 w-3" />
+                    {retrying ? "Starting…" : "Sync now"}
+                  </button>
+                )}
+              </div>
+            )}
 
             {status.lastUploadError && (
               <div className="flex items-start gap-2 rounded-md border border-red-500/30 bg-red-500/5 p-2">

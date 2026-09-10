@@ -20,7 +20,7 @@ const FILE_MODE: u32 = 0o600;
 #[cfg(unix)]
 const DIR_MODE: u32 = 0o700;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LongTermX25519OnDisk {
 
     #[serde(rename = "publicKey")]
@@ -30,7 +30,7 @@ pub struct LongTermX25519OnDisk {
     pub wrapped_private_key: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CloudCredentialsV1 {
     pub version: u32,
     #[serde(rename = "userId")]
@@ -122,31 +122,20 @@ pub fn save_atomic(path: &str, creds: &CloudCredentialsV1) -> Result<(), Credent
 }
 
 pub fn secure_delete(path: &str) -> Result<(), CredentialsError> {
+    // Unlink the credential path without first overwriting its contents. A
+    // failed removal must not corrupt the only valid credential copy, and a
+    // symlink must never redirect an overwrite into another file.
     let final_path = PathBuf::from(path);
-    if !final_path.exists() {
-        return Ok(());
+    match fs::remove_file(&final_path) {
+        Ok(()) => {},
+        Err(error) if error.kind()==std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error.into()),
     }
-
-    let len = fs::metadata(&final_path)?.len() as usize;
-    let mut overwrite = vec![0u8; len];
-    use ring::rand::SecureRandom;
-    ring::rand::SystemRandom::new()
-        .fill(&mut overwrite)
-        .map_err(|_| crate::errors::CryptoError::SealFailed)?;
-
-    {
-        let mut opts = OpenOptions::new();
-        opts.write(true).truncate(false);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            opts.mode(FILE_MODE);
-        }
-        let mut f = opts.open(&final_path)?;
-        f.write_all(&overwrite)?;
-        f.sync_all()?;
+    let parent=final_path.parent().filter(|path|!path.as_os_str().is_empty()).unwrap_or_else(||std::path::Path::new("."));
+    if let Err(error)=fs::File::open(parent).and_then(|directory|directory.sync_all()) {
+        // The pathname is already gone; do not report an intact pairing.
+        tracing::warn!("credential removal directory flush failed: {}",error);
     }
-    fs::remove_file(&final_path)?;
     Ok(())
 }
 
@@ -424,5 +413,34 @@ mod tests {
         assert!(matches!(err, CredentialsError::UnsupportedVersion(999)));
         let _ = std::fs::remove_file(p_str);
         let _ = std::fs::remove_dir(&dir);
+    }
+}
+
+#[cfg(test)]
+mod removal_tests {
+    use super::*;
+    fn tempdir()->PathBuf {
+        let mut nonce=[0u8;16];ring::rand::SecureRandom::fill(&ring::rand::SystemRandom::new(),&mut nonce).unwrap();
+        let directory=std::env::temp_dir().join(format!("sentry-credential-removal-{}",hex::encode(nonce)));
+        fs::create_dir(&directory).unwrap();directory
+    }
+    #[test]
+    fn removal_is_idempotent_and_does_not_overwrite_an_invalid_target() {
+        let dir=tempdir();let path=dir.as_path().join("creds.json");
+        fs::create_dir(&path).unwrap();fs::write(path.join("keep"),b"unchanged").unwrap();
+        assert!(secure_delete(path.to_str().unwrap()).is_err());
+        assert_eq!(fs::read(path.join("keep")).unwrap(),b"unchanged");
+        let file=dir.as_path().join("actual.json");fs::write(&file,b"synthetic credentials").unwrap();
+        secure_delete(file.to_str().unwrap()).unwrap();secure_delete(file.to_str().unwrap()).unwrap();assert!(!file.exists());
+        fs::remove_dir_all(dir).unwrap();
+    }
+    #[test]
+    #[cfg(unix)]
+    fn deleting_a_symlink_cannot_overwrite_the_target_file() {
+        let dir=tempdir();let original=dir.as_path().join("keep.json");let link=dir.as_path().join("credentials.json");
+        fs::write(&original,b"synthetic original").unwrap();std::os::unix::fs::symlink(&original,&link).unwrap();
+        secure_delete(link.to_str().unwrap()).unwrap();
+        assert!(!link.exists());assert_eq!(fs::read(original).unwrap(),b"synthetic original");
+        fs::remove_dir_all(dir).unwrap();
     }
 }

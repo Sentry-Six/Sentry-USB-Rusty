@@ -1,9 +1,12 @@
+mod native_metrics;
+mod summon_evidence;
 pub mod charge_deletes;
 pub mod charges;
 pub mod client;
 pub mod credentials_store;
 pub mod db_ext;
 pub mod encrypt;
+pub(crate) mod locations;
 pub mod pairing;
 pub mod rekey;
 pub mod state;
@@ -63,6 +66,15 @@ impl CloudUploader {
             uploader::run_sweep_loop(inner_for_sweep).await;
         });
 
+        // Historical summary repair is bounded independently of uploads and
+        // mutable edits, so a slow original-blob read cannot delay new data.
+        let inner_for_locations = inner.clone();
+        tokio::spawn(async move {
+            locations::run_loop(inner_for_locations).await;
+        });
+
+        // Resume persisted uploads and edits promptly after boot.
+        if me.inner.creds.lock().await.is_some() { me.nudge(); }
         me
     }
 
@@ -74,6 +86,10 @@ impl CloudUploader {
         pairing::run(self.inner.clone(), code.to_string()).await
     }
 
+    pub async fn pair_start(&self,code:&str)->anyhow::Result<()> {
+        pairing::start(self.inner.clone(),code.to_string()).await
+    }
+
     pub async fn pair_cancel(&self) {
         self.inner.cancel_pairing().await;
     }
@@ -83,6 +99,7 @@ impl CloudUploader {
     }
 
     pub fn nudge(&self) {
+        self.inner.hub.broadcast("cloud_sync_changed",&serde_json::json!({}));
         self.inner.notify.notify_one();
     }
 
@@ -111,4 +128,16 @@ impl Default for SpawnOptions {
             rate_config: None,
         }
     }
+}
+
+/// Persistent test stores must never import the host's real drive-data export.
+#[cfg(test)]
+pub(crate) fn open_test_store(path: &str) -> anyhow::Result<sentryusb_drives::DriveStore> {
+    let conn = rusqlite::Connection::open(path)?;
+    sentryusb_drives::schema::migrate(&conn)?;
+    if sentryusb_drives::schema::meta_get(&conn, "imported_from_json_at")?.is_none() {
+        sentryusb_drives::schema::meta_set(&conn, "imported_from_json_at", "synthetic-test-store")?;
+    }
+    drop(conn);
+    sentryusb_drives::DriveStore::open(path)
 }

@@ -244,6 +244,7 @@ pub async fn keep_accessory_config_set(
             if home_moving {
                 // Charging summaries contain geofence-derived Home tags.
                 crate::charging::invalidate_charging_list();
+                _s.cloud.uploader.nudge();
             }
             (
                 StatusCode::OK,

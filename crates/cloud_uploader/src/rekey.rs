@@ -49,7 +49,7 @@ pub async fn poll_and_apply(state: Arc<CloudStateInner>) -> Result<bool> {
         }
         401 => {
 
-            state.handle_remote_revoke().await;
+            state.handle_remote_revoke(&creds_snapshot).await;
             return Err(anyhow!("auth rejected during rekey poll"));
         }
         403 => {
@@ -63,7 +63,7 @@ pub async fn poll_and_apply(state: Arc<CloudStateInner>) -> Result<bool> {
                     Some("user_suspended".to_string());
                 return Err(anyhow!("user_suspended during rekey poll"));
             }
-            state.handle_remote_revoke().await;
+            state.handle_remote_revoke(&creds_snapshot).await;
             return Err(anyhow!("auth rejected during rekey poll"));
         }
         200 => {}
@@ -118,7 +118,8 @@ pub async fn poll_and_apply(state: Arc<CloudStateInner>) -> Result<bool> {
     let mut updated = creds_snapshot.clone();
     updated.wrapped_pi_key_local = new_wrapped_b64;
     updated.dek_rotation_generation = parsed.new_generation;
-    state.set_credentials(updated).await?;
+    anyhow::ensure!(state.replace_credentials_if_current(&creds_snapshot,updated).await?,
+        "pairing changed while rekey was pending");
 
     info!(
         "cloud rekey applied: piId={} newGeneration={}",
