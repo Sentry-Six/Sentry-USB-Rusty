@@ -1,0 +1,37 @@
+[Unit]
+Description=SentryUSB event processor: read-only live event capture
+After=local-fs.target sentryusb-archive.service
+RequiresMountsFor=/backingfiles
+ConditionPathExists=/backingfiles/cam_disk.bin
+
+[Service]
+Type=simple
+EnvironmentFile=-/backingfiles/teslabox-processor/processor.env
+User=root
+Group=teslabox-processor
+UMask=0077
+ExecStart=/backingfiles/teslabox-processor/venv/bin/python /backingfiles/teslabox-processor/app/service.py capture
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=30s
+Nice=5
+IOSchedulingClass=idle
+CapabilityBoundingSet=CAP_SYS_ADMIN CAP_CHOWN
+AmbientCapabilities=CAP_SYS_ADMIN CAP_CHOWN
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ProtectControlGroups=yes
+ProtectKernelModules=yes
+ProtectKernelTunables=yes
+ProtectClock=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+PrivateTmp=no
+PrivateMounts=yes
+RestrictAddressFamilies=AF_UNIX
+ReadOnlyPaths=/backingfiles
+ReadWritePaths=/backingfiles/teslabox-processor/capture-state /backingfiles/teslabox-processor/inbox /backingfiles/teslabox-processor/alerts /run /tmp/sentryusb_gadget_cycle.lock
+
+[Install]
+WantedBy=multi-user.target

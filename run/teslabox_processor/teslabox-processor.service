@@ -1,0 +1,42 @@
+[Unit]
+Description=SentryUSB event processor: local compositor, S3 uploader, and notifier
+After=network-online.target teslabox-capture.service
+Wants=network-online.target
+RequiresMountsFor=/backingfiles
+ConditionPathExists=/backingfiles/teslabox-processor/secrets/pushover.json
+ConditionPathExists=/backingfiles/teslabox-processor/secrets/s3.json
+
+[Service]
+Type=simple
+EnvironmentFile=-/backingfiles/teslabox-processor/processor.env
+User=teslabox-processor
+Group=teslabox-processor
+UMask=0077
+LoadCredential=pushover.json:/backingfiles/teslabox-processor/secrets/pushover.json
+LoadCredential=s3.json:/backingfiles/teslabox-processor/secrets/s3.json
+ExecStart=/backingfiles/teslabox-processor/venv/bin/python /backingfiles/teslabox-processor/app/service.py worker --pushover-credential %d/pushover.json --s3-credential %d/s3.json
+Restart=on-failure
+RestartSec=10s
+TimeoutStopSec=60s
+Nice=15
+IOSchedulingClass=idle
+CPUQuota=150%
+MemoryMax=2G
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectControlGroups=yes
+ProtectKernelModules=yes
+ProtectKernelTunables=yes
+ProtectClock=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+PrivateTmp=no
+PrivateDevices=yes
+RestrictSUIDSGID=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+ReadOnlyPaths=/backingfiles
+ReadWritePaths=/backingfiles/teslabox-processor/inbox
+
+[Install]
+WantedBy=multi-user.target
