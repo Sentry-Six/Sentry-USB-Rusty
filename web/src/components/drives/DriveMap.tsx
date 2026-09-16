@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react"
 import L from "leaflet"
 import "leaflet/dist/leaflet.css"
+import { MAP_TILES } from "@/lib/mapTiles"
 import { LayersIcon } from "@/components/icons"
 import { useScrubberState } from "@/hooks/useScrubberSync"
 import type { FsdEvent } from "@/types/drives"
@@ -24,18 +25,7 @@ export interface BatteryPoint {
   batteryPct?: number
 }
 
-const TILES = {
-  dark: "https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png",
-  streets: "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
-  satellite:
-    "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
-} as const
-
-// Satellite imagery needs a transparent labels overlay.
-const SATELLITE_LABELS_URL =
-  "https://{s}.basemaps.cartocdn.com/rastertiles/voyager_only_labels/{z}/{x}/{y}{r}.png"
-
-type Style = keyof typeof TILES
+type Style = keyof typeof MAP_TILES
 
 // FSD and manual segments use distinct colors; imported routes use violet.
 const COLOR_FSD = "#34d399"
@@ -215,8 +205,6 @@ export function DriveMap({
   const containerRef = useRef<HTMLDivElement>(null)
   const mapRef = useRef<L.Map | null>(null)
   const tileRef = useRef<L.TileLayer | null>(null)
-  // Only satellite mode needs the transparent labels layer.
-  const labelsRef = useRef<L.TileLayer | null>(null)
   const pulseRef = useRef<L.Marker | null>(null)
   const eventsLayerRef = useRef<L.LayerGroup | null>(null)
   const [style, setStyle] = useState<Style>("dark")
@@ -228,12 +216,13 @@ export function DriveMap({
 
     // Canvas handles large routes; the moving pulse remains a DOM marker.
     const map = L.map(el, {
-      attributionControl: false,
+      attributionControl: true,
       zoomControl: true,
       preferCanvas: true,
     })
     mapRef.current = map
-    tileRef.current = L.tileLayer(TILES.dark, { maxZoom: 19 }).addTo(map)
+    map.attributionControl.setPrefix(false)
+    tileRef.current = L.tileLayer(MAP_TILES.dark.url, MAP_TILES.dark).addTo(map)
 
     const latLngs = points.map(([lat, lng]) => L.latLng(lat, lng))
 
@@ -324,7 +313,6 @@ export function DriveMap({
       map.remove()
       mapRef.current = null
       tileRef.current = null
-      labelsRef.current = null
       pulseRef.current = null
       eventsLayerRef.current = null
     }
@@ -336,19 +324,8 @@ export function DriveMap({
     const map = mapRef.current
     if (!map || !tileRef.current) return
     map.removeLayer(tileRef.current)
-    tileRef.current = L.tileLayer(TILES[style], { maxZoom: 19 }).addTo(map)
-    // shadowPane keeps satellite labels below routes and markers.
-    if (labelsRef.current) {
-      map.removeLayer(labelsRef.current)
-      labelsRef.current = null
-    }
-    if (style === "satellite") {
-      labelsRef.current = L.tileLayer(SATELLITE_LABELS_URL, {
-        maxZoom: 19,
-        pane: "shadowPane",
-      }).addTo(map)
-    }
-  }, [style])
+    tileRef.current = L.tileLayer(MAP_TILES[style].url, MAP_TILES[style]).addTo(map)
+  }, [style, points, fsdStates, source])
 
   useEffect(() => {
     const layer = eventsLayerRef.current

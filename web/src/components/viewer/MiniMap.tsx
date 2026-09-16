@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, memo } from "react"
 import L from "leaflet"
 import "leaflet/dist/leaflet.css"
+import { MAP_TILES } from "@/lib/mapTiles"
 import { CloseFullscreenIcon, LocationOnIcon, OpenInFullIcon } from "@/components/icons"
 import type { ClipTelemetry, TelemetryFrame } from "@/lib/api"
 import { useDraggable } from "@/hooks/useDraggable"
@@ -23,15 +24,13 @@ export default memo(function MiniMap({ telemetry, currentFrame }: MiniMapProps) 
 
     const map = L.map(mapRef.current, {
       zoomControl: false,
-      attributionControl: false,
+      attributionControl: true,
       dragging: true,
       scrollWheelZoom: false,
     }).setView([0, 0], 15)
 
-    L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png", {
-      subdomains: "abcd",
-      maxZoom: 20,
-    }).addTo(map)
+    map.attributionControl.setPrefix(false)
+    L.tileLayer(MAP_TILES.dark.url, MAP_TILES.dark).addTo(map)
 
     mapInstance.current = map
 

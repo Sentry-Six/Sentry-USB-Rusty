@@ -1,14 +1,12 @@
 import { useEffect, useRef, useState } from "react"
 import L from "leaflet"
 import "leaflet/dist/leaflet.css"
+import { MAP_TILES } from "@/lib/mapTiles"
 
 interface MiniRouteMapProps {
   points: [number, number][]
   source?: string
 }
-
-const DARK_TILES =
-  "https://{s}.basemaps.cartocdn.com/dark_nolabels/{z}/{x}/{y}{r}.png"
 
 export function MiniRouteMap({ points, source }: MiniRouteMapProps) {
   const containerRef = useRef<HTMLDivElement>(null)
@@ -43,7 +41,7 @@ export function MiniRouteMap({ points, source }: MiniRouteMapProps) {
     const stroke = source === "tessie" ? "#a78bfa" : "#34d399"
 
     const map = L.map(el, {
-      attributionControl: false,
+      attributionControl: true,
       zoomControl: false,
       dragging: false,
       scrollWheelZoom: false,
@@ -53,8 +51,9 @@ export function MiniRouteMap({ points, source }: MiniRouteMapProps) {
       boxZoom: false,
     })
     mapRef.current = map
+    map.attributionControl.setPrefix(false)
 
-    L.tileLayer(DARK_TILES, { maxZoom: 18, minZoom: 3 }).addTo(map)
+    L.tileLayer(MAP_TILES.dark.url, { ...MAP_TILES.dark, maxZoom: 18, minZoom: 3 }).addTo(map)
 
     const latLngs = points.map(([lat, lng]) => L.latLng(lat, lng))
     L.polyline(latLngs, {

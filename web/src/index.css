@@ -597,6 +597,11 @@ code, pre, .font-mono {
   background-color: rgba(16, 20, 27, 0.95) !important;
 }
 
+/* Darken only the OSM tile layer; routes, pins, and attribution retain their colors. */
+.map-dark-tiles {
+  filter: invert(1) hue-rotate(180deg) brightness(.75) saturate(.4);
+}
+
 /* Dark attribution */
 .leaflet-control-attribution {
   background: rgba(7, 9, 12, 0.7) !important;

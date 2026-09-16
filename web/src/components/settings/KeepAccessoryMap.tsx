@@ -1,10 +1,8 @@
 import { useEffect, useRef } from "react"
 import L from "leaflet"
 import "leaflet/dist/leaflet.css"
+import { MAP_TILES } from "@/lib/mapTiles"
 import { normalizeLon } from "@/lib/geo"
-
-// Labeled tiles make precise manual placement possible.
-const TILES = "https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png"
 
 // A CSS divIcon avoids bundled default-marker image URLs.
 const HOME_ICON = L.divIcon({
@@ -56,9 +54,10 @@ export function KeepAccessoryMap({
     const center: L.LatLngExpression = hasHome ? [la as number, lo as number] : [39.5, -98.35]
 
     // Keep the pin on the primary world copy across the antimeridian.
-    const map = L.map(el, { attributionControl: false, zoomControl: true, worldCopyJump: true })
+    const map = L.map(el, { attributionControl: true, zoomControl: true, worldCopyJump: true })
     mapRef.current = map
-    L.tileLayer(TILES, { maxZoom: 19, minZoom: 2 }).addTo(map)
+    map.attributionControl.setPrefix(false)
+    L.tileLayer(MAP_TILES.dark.url, { ...MAP_TILES.dark, minZoom: 2 }).addTo(map)
     map.setView(center, hasHome ? 16 : 4)
 
     const marker = L.marker(center, { draggable: true, icon: HOME_ICON }).addTo(map)

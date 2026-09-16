@@ -1,11 +1,9 @@
 import { useEffect, useRef, useState } from "react"
 import L from "leaflet"
 import "leaflet/dist/leaflet.css"
+import { MAP_TILES } from "@/lib/mapTiles"
 
 // Charge sessions render one non-interactive pin and initialize only when visible.
-const DARK_TILES =
-  "https://{s}.basemaps.cartocdn.com/dark_nolabels/{z}/{x}/{y}{r}.png"
-
 const PIN_COLOR = "#34d399"
 
 export function MiniPinMap({
@@ -49,7 +47,7 @@ export function MiniPinMap({
     if (lat == null || lon == null) return
 
     const map = L.map(el, {
-      attributionControl: false,
+      attributionControl: true,
       zoomControl: false,
       dragging: false,
       scrollWheelZoom: false,
@@ -59,8 +57,9 @@ export function MiniPinMap({
       boxZoom: false,
     })
     mapRef.current = map
+    map.attributionControl.setPrefix(false)
 
-    L.tileLayer(DARK_TILES, { maxZoom: 18, minZoom: 3 }).addTo(map)
+    L.tileLayer(MAP_TILES.dark.url, { ...MAP_TILES.dark, maxZoom: 18, minZoom: 3 }).addTo(map)
     map.setView([lat, lon], zoom)
 
     L.circleMarker([lat, lon], {
