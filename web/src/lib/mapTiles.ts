@@ -1,5 +1,8 @@
 import type { TileLayerOptions } from "leaflet"
 
+export const COMPACT_MAP_ATTRIBUTION =
+  '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
+
 const streets = {
   url: "https://tile.openstreetmap.org/{z}/{x}/{y}.png",
   attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',

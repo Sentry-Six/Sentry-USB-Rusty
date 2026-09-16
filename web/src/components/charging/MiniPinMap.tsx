@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react"
 import L from "leaflet"
 import "leaflet/dist/leaflet.css"
-import { MAP_TILES } from "@/lib/mapTiles"
+import { COMPACT_MAP_ATTRIBUTION, MAP_TILES } from "@/lib/mapTiles"
 
 // Charge sessions render one non-interactive pin and initialize only when visible.
 const PIN_COLOR = "#34d399"
@@ -59,7 +59,12 @@ export function MiniPinMap({
     mapRef.current = map
     map.attributionControl.setPrefix(false)
 
-    L.tileLayer(MAP_TILES.dark.url, { ...MAP_TILES.dark, maxZoom: 18, minZoom: 3 }).addTo(map)
+    L.tileLayer(MAP_TILES.dark.url, {
+      ...MAP_TILES.dark,
+      attribution: COMPACT_MAP_ATTRIBUTION,
+      maxZoom: 18,
+      minZoom: 3,
+    }).addTo(map)
     map.setView([lat, lon], zoom)
 
     L.circleMarker([lat, lon], {
@@ -80,7 +85,7 @@ export function MiniPinMap({
   return (
     <div
       ref={containerRef}
-      className={`relative isolate shrink-0 overflow-hidden rounded-lg bg-slate-900/60 ring-1 ring-inset ring-white/5 ${className}`}
+      className={`map-thumbnail relative isolate shrink-0 overflow-hidden rounded-lg bg-slate-900/60 ring-1 ring-inset ring-white/5 ${className}`}
       role="img"
       aria-label="Charge location"
     />

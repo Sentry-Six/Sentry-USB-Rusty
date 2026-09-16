@@ -612,6 +612,13 @@ code, pre, .font-mono {
   color: #7a8294 !important;
 }
 
+.map-thumbnail .leaflet-control-attribution {
+  font-size: 9px;
+  line-height: 12px;
+  padding: 0 3px;
+  white-space: nowrap;
+}
+
 /* Prevent white tile placeholders during loading */
 .leaflet-tile {
   background: transparent;
