@@ -25,11 +25,13 @@ pub fn open() -> Result<Connection> {
     Ok(conn)
 }
 
-/// Inserts a sample, preserving the first row when timestamps collide.
+/// Inserts a sample. On a `ts` collision (the PK) the incoming non-null fields
+/// merge into the existing row (a same-second refresh keeps its battery/charge),
+/// and `source` stays 'state' once set so the source='state' reads keep finding it.
 pub fn insert(conn: &Connection, s: &Sample) -> Result<()> {
     // BLE does not expose `car_version`; `software_version` remains nullable.
     conn.execute(
-        "INSERT OR IGNORE INTO telemetry_samples \
+        "INSERT INTO telemetry_samples \
          (ts, battery_pct, battery_temp_c, interior_temp_c, exterior_temp_c, hvac_on, \
           tire_fl_psi, tire_fr_psi, tire_rl_psi, tire_rr_psi, \
           odometer_mi, location_name, \
@@ -40,7 +42,35 @@ pub fn insert(conn: &Connection, s: &Sample) -> Result<()> {
           source, charge_minutes_to_full, charging_state) \
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, \
                  ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, \
-                 ?25, ?26, ?27)",
+                 ?25, ?26, ?27) \
+         ON CONFLICT(ts) DO UPDATE SET \
+           battery_pct                = COALESCE(excluded.battery_pct, battery_pct), \
+           battery_temp_c             = COALESCE(excluded.battery_temp_c, battery_temp_c), \
+           interior_temp_c            = COALESCE(excluded.interior_temp_c, interior_temp_c), \
+           exterior_temp_c            = COALESCE(excluded.exterior_temp_c, exterior_temp_c), \
+           hvac_on                    = COALESCE(excluded.hvac_on, hvac_on), \
+           tire_fl_psi                = COALESCE(excluded.tire_fl_psi, tire_fl_psi), \
+           tire_fr_psi                = COALESCE(excluded.tire_fr_psi, tire_fr_psi), \
+           tire_rl_psi                = COALESCE(excluded.tire_rl_psi, tire_rl_psi), \
+           tire_rr_psi                = COALESCE(excluded.tire_rr_psi, tire_rr_psi), \
+           odometer_mi                = COALESCE(excluded.odometer_mi, odometer_mi), \
+           location_name              = COALESCE(excluded.location_name, location_name), \
+           charger_power_kw           = COALESCE(excluded.charger_power_kw, charger_power_kw), \
+           charger_actual_current_a   = COALESCE(excluded.charger_actual_current_a, charger_actual_current_a), \
+           charger_voltage_v          = COALESCE(excluded.charger_voltage_v, charger_voltage_v), \
+           charge_rate_mph            = COALESCE(excluded.charge_rate_mph, charge_rate_mph), \
+           charge_energy_added_kwh    = COALESCE(excluded.charge_energy_added_kwh, charge_energy_added_kwh), \
+           charge_limit_soc           = COALESCE(excluded.charge_limit_soc, charge_limit_soc), \
+           battery_range_mi           = COALESCE(excluded.battery_range_mi, battery_range_mi), \
+           charging_amps_set          = COALESCE(excluded.charging_amps_set, charging_amps_set), \
+           charge_current_request_max = COALESCE(excluded.charge_current_request_max, charge_current_request_max), \
+           charge_port_door_open      = COALESCE(excluded.charge_port_door_open, charge_port_door_open), \
+           latitude                   = COALESCE(excluded.latitude, latitude), \
+           longitude                  = COALESCE(excluded.longitude, longitude), \
+           source                     = CASE WHEN excluded.source = 'state' OR source = 'state' \
+                                             THEN 'state' ELSE excluded.source END, \
+           charge_minutes_to_full     = COALESCE(excluded.charge_minutes_to_full, charge_minutes_to_full), \
+           charging_state             = COALESCE(excluded.charging_state, charging_state)",
         params![
             s.ts,
             s.battery_pct,
@@ -157,7 +187,7 @@ mod tests {
     }
 
     #[test]
-    fn duplicate_ts_silently_ignored() {
+    fn duplicate_ts_keeps_one_row() {
         let conn = fresh_memory_db();
         let s = Sample {
             ts: 1_700_000_200,
@@ -169,6 +199,110 @@ mod tests {
         let count: i64 = conn
             .query_row("SELECT count(*) FROM telemetry_samples", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(count, 1, "ON CONFLICT IGNORE should keep the first row");
+        assert_eq!(count, 1, "a ts collision must not create a second row");
+    }
+
+    // Same-second body-controller row then refresh row must merge: battery kept,
+    // existing fields not blanked, row stays source='state' for the ble.rs read.
+    #[test]
+    fn parked_awake_refresh_merges_into_bc_row() {
+        let conn = fresh_memory_db();
+        let ts = 1_789_000_000;
+        // 1) body-controller poll persists first: no battery, carries a location.
+        insert(
+            &conn,
+            &Sample {
+                ts,
+                source: "body_controller".into(),
+                location_name: Some("123 Main St".into()),
+                ..Sample::default()
+            },
+        )
+        .unwrap();
+        // 2) parked-awake refresh, same second, carries the battery.
+        insert(
+            &conn,
+            &Sample {
+                ts,
+                source: "state".into(),
+                battery_pct: Some(46.0),
+                ..Sample::default()
+            },
+        )
+        .unwrap();
+
+        let (count, batt, loc, src): (i64, Option<f64>, Option<String>, String) = conn
+            .query_row(
+                "SELECT (SELECT COUNT(*) FROM telemetry_samples), \
+                 battery_pct, location_name, source \
+                 FROM telemetry_samples WHERE ts = ?1",
+                [ts],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!(count, 1, "collision must merge into one row, not two");
+        assert_eq!(batt, Some(46.0), "battery from the refresh must be kept");
+        assert_eq!(
+            loc.as_deref(),
+            Some("123 Main St"),
+            "body-controller field must not be blanked by the merge"
+        );
+        assert_eq!(src, "state", "row must read as source='state' for the battery query");
+
+        // The exact shape api/ble.rs uses to read the latest battery.
+        let latest: f64 = conn
+            .query_row(
+                "SELECT battery_pct FROM telemetry_samples \
+                 WHERE source = 'state' AND battery_pct IS NOT NULL ORDER BY ts DESC LIMIT 1",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(latest, 46.0, "source='state' battery read must now find the value");
+    }
+
+    // A 'state' row already present, then a same-second write from another source,
+    // must not downgrade source away from 'state' or the source='state' battery read
+    // would lose the latest charge row.
+    #[test]
+    fn state_row_keeps_provenance_on_reverse_collision() {
+        let conn = fresh_memory_db();
+        let ts = 1_789_000_100;
+        insert(
+            &conn,
+            &Sample { ts, source: "state".into(), battery_pct: Some(42.0), ..Sample::default() },
+        )
+        .unwrap();
+        insert(
+            &conn,
+            &Sample {
+                ts,
+                source: "body_controller".into(),
+                location_name: Some("Home".into()),
+                ..Sample::default()
+            },
+        )
+        .unwrap();
+
+        let (src, batt, loc): (String, Option<f64>, Option<String>) = conn
+            .query_row(
+                "SELECT source, battery_pct, location_name FROM telemetry_samples WHERE ts = ?1",
+                [ts],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(src, "state", "must not downgrade a state row to body_controller");
+        assert_eq!(batt, Some(42.0), "battery must survive the reverse-order collision");
+        assert_eq!(loc.as_deref(), Some("Home"), "the later field must still merge in");
+
+        let latest: f64 = conn
+            .query_row(
+                "SELECT battery_pct FROM telemetry_samples \
+                 WHERE source = 'state' AND battery_pct IS NOT NULL ORDER BY ts DESC LIMIT 1",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(latest, 42.0, "source='state' read must still find the battery");
     }
 }
