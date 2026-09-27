@@ -125,6 +125,8 @@ fn stop_keep_awake() {
 #[derive(Deserialize, Default)]
 pub struct ProcessQuery {
     #[serde(default)]
+    archive_cycle: Option<String>,
+    #[serde(default)]
     post_archive: Option<String>,
 }
 
@@ -333,6 +335,7 @@ pub async fn processing_status(
         "running":   status.running,
         "importing": importing,
         "archiving": is_archiving(),
+        "archive_work_running": sentryusb_drives::archive_control::ArchiveWorkGuard::is_running(),
     });
 
     if status.total_files > 0 {
@@ -348,6 +351,12 @@ pub async fn processing_status(
             }
         }
     }
+
+    let control = sentryusb_drives::archive_control::ArchiveControl::default();
+    resp["archive_cycle"] = match control.active_cycle() {
+        Some(id) => serde_json::json!({"id": id, "cancelling": control.cancelled()}),
+        None => serde_json::Value::Null,
+    };
 
     (StatusCode::OK, Json(resp))
 }
@@ -382,6 +391,14 @@ pub async fn process_files(
     State(state): State<AppState>,
     Query(q): Query<ProcessQuery>,
 ) -> (StatusCode, Json<serde_json::Value>) {
+    if let Some(cycle) = &q.archive_cycle {
+        if sentryusb_drives::archive_control::ArchiveControl::default().active_cycle().as_ref() != Some(cycle) {
+            return crate::json_error(StatusCode::CONFLICT, "archive cycle has already ended");
+        }
+    }
+    if sentryusb_drives::archive_control::ArchiveControl::default().cancelled() {
+        return crate::json_error(StatusCode::CONFLICT, "archive cycle is being cancelled");
+    }
     if state.drives.importing.load(Ordering::SeqCst) {
         return crate::json_error(
             StatusCode::CONFLICT,
@@ -428,6 +445,9 @@ pub async fn process_files(
 pub async fn reprocess_all(
     State(state): State<AppState>,
 ) -> (StatusCode, Json<serde_json::Value>) {
+    if sentryusb_drives::archive_control::ArchiveControl::default().cancelled() {
+        return crate::json_error(StatusCode::CONFLICT, "archive cycle is being cancelled");
+    }
     if state.drives.processor.is_running() {
         return crate::json_error(StatusCode::CONFLICT, "processing already in progress");
     }
@@ -462,6 +482,9 @@ pub async fn reprocess_all(
 pub async fn check_summon(
     State(state): State<AppState>,
 ) -> (StatusCode, Json<serde_json::Value>) {
+    if sentryusb_drives::archive_control::ArchiveControl::default().cancelled() {
+        return crate::json_error(StatusCode::CONFLICT, "archive cycle is being cancelled");
+    }
     if state.drives.processor.is_running() {
         return crate::json_error(StatusCode::CONFLICT, "processing already in progress");
     }
@@ -690,9 +713,22 @@ pub async fn download_data(
 /// Regenerates the archive-sync JSON using a read-only handle on the blocking pool.
 pub async fn export_for_sync(
     State(state): State<AppState>,
+    Query(q): Query<ProcessQuery>,
 ) -> (StatusCode, Json<serde_json::Value>) {
+    if let Some(cycle) = &q.archive_cycle {
+        if sentryusb_drives::archive_control::ArchiveControl::default().active_cycle().as_ref() != Some(cycle) {
+            return crate::json_error(StatusCode::CONFLICT, "archive cycle has already ended");
+        }
+    }
+    if sentryusb_drives::archive_control::ArchiveControl::default().cancelled() {
+        return crate::json_error(StatusCode::CONFLICT, "archive cycle is being cancelled");
+    }
+    let work = sentryusb_drives::archive_control::ArchiveWorkGuard::begin();
     let store = state.drives.store.clone();
-    let export_result = tokio::task::spawn_blocking(move || store.export_json_for_sync()).await;
+    let export_result = tokio::task::spawn_blocking(move || {
+        let _work = work;
+        store.export_json_for_sync()
+    }).await;
     match export_result {
         Ok(Ok(())) => {
             let bytes = std::fs::metadata(sentryusb_drives::db::DEFAULT_JSON_MIRROR_PATH)

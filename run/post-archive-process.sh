@@ -125,6 +125,10 @@ function update_drive_data_sync_cache() {
 # Find the SentryUSB API port
 SENTRYUSB_PORT="${SENTRYUSB_PORT:-80}"
 API_URL="http://127.0.0.1:${SENTRYUSB_PORT}"
+ARCHIVE_CYCLE_QUERY=""
+if [ -n "${ARCHIVE_CYCLE_ID:-}" ]; then
+  ARCHIVE_CYCLE_QUERY="&archive_cycle=${ARCHIVE_CYCLE_ID}"
+fi
 
 # Wait for the SentryUSB API to become reachable (it may still be starting
 # after a reboot, or briefly unavailable during an update).
@@ -161,7 +165,7 @@ function process_clips_dir() {
 
   while [ $attempt -lt $max_retries ]; do
     HTTP_CODE=$(curl -s -o /tmp/drive_process_response.json -w "%{http_code}" \
-      -X POST "${API_URL}/api/drives/process?post_archive=1" \
+      -X POST "${API_URL}/api/drives/process?post_archive=1${ARCHIVE_CYCLE_QUERY}" \
       -H "Content-Type: application/json" \
       -d "{\"clips_dir\": \"${clips_dir}\", \"throttle_ms\": 20}" 2>/dev/null)
     RESPONSE=$(cat /tmp/drive_process_response.json 2>/dev/null)
@@ -328,7 +332,7 @@ fi
 # below ship whatever JSON is on disk, same as before.
 if [ "$SKIP_REGEN_SYNC" != "true" ] && [ "$ARCHIVE_REACHABLE" = "true" ] && { [ -n "${RSYNC_SERVER:-}" ] || [ -n "${RCLONE_DRIVE:-}" ]; }; then
   log "Regenerating drive-data.json mirror for archive sync..."
-  EXPORT_RESULT=$(curl -sf -X POST "${API_URL}/api/drives/data/export-for-sync" 2>/dev/null)
+  EXPORT_RESULT=$(curl -sf -X POST "${API_URL}/api/drives/data/export-for-sync?post_archive=1${ARCHIVE_CYCLE_QUERY}" 2>/dev/null)
   if [ $? -eq 0 ]; then
     EXPORT_BYTES=$(echo "$EXPORT_RESULT" | grep -o '"bytes":[0-9]*' | cut -d: -f2)
     log "Regenerated drive-data.json mirror (${EXPORT_BYTES:-?} bytes)."

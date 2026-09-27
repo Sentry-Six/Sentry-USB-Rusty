@@ -99,8 +99,16 @@ impl CloudUploader {
     }
 
     pub fn nudge(&self) {
+        if sentryusb_drives::archive_control::ArchiveControl::default().cancelled() { return; }
+        self.inner.archive_cancelled.store(false, std::sync::atomic::Ordering::SeqCst);
         self.inner.hub.broadcast("cloud_sync_changed",&serde_json::json!({}));
         self.inner.notify.notify_one();
+    }
+
+    /// Stop this sweep at its next durable batch boundary. The next ordinary
+    /// upload request or scheduled sweep starts normally; no resume setting.
+    pub fn cancel_archive_work(&self) {
+        self.inner.archive_cancelled.store(true, std::sync::atomic::Ordering::SeqCst);
     }
 
     pub fn pending_queue(&self, limit: i64) -> anyhow::Result<Vec<db_ext::QueueEntry>> {

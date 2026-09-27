@@ -34,6 +34,7 @@ struct DeleteResult {
 
 /// One drain pass. Returns the number of sessions newly settled.
 pub async fn sweep_once(state: Arc<CloudStateInner>) -> Result<u32> {
+    if state.archive_cancel_requested() { return Ok(0); }
     let creds_snapshot = {
         let g = state.creds.lock().await;
         match g.as_ref() {
@@ -70,6 +71,7 @@ pub async fn sweep_once(state: Arc<CloudStateInner>) -> Result<u32> {
 
     let mut settled_now: u32 = 0;
     for batch in rows.chunks(BATCH_LIMIT) {
+        if state.archive_cancel_requested() { return Ok(settled_now); }
         let body = DeleteBody {
             pi_id: creds_snapshot.pi_id.clone(),
             charge_ids: batch.iter().map(|(_, id, _)| id.clone()).collect(),

@@ -136,6 +136,7 @@ async fn process(state:&CloudStateInner,client:&CloudClient,creds:&CloudCredenti
 }
 
 pub(super) async fn push(state:&Arc<CloudStateInner>,client:&CloudClient,creds:&CloudCredentialsV1,pi_key:&[u8;32])->Result<()> {
+    state.check_archive_cancelled()?;
     if state.rate_config.is_none() {return Ok(())}
     let _run=state.home_sync.lock().await;
     let binding=revision::binding(creds)?;{let _guard=revision::current_pairing(state,&binding).await?;}
@@ -156,6 +157,7 @@ pub(super) async fn push(state:&Arc<CloudStateInner>,client:&CloudClient,creds:&
     }
     let mut pages=0;let mut reset=false;
     loop {
+        state.check_archive_cancelled()?;
         ensure!(current_home(state).await?==home,"Home changed during scan");
         let page=match wire::page(state,client,creds,&binding,&walk).await {
             Ok(page)=>page,

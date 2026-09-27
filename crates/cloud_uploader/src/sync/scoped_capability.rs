@@ -16,6 +16,7 @@ struct Confirmation {
 
 pub(super) async fn register(state: &CloudStateInner, client: &CloudClient,
     credentials: &CloudCredentialsV1) -> Result<()> {
+    state.check_archive_cancelled()?;
     let binding = revision::binding(credentials)?;
     { let _guard = revision::current_pairing(state, &binding).await?; }
     // The server handles repeats without another write/audit. Recheck each

@@ -98,6 +98,9 @@ pub async fn gadget_disable(State(_s): State<AppState>) -> (StatusCode, Json<ser
 /// Forces archiveloop through either wait state into an archive cycle.
 /// The unreachable canary advances idle state; the reachable canary starts sync.
 pub async fn trigger_sync(State(_s): State<AppState>) -> (StatusCode, Json<serde_json::Value>) {
+    if sentryusb_drives::archive_control::ArchiveControl::default().active_cycle().is_some() {
+        return crate::json_error(StatusCode::CONFLICT, "archive cycle is still active");
+    }
     tokio::spawn(async {
         let unreachable = std::path::Path::new("/tmp/archive_is_unreachable");
         let reachable = std::path::Path::new("/tmp/archive_is_reachable");
@@ -115,6 +118,32 @@ pub async fn trigger_sync(State(_s): State<AppState>) -> (StatusCode, Json<serde
         let _ = std::fs::File::create(reachable);
     });
     crate::json_ok()
+}
+
+#[derive(serde::Deserialize)]
+pub struct CancelArchiveRequest {
+    cycle_id: String,
+}
+
+/// Cancel only the cycle the dashboard displayed. Cleanup remains owned by
+/// archiveloop; acknowledging this request does not claim that it has stopped.
+pub async fn cancel_archive(
+    State(state): State<AppState>,
+    Json(request): Json<CancelArchiveRequest>,
+) -> (StatusCode, Json<serde_json::Value>) {
+    let result = tokio::task::spawn_blocking(move ||
+        sentryusb_drives::archive_control::ArchiveControl::default().request_cancel(&request.cycle_id)
+    ).await.unwrap_or_else(|e| Err(std::io::Error::other(e.to_string())));
+    match result {
+        Ok(_guard) => {
+            state.cloud.uploader.cancel_archive_work();
+            crate::json_response(StatusCode::ACCEPTED, serde_json::json!({"success": true}))
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            crate::json_error(StatusCode::CONFLICT, "archive cycle has already ended; refresh status")
+        }
+        Err(e) => crate::json_error(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()),
+    }
 }
 
 /// POST /api/system/ble-pair

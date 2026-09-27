@@ -228,6 +228,7 @@ pub(super) fn progress(state:&CloudStateInner)->Result<(Option<String>,Option<St
 pub(super) async fn pull_changes(
     state:&Arc<CloudStateInner>,client:&CloudClient,creds:&CloudCredentialsV1,pi_key:&[u8;32],
 )->Result<()> {
+    state.check_archive_cancelled()?;
     let _lease=state.incoming_sync.lock().await;
     let retried=super::incoming_apply::retry(state,client,creds,pi_key).await;
     let received=pull_feed(state,client,creds,pi_key).await;
@@ -262,6 +263,7 @@ async fn pull_feed(
         .map(|resume|resume.walk).unwrap_or_else(||Walk::new(since));
     let mut reset = false;
     loop {
+        state.check_archive_cancelled()?;
         { let _guard = current_pairing(state, &expected).await?; }
         let response = client.get_bearer(&walk.path()).await.context("read mutable revision page")?;
         if response.status() == reqwest::StatusCode::CONFLICT {

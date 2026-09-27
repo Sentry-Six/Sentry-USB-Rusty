@@ -194,11 +194,13 @@ struct Ready { pending: Pending, key: String, raw: String }
 
 pub(super) async fn push(state: &Arc<CloudStateInner>, client: &CloudClient,
     creds: &CloudCredentialsV1, pi_key: &[u8;32]) -> Result<()> {
+    state.check_archive_cancelled()?;
     let binding=revision::binding(creds)?;
     { let _guard=revision::current_pairing(state,&binding).await?; }
     let mut snapshots: Vec<(i64,i64,ChargeMutableSyncSnapshot)>=Vec::new();
     let mut failed=false;
     for (kind,key,through) in state.store.dirty_mutables()? {
+        state.check_archive_cancelled()?;
         if kind != "charge" { continue }
         let ts=key.parse::<i64>().context("invalid queued charging session")?;
         let receipt=receipt_key(&binding,ts);
@@ -214,6 +216,7 @@ pub(super) async fn push(state: &Arc<CloudStateInner>, client: &CloudClient,
     let ids: HashSet<_>=snapshots.iter().map(|(_,_,s)| &s.upload.as_ref().unwrap().0).collect();
     ensure!(ids.len() == snapshots.len(), "multiple local sessions target the same Cloud charging session");
     for chunk in snapshots.chunks(200) {
+        state.check_archive_cancelled()?;
         let ids: Vec<_>=chunk.iter().map(|(_,_,s)| s.upload.as_ref().unwrap().0.clone()).collect();
         let remotes=read_states(state,client,creds,&binding,&ids).await?;
         let mut ready=Vec::new();

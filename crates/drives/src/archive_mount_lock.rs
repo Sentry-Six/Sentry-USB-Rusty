@@ -28,7 +28,7 @@ pub fn acquire(timeout: Duration) -> io::Result<ArchiveMountGuard> {
     acquire_path(Path::new(ARCHIVE_MOUNT_LOCK_PATH), timeout)
 }
 
-fn acquire_path(path: &Path, timeout: Duration) -> io::Result<ArchiveMountGuard> {
+pub(crate) fn acquire_path(path: &Path, timeout: Duration) -> io::Result<ArchiveMountGuard> {
     let file = OpenOptions::new()
         .read(true)
         .write(true)

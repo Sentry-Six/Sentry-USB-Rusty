@@ -202,6 +202,8 @@ pub struct Processor {
     store: Arc<DriveStore>,
     hub: sentryusb_ws::Hub,
     running: AtomicBool,
+    archive_control: crate::archive_control::ArchiveControl,
+    run_cycle: std::sync::Mutex<Option<String>>,
     status: Mutex<ProcessingStatus>,
     clip_dir: String,
     /// Optional: woken with `notify_one()` whenever `do_process` finishes.
@@ -240,6 +242,8 @@ impl Processor {
             store,
             hub,
             running: AtomicBool::new(false),
+            archive_control: crate::archive_control::ArchiveControl::default(),
+            run_cycle: std::sync::Mutex::new(None),
             status: Mutex::new(ProcessingStatus {
                 running: false,
                 total_files: 0,
@@ -294,7 +298,10 @@ impl Processor {
     /// polls immediately (as the post-archive script does) would read that
     /// as "already finished".
     pub fn try_reserve(&self) -> bool {
-        !self.running.swap(true, Ordering::SeqCst)
+        let mut cycle = self.run_cycle.lock().unwrap();
+        if self.running.swap(true, Ordering::SeqCst) { return false; }
+        *cycle = self.archive_control.active_cycle();
+        true
     }
 
     /// Run a new-clip pass using a reservation already taken by
@@ -302,17 +309,19 @@ impl Processor {
     /// error path, so a failure cannot wedge the processor.
     pub async fn process_new_reserved(&self) -> Result<()> {
         let result = self.do_process(false).await;
+        self.status.lock().await.running = false;
         self.running.store(false, Ordering::SeqCst);
         result
     }
 
     /// Start processing new (unprocessed) clip files.
     pub async fn process_new(&self) -> Result<()> {
-        if self.running.swap(true, Ordering::SeqCst) {
+        if !self.try_reserve() {
             anyhow::bail!("processing already in progress");
         }
 
         let result = self.do_process(false).await;
+        self.status.lock().await.running = false;
         self.running.store(false, Ordering::SeqCst);
         result
     }
@@ -321,12 +330,16 @@ impl Processor {
     /// are upserted in place by `add_route`, so there's no need to wipe
     /// them first.
     pub async fn reprocess_all(&self) -> Result<()> {
-        if self.running.swap(true, Ordering::SeqCst) {
+        if !self.try_reserve() {
             anyhow::bail!("processing already in progress");
         }
 
-        self.store.clear_processed_for_reprocess()?;
-        let result = self.do_process(true).await;
+        let result = async {
+            if self.stop_if_cancelled().await { return Ok(()); }
+            self.store.clear_processed_for_reprocess()?;
+            self.do_process(true).await
+        }.await;
+        self.status.lock().await.running = false;
         self.running.store(false, Ordering::SeqCst);
         result
     }
@@ -455,7 +468,26 @@ impl Processor {
         Ok(outcome)
     }
 
+    // Never abort a spawn_blocking worker: its clip transaction (or archive
+    // export) must finish before the shell is allowed to unmount the share.
+    async fn stop_if_cancelled(&self) -> bool {
+        let cycle_cancelled = self.run_cycle.lock().unwrap().as_deref()
+            .is_some_and(|id| self.archive_control.cycle_cancelled(id));
+        if !cycle_cancelled && !self.archive_control.cancelled() { return false; }
+        let _ = self.store.save();
+        let mut status = self.status.lock().await;
+        status.current_file = None;
+        self.hub.broadcast("drive_process", &serde_json::json!({
+            "status": "cancelled",
+            "processed": status.processed_files,
+            "total": status.total_files,
+        }));
+        info!("drive processing cancelled with completed clips preserved");
+        true
+    }
+
     async fn do_process(&self, _reprocess: bool) -> Result<()> {
+        if self.stop_if_cancelled().await { return Ok(()); }
         // Bulk-ingest mode for the whole pass: lets the drive-cache
         // getters serve a briefly-stale copy instead of re-running the
         // grouper on every poll while add_route re-dirties per clip.
@@ -476,6 +508,7 @@ impl Processor {
         // Event tree scanned up front: its paths join the membership
         // query, and its timestamps seed the anchor window below.
         let event_files = self.scan_event_files()?;
+        if self.stop_if_cancelled().await { return Ok(()); }
 
         // Membership for exactly the paths on disk this pass — chunked
         // indexed lookups, not the whole lifetime history into a HashSet.
@@ -592,6 +625,7 @@ impl Processor {
         let mut full_path = String::with_capacity(self.clip_dir.len() + 128);
 
         for (i, file) in unprocessed.iter().enumerate() {
+            if self.stop_if_cancelled().await { return Ok(()); }
             {
                 let mut status = self.status.lock().await;
                 status.current_file = Some(file.clone());
@@ -617,6 +651,7 @@ impl Processor {
             })
             .await
             .unwrap_or_else(|e| ClipOutcome::err(format!("clip task panicked — {}", e)));
+            self.status.lock().await.processed_files = i + 1;
 
             if clip.route_added {
                 routes_found += 1;
@@ -661,6 +696,7 @@ impl Processor {
 
         // Final checkpoint on the way out.
         let _ = self.store.save();
+        if self.stop_if_cancelled().await { return Ok(()); }
 
         // Refresh the gap-fill manifest the snapshot builder reads to
         // cross-link hole-filling event clips back into RecentClips for
@@ -677,6 +713,7 @@ impl Processor {
         // Post-process hook (daemon: RecentClips backfill links). Runs
         // AFTER the manifest rewrite so a fresh manifest is what it reads;
         // fs-heavy, so keep it off the async worker thread.
+        if self.stop_if_cancelled().await { return Ok(()); }
         if let Some(hook) = self.after_process.clone() {
             if let Err(e) = tokio::task::spawn_blocking(move || hook()).await {
                 warn!("after-process hook panicked: {}", e);
@@ -693,6 +730,7 @@ impl Processor {
         // No-op when /mnt/archive isn't mounted (rsync/rclone setups,
         // manual runs, away-mode snapshot processing) and when no new
         // routes landed since the last successful sync.
+        if self.stop_if_cancelled().await { return Ok(()); }
         {
             let store = self.store.clone();
             match tokio::task::spawn_blocking(move || store.sync_to_archive()).await {
@@ -702,6 +740,7 @@ impl Processor {
             }
         }
 
+        if self.stop_if_cancelled().await { return Ok(()); }
         {
             let mut status = self.status.lock().await;
             status.running = false;
@@ -757,6 +796,7 @@ impl Processor {
     ) -> Result<()> {
         let entries = std::fs::read_dir(dir)?;
         for entry in entries {
+            if self.archive_control.cancelled() { break; }
             let entry = entry?;
             let path = entry.path();
             if path.is_dir() {
@@ -1180,6 +1220,74 @@ mod tests {
             "a failed pass must still release the processor"
         );
         assert!(processor.try_reserve(), "processor must be claimable again");
+    }
+
+    #[tokio::test]
+    async fn archive_cancel_preserves_finished_clips_and_skips_remaining_work() {
+        let root = tempfile::tempdir().unwrap();
+        let clips = root.path().join("TeslaCam/RecentClips/2026-09-27");
+        std::fs::create_dir_all(&clips).unwrap();
+        for i in 0..40 {
+            // Invalid clips still exercise the processor's durable processed-file
+            // bookkeeping without relying on a large video fixture.
+            std::fs::write(clips.join(format!("2026-09-27_12-{i:02}-00-front.mp4")), b"invalid").unwrap();
+        }
+        let store = Arc::new(crate::db::DriveStore::open_memory().unwrap());
+        let mut processor = Processor::with_clip_dir_for_test(
+            store.clone(), root.path().join("TeslaCam").to_string_lossy().into_owned(),
+        );
+        processor.archive_control = crate::archive_control::ArchiveControl::new(root.path());
+        let cycle = format!("{}:first", std::process::id());
+        std::fs::write(root.path().join("archive-cycle"), &cycle).unwrap();
+        let hooks = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let count = hooks.clone();
+        processor.set_after_process(Arc::new(move || { count.fetch_add(1, Ordering::SeqCst); }));
+        let processor = Arc::new(processor);
+        assert!(processor.try_reserve());
+        let p = processor.clone();
+        let run = tokio::spawn(async move { p.process_new_reserved().await });
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while processor.get_status().await.processed_files < 2 {
+                tokio::task::yield_now().await;
+            }
+        }).await.unwrap();
+        processor.archive_control.request_cancel(&cycle).unwrap();
+        run.await.unwrap().unwrap();
+        let status = processor.get_status().await;
+        assert!(!status.running);
+        assert!(status.processed_files >= 2 && status.processed_files < 40);
+        assert_eq!(hooks.load(Ordering::SeqCst), 0, "cancel must skip post-processing");
+        let completed = status.processed_files;
+
+        // End this visit. No resume action and no persistent disabled flag.
+        std::fs::remove_file(root.path().join("archive-cycle")).unwrap();
+        processor.process_new().await.unwrap();
+        let next = processor.get_status().await;
+        assert_eq!(next.total_files, 40 - completed, "finished clips must not be reprocessed");
+        assert_eq!(hooks.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn cancelled_reservation_cannot_restart_work_after_the_shell_goes_idle() {
+        let root = tempfile::tempdir().unwrap();
+        let mut p = Processor::with_clip_dir_for_test(
+            Arc::new(crate::db::DriveStore::open_memory().unwrap()),
+            root.path().to_string_lossy().into_owned(),
+        );
+        p.archive_control = crate::archive_control::ArchiveControl::new(root.path());
+        let cycle = format!("{}:reserved", std::process::id());
+        std::fs::write(root.path().join("archive-cycle"), &cycle).unwrap();
+        let hooks = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let count = hooks.clone();
+        p.set_after_process(Arc::new(move || { count.fetch_add(1, Ordering::SeqCst); }));
+        assert!(p.try_reserve());
+        p.archive_control.request_cancel(&cycle).unwrap();
+        std::fs::remove_file(root.path().join("archive-cycle")).unwrap();
+        p.process_new_reserved().await.unwrap();
+        assert_eq!(hooks.load(Ordering::SeqCst), 0);
+        assert!(!p.is_running());
+        p.process_new().await.unwrap();
+        assert_eq!(hooks.load(Ordering::SeqCst), 1);
     }
 
 }

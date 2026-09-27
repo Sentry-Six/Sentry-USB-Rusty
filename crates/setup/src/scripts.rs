@@ -167,6 +167,7 @@ cat "$optfile"
 // no archive ever runs.
 
 const ARCHIVELOOP: &str = include_str!("../../../run/archiveloop");
+const ARCHIVE_CONTROL: &str = include_str!("../../../run/archive-control.sh");
 const POST_ARCHIVE_PROCESS: &str = include_str!("../../../run/post-archive-process.sh");
 const AWAKE_START: &str = include_str!("../../../run/awake_start");
 const AWAKE_STOP: &str = include_str!("../../../run/awake_stop");
@@ -200,6 +201,7 @@ pub async fn install_runtime_scripts(emitter: &crate::SetupEmitter) -> Result<bo
         // disconnect-archive.sh, copy-music.sh, verify-and-configure-
         // archive.sh) are installed by `archive::install_archive_scripts`
         // based on ARCHIVE_SYSTEM, since each system has its own copy.
+        ("archive-control.sh", ARCHIVE_CONTROL),
         ("archiveloop", ARCHIVELOOP),
         ("post-archive-process.sh", POST_ARCHIVE_PROCESS),
         ("awake_start", AWAKE_START),

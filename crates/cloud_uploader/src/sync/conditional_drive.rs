@@ -197,6 +197,7 @@ async fn advance(state:&Arc<CloudStateInner>,client:&CloudClient,creds:&CloudCre
     }
     let waiting:Vec<_>=pending.members.iter().enumerate().filter(|(_,member)|member.outcome==Outcome::Pending).map(|(index,_)|index).collect();
     for chunk in waiting.chunks(100) {
+        state.check_archive_cancelled()?;
         {
             let _guard=revision::current_pairing(state,&pending.binding).await?;
             state.store.with_locked_conn(|conn| -> Result<()> {
@@ -221,8 +222,10 @@ async fn advance(state:&Arc<CloudStateInner>,client:&CloudClient,creds:&CloudCre
 }
 
 pub(super) async fn push(state:&Arc<CloudStateInner>,client:&CloudClient,creds:&CloudCredentialsV1,pi_key:&[u8;32])->Result<()> {
+    state.check_archive_cancelled()?;
     let binding=revision::binding(creds)?;let mut failed=false;
     for (kind,drive,through) in state.store.dirty_mutables()? {
+        state.check_archive_cancelled()?;
         if kind!="drive" {continue}
         let result:Result<()>=async {
             {let _guard=revision::current_pairing(state,&binding).await?;}

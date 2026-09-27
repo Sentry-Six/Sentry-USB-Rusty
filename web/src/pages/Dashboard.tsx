@@ -22,6 +22,7 @@ import {
   WifiOffIcon,
 } from "@/components/icons"
 import { api } from "@/lib/api"
+import { CancelArchiveButton } from "@/components/dashboard/CancelArchiveButton"
 import { useKeepAwake } from "@/hooks/useKeepAwake"
 import { useAwayMode } from "@/hooks/useAwayMode"
 import { useUpdateAvailable } from "@/hooks/useUpdateAvailable"
@@ -29,7 +30,7 @@ import { useWifiFirmware } from "@/hooks/useWifiFirmware"
 import { WifiFirmwareModal } from "@/components/dashboard/WifiFirmwareModal"
 import { fetchCurrentCharge } from "@/api/charging"
 import type { CurrentCharge } from "@/types/charging"
-import type { PiStatus, DriveStats, StorageBreakdown } from "@/lib/api"
+import type { PiStatus, DriveStats, StorageBreakdown, ArchiveCycle } from "@/lib/api"
 import { wsClient } from "@/lib/ws"
 import { formatUptime, formatBytes, formatTemp } from "@/lib/utils"
 import { useUnits } from "@/lib/units"
@@ -134,6 +135,7 @@ export default function Dashboard() {
   const [storageBreakdown, setStorageBreakdown] =
     useState<StorageBreakdown | null>(null)
   const [archiveProgress, setArchiveProgress] = useState<ProcessProgress | null>(null)
+  const [archiveCycle, setArchiveCycle] = useState<ArchiveCycle | null>(null)
   const [processing, setProcessing] = useState(false)
   const [processProgress, setProcessProgress] = useState<ProcessProgress | null>(null)
   // Units come from the shared store — coherent defaults and live-synced with
@@ -195,6 +197,7 @@ export default function Dashboard() {
         ])
         if (!mounted) return
         setDriveStats(stats)
+        setArchiveCycle(driveStatus.archive_cycle ?? null)
         setProcessing(driveStatus.running)
         if (!driveStatus.running) {
           setProcessProgress(null)
@@ -406,7 +409,7 @@ export default function Dashboard() {
       ) {
         setProcessing(true)
         setProcessProgress({ current: msg.current, total: msg.total })
-      } else if (msg.status === "complete" || msg.status === "error") {
+      } else if (msg.status === "complete" || msg.status === "error" || msg.status === "cancelled") {
         setProcessing(false)
         setProcessProgress(null)
         fetchDriveStats()
@@ -603,6 +606,7 @@ export default function Dashboard() {
         />
         <ActivityTile
           driveStats={driveStats}
+          archiveCycle={archiveCycle}
           archiveProgress={archiveProgress}
           processProgress={processProgress}
           processing={processing}
@@ -937,6 +941,7 @@ function StorageTile({
 
 function ActivityTile({
   driveStats,
+  archiveCycle,
   archiveProgress,
   processProgress,
   processing,
@@ -945,6 +950,7 @@ function ActivityTile({
   processEta,
 }: {
   driveStats: DriveStats | null
+  archiveCycle: ArchiveCycle | null
   archiveProgress: ProcessProgress | null
   processProgress: ProcessProgress | null
   processing: boolean
@@ -1062,6 +1068,8 @@ function ActivityTile({
           <div className="h-1.5 w-full animate-pulse rounded-full bg-slate-800" />
         </>
       )}
+
+      <CancelArchiveButton key={archiveCycle?.id ?? "idle"} cycle={archiveCycle} />
 
       {keepAwakeVisible && (
         <>

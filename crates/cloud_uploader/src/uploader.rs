@@ -36,9 +36,12 @@ pub async fn run_sweep_loop(state: Arc<CloudStateInner>) {
             }
             _ = tokio::time::sleep(sync_retry_delay(sync_failures)) => {
                 debug!("cloud sweep: woken by timer");
+                state.archive_cancelled.store(false, std::sync::atomic::Ordering::SeqCst);
             }
         }
 
+        let _work = sentryusb_drives::archive_control::ArchiveWorkGuard::begin();
+        if state.archive_cancel_requested() { continue; }
         match sweep_once(state.clone()).await {
             Ok(uploaded) if uploaded > 0 => {
                 info!("cloud sweep complete: {} routes uploaded", uploaded);
@@ -52,6 +55,7 @@ pub async fn run_sweep_loop(state: Arc<CloudStateInner>) {
         }
 
         // Route and charge failures are reported independently.
+        if state.archive_cancel_requested() { continue; }
         match crate::charges::sweep_once(state.clone()).await {
             Ok(uploaded) if uploaded > 0 => {
                 info!("cloud charge sweep complete: {} sessions uploaded", uploaded);
@@ -65,6 +69,7 @@ pub async fn run_sweep_loop(state: Arc<CloudStateInner>) {
         }
 
         // Drain deletions after uploads to retire mid-sweep races immediately.
+        if state.archive_cancel_requested() { continue; }
         match crate::charge_deletes::sweep_once(state.clone()).await {
             Ok(n) if n > 0 => {
                 info!("cloud charge delete sweep: {} sessions retired", n);
@@ -77,6 +82,7 @@ pub async fn run_sweep_loop(state: Arc<CloudStateInner>) {
             }
         }
 
+        if state.archive_cancel_requested() { continue; }
         match crate::sync::run_once(state.clone()).await {
             Ok(())=>sync_failures=0,
             Err(e) if crate::sync::work_pending(&e)=>sync_failures=1,
@@ -93,6 +99,7 @@ struct PreparedBatch {
 }
 
 async fn sweep_once(state: Arc<CloudStateInner>) -> Result<u32> {
+    if state.archive_cancel_requested() { return Ok(0); }
 
     let creds_snapshot = {
         let g = state.creds.lock().await;
@@ -121,6 +128,7 @@ async fn sweep_once(state: Arc<CloudStateInner>) -> Result<u32> {
 
     let mut total_stored: u32 = 0;
     loop {
+        if state.archive_cancel_requested() { return Ok(total_stored); }
 
         // Route decoding and encryption are synchronous; keep them off async workers.
         let prep = {
@@ -215,6 +223,7 @@ async fn sweep_once(state: Arc<CloudStateInner>) -> Result<u32> {
             pi_id: creds_snapshot.pi_id.clone(),
             routes: wire_routes,
         };
+        if state.archive_cancel_requested() { return Ok(total_stored); }
         { let _guard=state.current_credentials(&creds_snapshot).await?; }
         let resp = client
             .post_json_bearer_with_headers(
@@ -404,6 +413,28 @@ struct UploadResult {
 #[cfg(test)]
 mod retry_tests {
     use super::*;
+    #[tokio::test]
+    async fn archive_cancel_skips_queued_work_and_the_next_normal_nudge_runs() {
+        let state = Arc::new(CloudStateInner::new(
+            Arc::new(sentryusb_drives::DriveStore::open_memory().unwrap()),
+            sentryusb_ws::Hub::new(), Arc::new(tokio::sync::Notify::new()),
+            "https://synthetic.invalid".into(), String::new(), None,
+        ));
+        let uploader = crate::CloudUploader { inner: state.clone() };
+        // If cancelled work even attempts credentials/network preparation it
+        // blocks here. This also models a notification queued before Cancel.
+        let credentials = state.creds.lock().await;
+        uploader.cancel_archive_work();
+        assert_eq!(tokio::time::timeout(Duration::from_millis(100), sweep_once(state.clone())).await.unwrap().unwrap(), 0);
+        assert_eq!(tokio::time::timeout(Duration::from_millis(100), crate::charges::sweep_once(state.clone())).await.unwrap().unwrap(), 0);
+        assert_eq!(tokio::time::timeout(Duration::from_millis(100), crate::charge_deletes::sweep_once(state.clone())).await.unwrap().unwrap(), 0);
+        assert!(tokio::time::timeout(Duration::from_millis(100), crate::sync::run_once(state.clone())).await.unwrap().is_ok());
+        uploader.nudge();
+        assert!(tokio::time::timeout(Duration::from_millis(20), sweep_once(state.clone())).await.is_err());
+        drop(credentials);
+        assert_eq!(sweep_once(state).await.unwrap(), 0);
+    }
+
     #[test]
     fn sync_failures_retry_soon_then_back_off_without_exceeding_the_safety_interval() {
         assert_eq!(sync_retry_delay(0),SAFETY_TIMER);

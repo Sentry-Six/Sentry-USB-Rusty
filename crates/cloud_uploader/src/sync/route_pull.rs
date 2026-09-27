@@ -151,6 +151,7 @@ pub(super) async fn read_states(state:&CloudStateInner,client:&CloudClient,creds
     binding:&str,ids:&[String])->Result<HashMap<String,Remote>> {
     let mut states=HashMap::new();
     for chunk in ids.chunks(100) {
+        state.check_archive_cancelled()?;
         {let _guard=revision::current_pairing(state,binding).await?;}
         let response=client.post_json_bearer("/api/pi/sync/state",&json!({
             "piId":creds.pi_id,"dekRotationGeneration":creds.dek_rotation_generation,

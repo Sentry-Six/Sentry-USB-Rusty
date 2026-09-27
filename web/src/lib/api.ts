@@ -64,6 +64,11 @@ export interface DriveStats {
   assisted_percent: number
 }
 
+export interface ArchiveCycle {
+  id: string
+  cancelling: boolean
+}
+
 export interface DriveStatus {
   running: boolean
   routes_count: number
@@ -74,6 +79,7 @@ export interface DriveStatus {
   archiving?: boolean
   process_current?: number
   process_total?: number
+  archive_cycle?: ArchiveCycle | null
 }
 
 export interface EventMeta {
@@ -244,6 +250,10 @@ export interface ClipTelemetry {
 }
 
 export const api = {
+  cancelArchive: (cycleId: string) => request<{ success: boolean }>("/system/cancel-archive", {
+    method: "POST",
+    body: JSON.stringify({ cycle_id: cycleId }),
+  }),
   // Travel Mode keeps the USB gadget connected while archiving. Omitted
   // optional cadence and retry flags leave their persisted values unchanged.
   getTravelMode: () =>

@@ -146,6 +146,7 @@ async fn prepare_initial(state:&CloudStateInner,client:&CloudClient,creds:&Cloud
 }
 
 pub(super) async fn push(state:&Arc<CloudStateInner>,client:&CloudClient,creds:&CloudCredentialsV1,pi_key:&[u8;32])->Result<()> {
+    state.check_archive_cancelled()?;
     let binding=revision::binding(creds)?;
     {let _guard=revision::current_pairing(state,&binding).await?;}
     prepare_initial(state,client,creds,pi_key,&binding).await?;

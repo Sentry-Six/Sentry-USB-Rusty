@@ -83,6 +83,7 @@ async fn publish(state:&CloudStateInner,client:&CloudClient,creds:&CloudCredenti
     ensure!(matches,"Home setting changed after publication");Ok(())
 }
 pub(crate) async fn push(state:&Arc<CloudStateInner>,client:&CloudClient,creds:&CloudCredentialsV1,pi_key:&[u8;32])->Result<()> {
+    state.check_archive_cancelled()?;
     if !state.rate_config.as_ref().is_some_and(|access|access.home_config_sync_enabled()){return Ok(())}
     let _run=state.home_sync.lock().await;
     let binding=revision::binding(creds)?;

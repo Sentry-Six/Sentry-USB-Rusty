@@ -3,6 +3,7 @@
 set -euo pipefail
 
 script=${1:-run/archiveloop}
+source "$(dirname "$script")/archive-control.sh"
 
 sync_user_media_to_cam_source=$(awk '
   /^function sync_user_media_to_cam / {keep=1}
@@ -131,6 +132,20 @@ printf 'second\n' > "$workdir/Wraps/second.png"
 ensure_usb_drives_connected
 ensure_usb_drives_connected
 assert_calls 1 "changed host media"
+
+# Cancellation must not cycle an active recording gadget for pending media.
+reset
+mkdir -p "$workdir/Wraps"
+printf 'pending wrap\n' > "$workdir/Wraps/new.png"
+ARCHIVE_CONTROL_DIR="$workdir"
+archive_cycle_begin
+touch "$ARCHIVE_CONTROL_DIR/archive-cycle-cancel-$ARCHIVE_CYCLE_ID"
+ensure_usb_drives_connected
+assert_calls 0 "cancel preserves active recording connection"
+usb_active=false
+ensure_usb_drives_connected
+assert_calls 1 "cancel restores an inactive recording connection"
+archive_cycle_end
 
 # E: an NTP step changing only the state file's mtime → no cycle
 reset

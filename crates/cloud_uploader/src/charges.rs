@@ -147,6 +147,7 @@ fn upload_mutable(snapshot:&sentryusb_drives::db::ChargeUploadMutableSnapshot,su
 
 /// One sweep pass. Returns the number of sessions newly stored.
 pub async fn sweep_once(state: Arc<CloudStateInner>) -> Result<u32> {
+    if state.archive_cancel_requested() { return Ok(0); }
     let creds_snapshot = {
         let g = state.creds.lock().await;
         match g.as_ref() {
@@ -256,6 +257,7 @@ pub async fn sweep_once(state: Arc<CloudStateInner>) -> Result<u32> {
 
     let mut total_stored: u32 = 0;
     for batch in pending.chunks(BATCH_LIMIT) {
+        if state.archive_cancel_requested() { break; }
         let mut wire = Vec::with_capacity(batch.len());
         // charge_id → (session_ts, wrapped key b64) for the ack loop.
         let mut by_id = std::collections::HashMap::new();
@@ -291,6 +293,7 @@ pub async fn sweep_once(state: Arc<CloudStateInner>) -> Result<u32> {
             pi_id: creds_snapshot.pi_id.clone(),
             charges: wire,
         };
+        if state.archive_cancel_requested() { break; }
         anyhow::ensure!(read_home(&state).await?==home,"Home configuration changed; retry charging upload");
         { let _guard=state.current_credentials(&creds_snapshot).await?; }
         let resp = client

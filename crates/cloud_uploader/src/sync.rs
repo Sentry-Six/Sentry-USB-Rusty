@@ -70,6 +70,7 @@ struct RateConfigChange {
 
 /// Pushes local changes, then pulls cloud changes; failures retry next sweep.
 pub async fn run_once(state: Arc<CloudStateInner>) -> Result<()> {
+    if state.archive_cancel_requested() { return Ok(()); }
     let creds_snapshot = {
         let g = state.creds.lock().await;
         match g.as_ref() {

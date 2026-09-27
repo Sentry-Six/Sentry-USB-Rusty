@@ -116,6 +116,7 @@ pub struct CloudStateInner {
     pub store: Arc<DriveStore>,
     pub hub: Hub,
     pub notify: Arc<Notify>,
+    pub(crate) archive_cancelled: std::sync::atomic::AtomicBool,
     pub cloud_base_url: String,
     pub credentials_path: String,
 
@@ -150,6 +151,16 @@ impl Default for PairingProgress {
 }
 
 impl CloudStateInner {
+    pub(crate) fn check_archive_cancelled(&self) -> anyhow::Result<()> {
+        anyhow::ensure!(!self.archive_cancel_requested(), "archive cancelled");
+        Ok(())
+    }
+
+    pub(crate) fn archive_cancel_requested(&self) -> bool {
+        self.archive_cancelled.load(std::sync::atomic::Ordering::SeqCst)
+            || sentryusb_drives::archive_control::ArchiveControl::default().cancelled()
+    }
+
     pub fn new(
         store: Arc<DriveStore>,
         hub: Hub,
@@ -162,6 +173,7 @@ impl CloudStateInner {
             store,
             hub,
             notify,
+            archive_cancelled: std::sync::atomic::AtomicBool::new(false),
             cloud_base_url,
             credentials_path,
             rate_config,

@@ -449,6 +449,7 @@ pub async fn install_required_packages(emitter: &SetupEmitter) -> Result<bool> {
         ("fdisk", "fdisk"),
         ("curl", "curl"),
         ("rsync", "rsync"),
+        ("setsid", "util-linux"),
         ("jq", "jq"),
         ("ntpdig", "ntpsec-ntpdig"),
         ("nc", "netcat-openbsd"),

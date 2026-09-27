@@ -63,6 +63,7 @@ export MUSIC_MOUNT=/mnt/music
 
 # read the setup variables and define other environment variables and functions
 source /root/bin/envsetup.sh
+source /root/bin/archive-control.sh
 
 # Make sure awake_stop runs no matter how this script exits — set -e
 # is on (bash -eu above), so any unhandled error in archive_clips or
@@ -80,7 +81,7 @@ source /root/bin/envsetup.sh
 # That also covers a mid-cycle toggle: enabling Travel Mode between
 # awake_start and awake_stop still kills the nudge loop instead of
 # leaving it nudging the car every 5 minutes for the rest of the trip.
-trap '/root/bin/awake_stop || true' EXIT
+trap 'archive_cycle_end; clear_archive_status; /root/bin/awake_stop || true' EXIT
 
 # Reason passed to awake_start so nudge log lines show what is keeping the car awake.
 export KEEP_AWAKE_REASON=Archive
@@ -315,6 +316,7 @@ CAM_MEDIA_WATCH_PATHS=(
 # Durable: cleanup still owed after a real archive (or short recordings) so
 # zero-clip skips cannot permanently drop free-space work across restarts.
 CAM_CLEANUP_PENDING=/mutable/sentryusb_cam_cleanup_pending
+CAM_CLEANUP_DEFERRED=/mutable/sentryusb_cam_cleanup_deferred
 
 # Run "$@" holding the gadget-cycle lock. Single definition so the fd
 # number and lock path can never drift between call sites — a mismatch
@@ -449,6 +451,11 @@ function ensure_usb_drives_connected () {
 }
 
 function ensure_usb_drives_connected_locked () {
+  if archive_cancel_requested; then
+    # Keep the car's active recording connection intact on a user skip.
+    if ! usb_gadget_is_active; then connect_usb_drives_to_host_locked; fi
+    return 0
+  fi
   if cam_user_media_may_need_sync
   then
     log "User media changed; cycling gadget once to sync cam image"
@@ -638,7 +645,28 @@ function run_archive_cycle () {
     ARCHIVE_RETRY_ATTEMPT=0
   fi
   ARCHIVE_CYCLE_FAILED=0
-  archive_clips || ARCHIVE_CYCLE_FAILED=1
+  if archive_cancel_requested; then
+    archive_cancel_cleanup
+  else
+    archive_clips || ARCHIVE_CYCLE_FAILED=1
+  fi
+  ARCHIVE_CYCLE_CANCELLED=0
+  if archive_cancel_requested; then
+    ARCHIVE_CYCLE_CANCELLED=1
+    ARCHIVE_CYCLE_FAILED=0
+  fi
+}
+
+# Cancellation uses the normal wait-for-departure path, even in Travel Mode.
+# There is no persistent pause flag and no resume operation.
+function wait_after_archive_cycle () {
+  if [ "${ARCHIVE_CYCLE_CANCELLED:-0}" = "1" ]; then
+    wait_for_archive_to_be_unreachable
+  elif travel_mode_active; then
+    travel_mode_pace
+  elif archive_is_reachable; then
+    wait_for_archive_to_be_unreachable
+  fi
 }
 
 function wifi_cycle () {
@@ -1061,6 +1089,11 @@ function archive_progress_monitor () {
 }
 
 function clean_cam_mount {
+  archive_cancel_requested && return 0
+  if [ -e "${CAM_CLEANUP_DEFERRED:-/mutable/sentryusb_cam_cleanup_deferred}" ]; then
+    log "Skipping cam cleanup until a later archive succeeds after user cancellation"
+    return 0
+  fi
 
   local mode="${1:-}"
 
@@ -1085,12 +1118,12 @@ function clean_cam_mount {
 
   # Delete the files that fsck "recovered". These are generally files
   # that were deleted previously by the car or teslausb
-  find "${CAM_MOUNT}" \( \( -type f -name FSCK\*.REC \) -o \( -type f -name "*~[0-9].MP4" \) \) -print0 | xargs -0 rm -rf
+  archive_run_command find "${CAM_MOUNT}" \( \( -type f -name FSCK\*.REC \) -o \( -type f -name "*~[0-9].MP4" \) \) -exec rm -rf -- {} + || true
 
   # Delete short recordings
-  find "${CAM_MOUNT}" -type f -name \*.mp4 -size -100000c -delete
+  archive_run_command find "${CAM_MOUNT}" -type f -name \*.mp4 -size -100000c -delete || true
 
-  if [ "$mode" = "freespace" ]
+  if [ "$mode" = "freespace" ] && ! archive_cancel_requested
   then
     # Remove files, oldest first, until there is at least 20GB of free space
  
@@ -1105,11 +1138,13 @@ function clean_cam_mount {
     local freespace
     while read -r line
     do
+      archive_cancel_requested && break
       freespace=$(eval "$(stat --file-system --format="echo \$((%f*%S))" "${CAM_MOUNT}/.")")
       if ((freespace > 20000000000))
       then
         break;
       fi
+      archive_cancel_requested && break
       rm "${CAM_MOUNT}/$line"
     done < /tmp/rmcandidatesbytime.txt
     # Clean up temp files from RAM-backed /tmp
@@ -1117,16 +1152,16 @@ function clean_cam_mount {
   fi
 
   # delete directories that are now empty
-  find "$CAM_MOUNT/TeslaCam/RecentClips" "$CAM_MOUNT/TeslaCam/SavedClips" \
+  archive_run_command find "$CAM_MOUNT/TeslaCam/RecentClips" "$CAM_MOUNT/TeslaCam/SavedClips" \
     "$CAM_MOUNT/TeslaCam/SentryClips" "$CAM_MOUNT/TeslaTrackMode" -mindepth 1 -type d -empty -delete || true
 
   # Trim the camera archive to reduce the number of blocks in the snapshot.
-  trim_free_space "$CAM_MOUNT"
+  if ! archive_cancel_requested; then trim_free_space "$CAM_MOUNT"; fi
 
   unmount_cam_file
 
   log "done cleaning cam mount"
-  if [ "$mode" = "freespace" ]
+  if [ "$mode" = "freespace" ] && ! archive_cancel_requested
   then
     clear_cam_cleanup_pending
   fi
@@ -1143,10 +1178,11 @@ function retire_short_recording_links_locked () {
 
   while IFS= read -r path
   do
+    archive_cancel_requested && return 0
     link="$index_root/$path"
     if [ -L "$link" ] &&
        size=$(stat -Lc '%s' -- "$link" 2>/dev/null) &&
-       [ "$size" -lt 100000 ]
+       [ "$size" -lt 100000 ] && ! archive_cancel_requested
     then
       if rm -f -- "$link"
       then
@@ -1158,7 +1194,7 @@ function retire_short_recording_links_locked () {
     fi
   done < "$ignorelist"
 
-  find "$index_root/RecentClips" "$index_root/SavedClips" \
+  archive_run_command find "$index_root/RecentClips" "$index_root/SavedClips" \
     "$index_root/SentryClips" "$index_root/TeslaTrackMode" \
     -mindepth 1 -depth -type d -empty -delete 2>/dev/null || true
 
@@ -1432,13 +1468,17 @@ function archive_teslacam_clips () {
 
     local travel_active=0
     if travel_mode_active; then travel_active=1; fi
-    if TRAVEL_MODE_ACTIVE="$travel_active" /root/bin/archive-clips.sh "$overlaymerged" "${sentrylist}" "${triggerdir}" "${triggerlist}"
+    if TRAVEL_MODE_ACTIVE="$travel_active" archive_run_command /root/bin/archive-clips.sh "$overlaymerged" "${sentrylist}" "${triggerdir}" "${triggerlist}"
     then
       message="Archiving completed successfully. "
     else
       local arc_exit=$?
       message="Error during archiving. "
       archive_success=false
+      if archive_cancel_requested; then
+        message="Archiving cancelled by user. "
+        log "Archive transfer cancelled by user"
+      else
       log "ERROR: archive-clips.sh failed with exit code $arc_exit"
       # Capture SoC temperature immediately, before the chip cools, to help
       # diagnose overheating-related archive failures.
@@ -1455,6 +1495,7 @@ function archive_teslacam_clips () {
         log "--- rsync cmd log (last 10 lines) ---"
         tail -10 /tmp/archive-rsync-cmd.log >> "$LOG_FILE"
         log "--- end rsync cmd log ---"
+      fi
       fi
     fi
 
@@ -1515,7 +1556,9 @@ function archive_teslacam_clips () {
     if [ "$archive_success" = "false" ] && [ -n "$fail_temp" ]; then
       message+=". SoC temp at failure: $fail_temp"
     fi
-    if [ "${ARCHIVE_RETRY_ATTEMPT:-0}" = "1" ] && [ "$archive_success" = "false" ]; then
+    if archive_cancel_requested; then
+      log "Archive cancelled by user; completed transfers recorded, remaining footage preserved"
+    elif [ "${ARCHIVE_RETRY_ATTEMPT:-0}" = "1" ] && [ "$archive_success" = "false" ]; then
       # Still failing on a fast retry: log it, but don't push a failure
       # notification every minute. The eventual success (or the first
       # failure of a normal cycle) still notifies.
@@ -1530,7 +1573,7 @@ function archive_teslacam_clips () {
     fi
 
     # Check RTC battery health (Pi 5 only) — warn on every archive if dead/missing
-    if [ "${RTC_BATTERY_ENABLED:-false}" = "true" ] && isPi5; then
+    if ! archive_cancel_requested && [ "${RTC_BATTERY_ENABLED:-false}" = "true" ] && isPi5; then
       rtc_year=$(cut -d- -f1 < /sys/class/rtc/rtc0/date 2>/dev/null)
       if [ -n "$rtc_year" ] && [ "$rtc_year" -lt 2024 ]; then
         /root/bin/send-push-message "$NOTIFICATION_TITLE:" \
@@ -1549,10 +1592,20 @@ function archive_teslacam_clips () {
   # overlayfs behavior is undefined if the lower is changed while the overlay is active, so umount first
   umount "$overlaymerged"
 
+  # Preserve the completed-transfer ledger above, but NEVER run footage
+  # cleanup after a user skip (including a request after the last copy).
+  archive_cancel_requested && return 125
+
   if archive_is_reachable
   then
     if [ "$archive_success" = "true" ]
     then
+      # A user skip protects footage across sleep/reboot as well. Only a
+      # subsequent successful transfer may release that cleanup deferral.
+      if ! archive_allow_cleanup_after_success; then
+        log "ERROR: could not release deferred cam cleanup"
+        return 1
+      fi
       if travel_mode_active; then
         log "Travel Mode: deferring freespace cleanup to keep the USB gadget connected to the car"
         if [ "$total_count" -gt 0 ] || [ "$ignore_count" -gt 0 ]
@@ -1598,12 +1651,14 @@ function copy_music_files () {
 
   ensure_music_file_is_mounted
 
-  /root/bin/copy-music.sh
+  local music_result=0
+  archive_run_command /root/bin/copy-music.sh || music_result=$?
 
   # Trim the empty space from the music archive.
-  trim_free_space "$MUSIC_MOUNT"
+  if ! archive_cancel_requested; then trim_free_space "$MUSIC_MOUNT"; fi
 
   unmount_music_file
+  return "$music_result"
 }
 
 function has_cam_disk () {
@@ -1611,6 +1666,7 @@ function has_cam_disk () {
 }
 
 function cloud_upload_step () {
+  archive_cancel_requested && return 125
   # Cloud upload as a real archiveloop stage. Runs after post-archive-process,
   # inside the awake_start/awake_stop window so the car (and therefore Pi
   # power) stays alive for the duration. Polls the local API until pending
@@ -1651,7 +1707,7 @@ function cloud_upload_step () {
   local last_logged=$pending
 
   while [ "$(date +%s)" -lt "$deadline" ]; do
-    sleep 10
+    archive_run_command sleep 10 || return 125
     if ! status_json=$(curl -sf -m 5 "$api/api/cloud/status" 2>/dev/null); then
       log "Cloud upload: status check failed (WiFi/API issue); retrying"
       continue
@@ -1687,6 +1743,36 @@ function cloud_upload_step () {
   return 0
 }
 
+function archive_wait_for_processor () {
+  local status api="http://127.0.0.1:${SENTRYUSB_PORT:-80}"
+  # The Rust processor checks the cycle request at safe boundaries. Wait
+  # for its current transaction/export before unmounting its input/output.
+  while true; do
+    if status=$(curl -sf --max-time 5 "$api/api/drives/status"); then
+      if echo "$status" | grep -q '"running":false' &&
+         echo "$status" | grep -q '"archive_work_running":false'; then return 0; fi
+    elif ! systemctl is-active --quiet sentryusb; then
+      return 0
+    fi
+    sleep 1
+  done
+}
+
+function archive_cancel_cleanup () {
+  log "Archive cycle skipped by user; skipping footage cleanup and remaining stages"
+  if ! printf 'deferred until successful archive\n' > "$CAM_CLEANUP_DEFERRED"; then
+    log "ERROR: could not persist cam cleanup deferral"
+  fi
+  sync -f "${CAM_CLEANUP_DEFERRED%/*}" >> "$LOG_FILE" 2>&1 || true
+  archive_wait_for_processor
+  clear_archive_status
+  if ! usb_gadget_is_active; then
+    ensure_usb_drives_connected || log "ERROR: failed to restore USB gadget after cancellation"
+  fi
+  /root/bin/disconnect-archive.sh 2>> "$LOG_FILE" || true
+  /root/bin/send-live-activity end cancelled || true
+}
+
 function archive_clips () {
   log "Archiving..."
 
@@ -1696,8 +1782,9 @@ function archive_clips () {
   # only clips left behind by a broken uplink justify a rapid retry.
   local clips_ok=true
 
-  if ! /root/bin/connect-archive.sh
+  if ! archive_run_command /root/bin/connect-archive.sh
   then
+    if archive_cancel_requested; then archive_cancel_cleanup; return 125; fi
     log "ERROR: connect-archive.sh failed (exit $?), skipping archive step."
     log "  ARCHIVE_SYSTEM=${ARCHIVE_SYSTEM:-unset} ARCHIVE_SERVER=${ARCHIVE_SERVER:-unset}"
     if [ "${ARCHIVE_SYSTEM:-}" = "cifs" ]; then
@@ -1716,6 +1803,8 @@ function archive_clips () {
     log "Archiving failed."
     clips_ok=false
   fi
+
+  if archive_cancel_requested; then archive_cancel_cleanup; return 125; fi
 
   # If the user drove away during archive, the gadget is still presented to
   # the car (clean_cam_mount was skipped inside archive_teslacam_clips). Skip
@@ -1751,6 +1840,8 @@ function archive_clips () {
     log "Music archive not configured or unreachable (MUSIC_ARCHIVE_MOUNT=${MUSIC_ARCHIVE_MOUNT:-unset})"
   fi
 
+  if archive_cancel_requested; then archive_cancel_cleanup; return 125; fi
+
   touch /tmp/flag_post_archive  #Set post-archive flag for optional temperature logging
   clear_archive_status
   # Reconnect only when cleanup/music left the gadget down or host media is
@@ -1765,8 +1856,10 @@ function archive_clips () {
   else
     ensure_usb_drives_connected || log "ERROR: failed to ensure USB gadget after archive"
   fi
-  /root/bin/post-archive-process.sh || log "ERROR: post-archive-process.sh failed (exit $?)"
-  cloud_upload_step
+  archive_run_command /root/bin/post-archive-process.sh || log "Post-archive processing stopped (exit $?)"
+  if archive_cancel_requested; then archive_cancel_cleanup; return 125; fi
+  cloud_upload_step || true
+  if archive_cancel_requested; then archive_cancel_cleanup; return 125; fi
   # Same live-activity pairing rule as in archive_teslacam_clips: retry
   # attempts never sent a start, so don't send an unmatched end.
   if [ "${ARCHIVE_RETRY_ATTEMPT:-0}" != "1" ]; then
@@ -2437,6 +2530,7 @@ then
   # still reaps the nudge loop / BLE lock), so calling it unconditionally
   # covers the case where Travel Mode was enabled mid-cycle after
   # awake_start already spawned the nudge loop.
+  archive_cycle_begin
   if ! travel_mode_active; then
     /root/bin/awake_start || true
   fi
@@ -2452,11 +2546,9 @@ then
     ensure_usb_drives_connected || log "ERROR: failed to ensure USB gadget after archive cycle"
   fi
 
-  if travel_mode_active; then
-    travel_mode_pace
-  elif archive_is_reachable; then
-    wait_for_archive_to_be_unreachable
-  fi
+  archive_cycle_end
+  if [ "${ARCHIVE_CYCLE_CANCELLED:-0}" = 1 ]; then archive_cancel_cleanup; fi
+  wait_after_archive_cycle
 fi
 
 while true
@@ -2483,14 +2575,15 @@ do
 
   # Travel Mode: skip keep-awake; awake_stop stays unconditional
   # (see rationale at the first archive above).
+  archive_cycle_begin
   if ! travel_mode_active; then
     /root/bin/awake_start || true
   fi
 
-  sleep "${ARCHIVE_DELAY:-20}"
+  archive_run_command sleep "${ARCHIVE_DELAY:-20}" || true
 
   # take a snapshot before archive_clips starts deleting files
-  if has_cam_disk
+  if has_cam_disk && ! archive_cancel_requested
   then
     if ! /root/bin/make_snapshot.sh; then
       log "ERROR: make_snapshot.sh failed (exit $?)"
@@ -2507,11 +2600,9 @@ do
     ensure_usb_drives_connected || log "ERROR: failed to ensure USB gadget after archive cycle"
   fi
 
-  if travel_mode_active; then
-    travel_mode_pace
-  elif archive_is_reachable; then
-    wait_for_archive_to_be_unreachable
-  fi
+  archive_cycle_end
+  if [ "${ARCHIVE_CYCLE_CANCELLED:-0}" = 1 ]; then archive_cancel_cleanup; fi
+  wait_after_archive_cycle
 
   check_if_usb_gadget_is_mounted
 done

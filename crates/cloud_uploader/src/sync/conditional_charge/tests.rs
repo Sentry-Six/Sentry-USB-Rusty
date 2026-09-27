@@ -204,6 +204,35 @@ async fn proposal_storage_failure_prevents_the_network_write() {
 }
 
 #[tokio::test]
+async fn cancel_finishes_current_batch_and_preserves_unstarted_charging_edits() {
+    let (state,creds)=fixture();
+    let mut remotes=std::collections::HashMap::new();
+    for ts in 1..=201 {
+        let mut remote=charge(&state,ts,"1");
+        remote["status"]=json!("ok"); remote["recordVersion"]=json!("a".repeat(64));
+        state.store.set_charge_tags(ts,&["Work".into()]).unwrap();
+        remotes.insert(remote["id"].as_str().unwrap().to_string(),remote);
+    }
+    let cancel_state=state.clone();
+    let (client,task)=server(2,move |path,body,index| {
+        let items=body["items"].as_array().unwrap();
+        assert_eq!(items.len(),200);
+        if index==0 {
+            assert_eq!(path,"/api/pi/sync/state");
+            (200,json!({"ok":true,"writeProtocol":3,"items":items.iter().map(|i|remotes[i["id"].as_str().unwrap()].clone()).collect::<Vec<_>>()}))
+        } else {
+            assert_eq!(path,"/api/pi/sync/mutables/v3");
+            cancel_state.archive_cancelled.store(true,std::sync::atomic::Ordering::SeqCst);
+            (200,json!({"ok":true,"writeProtocol":3,"results":items.iter().map(|i|json!({"kind":"charge","id":i["id"],"status":"applied"})).collect::<Vec<_>>()}))
+        }
+    }).await;
+    let result=push(&state,&client,&creds,&PI_KEY).await;
+    task.await.unwrap();
+    assert!(result.unwrap_err().to_string().contains("archive cancelled"));
+    assert_eq!(state.store.dirty_mutables().unwrap().len(),1);
+}
+
+#[tokio::test]
 async fn matching_legacy_fields_reconcile_without_writing_a_replacement_envelope() {
     let (state,creds,mut remote)=setup();
     state.store.with_locked_conn(|c|c.execute("DELETE FROM mutable_intent_state",[])).unwrap();

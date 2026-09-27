@@ -38,6 +38,7 @@ pub(super) async fn apply(state:&Arc<CloudStateInner>,client:&CloudClient,creds:
     }
     let mut groups=if routes.is_empty(){Vec::new()}else{vec![routes]};
     while let Some(group)=groups.pop() {
+        state.check_archive_cancelled()?;
         let changes=group.iter().map(|target|RouteChange {route_id:target.id.clone()}).collect::<Vec<_>>();
         let prepared=route_pull::prepare(state,client,creds,pi_key,&changes).await;
         let _guard=guard(state,&binding,context).await?;
