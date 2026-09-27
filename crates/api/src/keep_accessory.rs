@@ -67,6 +67,7 @@ pub async fn set_keep_accessory(
                 "notification_type": "keep_accessory",
                 "title": title,
                 "message": message,
+                "summary": if req.on { "Accessory power turned on." } else { "Accessory power turned off." },
             })
             .to_string();
             tokio::spawn(async move {

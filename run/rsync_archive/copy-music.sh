@@ -1,5 +1,18 @@
 #!/bin/bash -eu
 
+function music_sync_summary {
+  local copied=$1 removed=$2 errors=$3 noun=errors
+  if (( errors == 1 )); then noun=error; fi
+  if (( errors > 0 )); then
+    printf 'Music sync incomplete: %d copied' "$copied"
+  else
+    printf 'Music synced: %d copied' "$copied"
+  fi
+  if (( removed > 0 )); then printf ', %d removed' "$removed"; fi
+  if (( errors > 0 )); then printf ', %d %s' "$errors" "$noun"; fi
+  printf '.'
+}
+
 DST="/mnt/music"
 LOG="/tmp/rsyncmusiclog.txt"
 
@@ -91,7 +104,7 @@ function do_music_sync {
 
   if [ $NUM_FILES_COPIED -ne 0 ] || [ $NUM_FILES_DELETED -ne 0 ] || [ $NUM_FILES_ERROR -ne 0 ]
   then
-    /root/bin/send-push-message "$NOTIFICATION_TITLE:" "$message" "" music_sync
+    /root/bin/send-push-message "$NOTIFICATION_TITLE:" "$message" "" music_sync "$(music_sync_summary "$NUM_FILES_COPIED" "$NUM_FILES_DELETED" "$NUM_FILES_ERROR")"
   else
     log "$message"
   fi

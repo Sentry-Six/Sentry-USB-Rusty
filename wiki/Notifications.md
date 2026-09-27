@@ -2,15 +2,39 @@
 
 Sentry USB can send you push notifications when:
 
-- An archive succeeds or fails
-- A drive fills up
-- Sentry events fire
-- The BLE keep-awake loses pairing
-- The Pi reboots or loses WiFi
+- Archiving starts, succeeds or fails
+- New drives have been mapped
+- Temperature, storage or RTC battery warnings need attention
+- A keep-awake command fails, or accessory-power automation changes state
+- An update is available or music has been synchronized
 
 Configure providers in the [Setup Wizard](Setup-Wizard-Guide#8-notifications), or anytime later under **Settings** → **Notifications**.
 
 You can enable as many providers as you want at once.
+
+## Messages and history
+
+All supported providers receive the same short event summary, including generic
+webhooks and Sentry Connect. Open **Notifications → History → Details** in the
+web interface for the full message, exact timestamp and provider error details.
+Archive logs retain the operational diagnostics. Credentials are removed from
+provider errors; very large provider responses may be truncated with an explicit
+marker.
+
+Existing history and notification settings are retained. Older app versions can
+still read the full message; expanding details requires an app version with the
+updated history view. No simultaneous Pi/app upgrade is required.
+
+The archive count refers to the current batch of pending files. Previous progress
+checkpoints are not subtracted again. Drive mapping summaries distinguish drives
+mapped earlier from those mapped in the current pass; an unavailable archive does
+not necessarily mean the car was away from home.
+
+Webhook and IFTTT payload fields are unchanged, but their human-readable message
+text is shorter. Avoid using exact message wording as an automation protocol.
+Custom local start/finish notification commands keep their existing arguments and
+environment. A provider accepting a notification does not establish that a device
+received it or a person read it.
 
 ## Providers
 
@@ -113,4 +137,6 @@ Push notifications to the Sentry USB iOS companion app. Currently in beta. Toggl
 
 ## Testing notifications
 
-After the wizard finishes, **Settings** → **Notifications** → **Send Test** fires a test message to every enabled provider so you can confirm setup.
+The **Send Test** action for the paired mobile app sends a Sentry Connect test
+notification. It does not test the other configured providers. Their delivery
+results appear in notification history when an enabled event is sent.

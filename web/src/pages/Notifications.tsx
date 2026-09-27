@@ -20,21 +20,12 @@ import {
   ProgressActivityIcon,
   ScheduleIcon,
   SettingsIcon,
-  WarningIcon,
 } from "@/components/icons"
 import { cn } from "@/lib/utils"
+import { NotificationHistoryItem, type NotificationEvent } from "@/components/notifications/NotificationHistoryItem"
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
-interface NotificationEvent {
-  id: string
-  ts: number
-  type: string
-  title: string
-  message: string
-  providers: string[]
-  results: Record<string, string>
-}
 
 interface NotificationSettings {
   archive_start: boolean
@@ -117,15 +108,6 @@ function typeBgColor(type: string): string {
   }
 }
 
-function providerStatusIcon(results: Record<string, string>) {
-  const values = Object.values(results)
-  if (values.length === 0) return null
-  const allOk = values.every(v => v === "ok")
-  const allError = values.every(v => v !== "ok")
-  if (allOk) return <CheckCircleIcon className="h-3.5 w-3.5 text-emerald-400" />
-  if (allError) return <CancelIcon className="h-3.5 w-3.5 text-red-400" />
-  return <WarningIcon className="h-3.5 w-3.5 text-amber-400" />
-}
 
 function relativeTime(ts: number): string {
   const now = Math.floor(Date.now() / 1000)
@@ -137,9 +119,6 @@ function relativeTime(ts: number): string {
   return new Date(ts * 1000).toLocaleDateString()
 }
 
-function absoluteTime(ts: number): string {
-  return new Date(ts * 1000).toLocaleString()
-}
 
 // ─── Main component ───────────────────────────────────────────────────────────
 
@@ -148,6 +127,7 @@ export default function Notifications() {
   const [events, setEvents] = useState<NotificationEvent[]>([])
   const [total, setTotal] = useState(0)
   const [loading, setLoading] = useState(true)
+  const [historyError, setHistoryError] = useState("")
   const [settings, setSettings] = useState<NotificationSettings | null>(null)
   const [savingSettings, setSavingSettings] = useState(false)
   const [typeFilter, setTypeFilter] = useState<string>("")
@@ -158,6 +138,7 @@ export default function Notifications() {
   // Load notification history
   const loadHistory = useCallback(async (currentOffset = 0, filter = typeFilter) => {
     setLoading(true)
+    setHistoryError("")
     try {
       const params = new URLSearchParams({ limit: String(PAGE_SIZE), offset: String(currentOffset) })
       if (filter) params.set("type", filter)
@@ -167,8 +148,7 @@ export default function Notifications() {
       setEvents(data.events || [])
       setTotal(data.total)
     } catch {
-      setEvents([])
-      setTotal(0)
+      setHistoryError("Could not load notification history. Retry, or check the device logs. Clear All will permanently reset history.")
     } finally {
       setLoading(false)
     }
@@ -234,23 +214,27 @@ export default function Notifications() {
       return
     }
     try {
-      await fetch("/api/notifications/history", { method: "DELETE" })
+      const response = await fetch("/api/notifications/history", { method: "DELETE" })
+      if (!response.ok) throw new Error("Clear failed")
       setEvents([])
       setTotal(0)
       setOffset(0)
-    } catch { /* ignore */ }
+      setHistoryError("")
+    } catch {
+      setHistoryError("Could not clear notification history. Retry or check the device logs.")
+    }
     setConfirmClear(false)
   }
 
   // Delete single notification
   async function handleDeleteOne(id: string) {
-    setEvents(prev => prev.filter(e => e.id !== id))
-    setTotal(prev => prev - 1)
     try {
-      await fetch(`/api/notifications/history/${id}`, { method: "DELETE" })
+      const response = await fetch(`/api/notifications/history/${id}`, { method: "DELETE" })
+      if (!response.ok) throw new Error("Dismiss failed")
+      setEvents(prev => prev.filter(e => e.id !== id))
+      setTotal(prev => prev - 1)
     } catch {
-      // Reload on failure
-      loadHistory(offset)
+      setHistoryError("Could not dismiss this notification. Retry or check the device logs.")
     }
   }
 
@@ -328,13 +312,13 @@ export default function Notifications() {
             {/* Clear all */}
             <button
               onClick={handleClearAll}
-              disabled={events.length === 0}
+              disabled={events.length === 0 && !historyError}
               className={cn(
                 "flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm font-medium transition-colors",
                 confirmClear
                   ? "bg-red-500/20 text-red-400 hover:bg-red-500/30"
                   : "border border-white/10 bg-white/5 text-slate-400 hover:bg-white/10 hover:text-slate-300",
-                events.length === 0 && "cursor-not-allowed opacity-50"
+                events.length === 0 && !historyError && "cursor-not-allowed opacity-50"
               )}
             >
               <DeleteIcon className="h-3.5 w-3.5" />
@@ -346,6 +330,11 @@ export default function Notifications() {
           {loading ? (
             <div className="flex items-center justify-center py-16">
               <ProgressActivityIcon className="h-6 w-6 animate-spin text-blue-400" />
+            </div>
+          ) : historyError ? (
+            <div role="alert" className="glass-card space-y-3 p-5 text-sm text-amber-300">
+              <p>{historyError}</p>
+              <button onClick={() => loadHistory(offset)} className="rounded-lg border border-white/10 px-3 py-1.5 text-slate-200">Retry</button>
             </div>
           ) : events.length === 0 ? (
             <div className="glass-card flex flex-col items-center justify-center py-16 text-center">
@@ -364,64 +353,12 @@ export default function Notifications() {
                 const color = typeColor(event.type)
                 const bg = typeBgColor(event.type)
                 return (
-                  <div
-                    key={event.id}
-                    className="glass-card group relative overflow-hidden p-4 transition-colors hover:bg-white/[0.04]"
-                  >
-                    {/* Dismiss button */}
-                    <button
-                      onClick={() => handleDeleteOne(event.id)}
-                      className="absolute right-3 top-3 rounded-md p-1 text-slate-600 opacity-0 transition-all hover:bg-white/10 hover:text-slate-400 group-hover:opacity-100"
-                      title="Dismiss"
-                    >
-                      <CloseIcon className="h-3.5 w-3.5" />
-                    </button>
-
-                    <div className="flex gap-3">
-                      {/* Type icon */}
-                      <div className={cn("flex h-9 w-9 shrink-0 items-center justify-center rounded-xl", bg)}>
-                        <Icon className={cn("h-4.5 w-4.5", color)} />
-                      </div>
-
-                      {/* Content */}
-                      <div className="min-w-0 flex-1">
-                        <div className="flex items-center gap-2">
-                          <span className={cn("text-xs font-semibold uppercase tracking-wider", color)}>
-                            {typeLabel(event.type)}
-                          </span>
-                          {providerStatusIcon(event.results)}
-                        </div>
-                        <p className="mt-0.5 text-sm text-slate-300 leading-relaxed">{event.message}</p>
-
-                        {/* Footer: time + providers */}
-                        <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1">
-                          <span className="text-xs text-slate-600" title={absoluteTime(event.ts)}>
-                            {relativeTime(event.ts)}
-                          </span>
-                          {event.providers.length > 0 && (
-                            <div className="flex flex-wrap gap-1">
-                              {event.providers.map(p => {
-                                const status = event.results[p]
-                                return (
-                                  <span
-                                    key={p}
-                                    className={cn(
-                                      "rounded-md px-1.5 py-0.5 text-[10px] font-medium",
-                                      status === "ok"
-                                        ? "bg-emerald-500/10 text-emerald-400"
-                                        : "bg-red-500/10 text-red-400"
-                                    )}
-                                  >
-                                    {p.replace(/_/g, " ")}
-                                  </span>
-                                )
-                              })}
-                            </div>
-                          )}
-                        </div>
-                      </div>
-                    </div>
-                  </div>
+                  <NotificationHistoryItem
+                    key={event.id} event={event} onDismiss={handleDeleteOne}
+                    icon={<Icon className={cn("h-4.5 w-4.5", color)} />}
+                    label={typeLabel(event.type)} color={color} background={bg}
+                    timeLabel={relativeTime(event.ts)}
+                  />
                 )
               })}
             </div>

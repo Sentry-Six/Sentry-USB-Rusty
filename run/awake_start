@@ -258,7 +258,7 @@ else
       local provider="$1"
       local reason="$2"
       /root/bin/send-push-message "${NOTIFICATION_TITLE:-SentryUSB}:" \
-        "${provider}: Keep awake failed (attempt 3/3). ${reason}" "" "keep_awake_failure" || true
+        "${provider}: Keep awake failed (attempt 3/3). ${reason}" "" "keep_awake_failure" "${provider}: Could not keep the car awake. Archiving may be interrupted." || true
     }
 
     while true
@@ -418,14 +418,14 @@ else
           # Log an error
           log "TeslaFi: Failed to set Sentry Mode. Check your TESLAFI_API_TOKEN is set correctly. If it is, your car may be offline or asleep."
           /root/bin/send-push-message "${NOTIFICATION_TITLE:-SentryUSB}:" \
-            "TeslaFi: Failed to enable Sentry Mode (HTTP $http_status). Check API token." "" "keep_awake_failure" || true
+            "TeslaFi: Failed to enable Sentry Mode (HTTP $http_status). Check API token." "" "keep_awake_failure" "TeslaFi: Could not enable Sentry Mode. Check your credentials and car connection." || true
         else
           # Check if the response is in JSON format
           if ! jq -e . >/dev/null 2>&1 <<<"$response_body"
           then
             log "TeslaFi: Failed to set Sentry Mode."
             /root/bin/send-push-message "${NOTIFICATION_TITLE:-SentryUSB}:" \
-              "TeslaFi: Failed to enable Sentry Mode. Invalid response from API." "" "keep_awake_failure" || true
+              "TeslaFi: Failed to enable Sentry Mode. Invalid response from API." "" "keep_awake_failure" "TeslaFi: Could not enable Sentry Mode. Archiving may be interrupted." || true
           else
             # Parse JSON and check if "result" is true
             result1=$(jq -r '.response' <<<"$response_body")
@@ -439,7 +439,7 @@ else
             else
               log "TeslaFi: Failed to set Sentry Mode. Response data: $response_body"
               /root/bin/send-push-message "${NOTIFICATION_TITLE:-SentryUSB}:" \
-                "TeslaFi: Failed to enable Sentry Mode. API returned failure." "" "keep_awake_failure" || true
+                "TeslaFi: Failed to enable Sentry Mode. API returned failure." "" "keep_awake_failure" "TeslaFi: Could not enable Sentry Mode. Archiving may be interrupted." || true
             fi
           fi
         fi
@@ -496,7 +496,7 @@ else
             else
               log "Tessie: Giving up after 3 attempts."
               /root/bin/send-push-message "${NOTIFICATION_TITLE:-SentryUSB}:" \
-                "Tessie: Failed to enable Sentry Mode after 3 attempts (HTTP $http_status). $tessie_reason" "" "keep_awake_failure" || true
+                "Tessie: Failed to enable Sentry Mode after 3 attempts (HTTP $http_status). $tessie_reason" "" "keep_awake_failure" "Tessie: Could not enable Sentry Mode after 3 attempts. Archiving may be interrupted." || true
             fi
           else
             # Check if the response is in JSON format
@@ -511,7 +511,7 @@ else
               else
                 log "Tessie: Giving up after 3 attempts."
                 /root/bin/send-push-message "${NOTIFICATION_TITLE:-SentryUSB}:" \
-                  "Tessie: Failed to enable Sentry Mode after 3 attempts. Invalid API response." "" "keep_awake_failure" || true
+                  "Tessie: Failed to enable Sentry Mode after 3 attempts. Invalid API response." "" "keep_awake_failure" "Tessie: Could not enable Sentry Mode after 3 attempts. Archiving may be interrupted." || true
               fi
             else
               # Parse JSON and check if "result" is true
@@ -531,7 +531,7 @@ else
                 else
                   log "Tessie: Giving up after 3 attempts."
                   /root/bin/send-push-message "${NOTIFICATION_TITLE:-SentryUSB}:" \
-                    "Tessie: Failed to enable Sentry Mode after 3 attempts. $tessie_error" "" "keep_awake_failure" || true
+                    "Tessie: Failed to enable Sentry Mode after 3 attempts. $tessie_error" "" "keep_awake_failure" "Tessie: Could not enable Sentry Mode after 3 attempts. Archiving may be interrupted." || true
                 fi
               fi
             fi
@@ -550,7 +550,7 @@ else
         else
           log "Tesla BLE: Failed to enable Sentry Mode [$(nudge_label)]."
           /root/bin/send-push-message "${NOTIFICATION_TITLE:-SentryUSB}:" \
-            "Tesla BLE: Failed to enable Sentry Mode via BLE." "" "keep_awake_failure" || true
+            "Tesla BLE: Failed to enable Sentry Mode via BLE." "" "keep_awake_failure" "Tesla BLE: Could not enable Sentry Mode. Archiving may be interrupted." || true
         fi
       elif [[ -n "${KEEP_AWAKE_WEBHOOK_URL:+x}" ]]
       # Use webhook to send start command
@@ -571,7 +571,7 @@ else
           # Log an error
           log "Awake Webhook: Failed to send command \"start\". Check if your KEEP_AWAKE_WEBHOOK_URL is set correctly. If it is, check the service receiving webhooks for logs."
           /root/bin/send-push-message "${NOTIFICATION_TITLE:-SentryUSB}:" \
-            "Webhook: Failed to send start command (HTTP $http_status). Check KEEP_AWAKE_WEBHOOK_URL." "" "keep_awake_failure" || true
+            "Webhook: Failed to send start command (HTTP $http_status). Check KEEP_AWAKE_WEBHOOK_URL." "" "keep_awake_failure" "Keep-awake webhook failed. Check its settings and receiving service." || true
         fi
       fi
       ;;

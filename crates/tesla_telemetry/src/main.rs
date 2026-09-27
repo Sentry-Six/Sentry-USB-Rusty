@@ -1868,10 +1868,8 @@ async fn release_radio() {
     }
 }
 
-/// Shell out to `/root/bin/send-push-message` with the same arg shape
-/// `awake_start::notify_nudge_failure` uses, so the existing SC client
-/// regex (NotificationsScreen) still routes this push into the
-/// keep-awake-failure category. Best-effort: any failure to spawn is
+/// Send a short keep-awake alert with the full BLE reason retained in history.
+/// The explicit category supports mobile routing. Any failure to spawn is
 /// swallowed (the nudge cycle has already done its retries; a missing
 /// FCM relay can't recover the underlying BLE failure).
 fn emit_keep_awake_failure_notification(reason: &str) {
@@ -1880,7 +1878,8 @@ fn emit_keep_awake_failure_notification(reason: &str) {
         "Tesla BLE: Keep awake failed (attempt 3/3). BLE command failed. Response: {reason}"
     );
     let _ = std::process::Command::new("/root/bin/send-push-message")
-        .args([&format!("{title}:"), &body, "", "keep_awake_failure"])
+        .args([&format!("{title}:"), &body, "", "keep_awake_failure",
+            "Tesla BLE: Could not keep the car awake. Archiving may be interrupted."])
         .spawn();
 }
 

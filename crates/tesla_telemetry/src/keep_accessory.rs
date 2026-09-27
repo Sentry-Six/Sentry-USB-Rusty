@@ -262,8 +262,9 @@ pub async fn evaluate(
     // double-fire the "Holding power for charge" push.
     if charge_hold && !state.charge_hold_notified {
         notify_event(
-            "Holding power for charge",
-            "Plugged in at home — keeping accessory power on so the car finishes charging before the Pi powers down.",
+            "Charging power requested",
+            "Plugged in at home — requesting accessory power so the Pi can stay available while the car charges.",
+            "Requesting device power while charging.",
         )
         .await;
         state.charge_hold_notified = true;
@@ -273,7 +274,8 @@ pub async fn evaluate(
             "Charging complete — releasing accessory power in ~{} minutes, then the Pi powers down.",
             cfg.charge_grace_min
         );
-        notify_event("Charge complete", &msg).await;
+        let summary = format!("Charging complete. Releasing device power in about {} minutes.", cfg.charge_grace_min);
+        notify_event("Charge complete", &msg, &summary).await;
         state.charge_grace_notified = true;
     }
 
@@ -330,8 +332,9 @@ pub async fn evaluate(
     }
     if desired && !is_home && !state.coverage_notified {
         notify_event(
-            "Sentry coverage active",
-            "Parked away from home — accessory power is on and the Pi stays alive for Sentry.",
+            "Sentry power requested",
+            "Parked away from home — requesting accessory power so the Pi can stay available for Sentry.",
+            "Requesting device power for Sentry while parked away from home.",
         )
         .await;
         state.coverage_notified = true;
@@ -368,11 +371,11 @@ pub async fn evaluate(
         // grace-expired "nothing to archive" path. (Mirrors decide_desired's
         // two home-OFF branches.)
         let msg = if state.archive_seen_active {
-            "Archive complete at home — releasing accessory power. The Pi will power down until your next drive."
+            "Archive activity ended at home — requesting release of accessory power. The Pi may power down until the car wakes again."
         } else {
-            "Back home — releasing accessory power. The Pi will power down until your next drive."
+            "Back home — requesting release of accessory power. The Pi may power down until the car wakes again."
         };
-        notify_event("Pi going offline", msg).await;
+        notify_event("Releasing device power", msg, "Releasing device power. The device may go offline.").await;
         state.offline_notified = true;
     }
 
@@ -414,7 +417,12 @@ pub async fn evaluate(
                 } else {
                     "Couldn't turn Keep Accessory Power OFF at home — the car is unreachable over BLE, so the Pi may stay powered. Still retrying."
                 };
-                notify_event("Keep Accessory issue", detail).await;
+                let summary = if desired {
+                    "Could not keep device power on. Sentry coverage may be affected. Retrying."
+                } else {
+                    "Could not release device power. The device may stay on. Retrying."
+                };
+                notify_event("Keep Accessory issue", detail, summary).await;
                 state.fail_notified = true;
             }
         }
@@ -430,11 +438,12 @@ pub async fn evaluate(
 /// case we don't proceed to cut our own 12V power until the push has been
 /// handed off (`send_notification` awaits the actual egress). Best-effort:
 /// any failure is swallowed.
-async fn notify_event(title: &str, message: &str) {
+async fn notify_event(title: &str, message: &str, summary: &str) {
     let body = serde_json::json!({
         "notification_type": "keep_accessory",
         "title": title,
         "message": message,
+        "summary": summary,
     })
     .to_string();
     let title_owned = title.to_string();

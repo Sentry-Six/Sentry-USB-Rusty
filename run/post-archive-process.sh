@@ -1,4 +1,19 @@
 #!/bin/bash
+
+function drive_mapping_summary {
+  local earlier=$1 earlier_dist=$2 current=$3 current_dist=$4 unit=$5
+  local total=$((earlier + current)) noun=drives distance
+  if (( total == 0 )); then return 0; fi
+  if (( total == 1 )); then noun=drive; fi
+  distance=$(awk -v a="$earlier_dist" -v b="$current_dist" 'BEGIN { printf "%.2f", a + b }')
+  if (( earlier > 0 && current > 0 )); then
+    printf 'Mapped %d %s · %s %s. %d mapped earlier · %d mapped now.' "$total" "$noun" "$distance" "$unit" "$earlier" "$current"
+  elif (( earlier > 0 )); then
+    printf 'Mapped %d %s since your last archive · %s %s.' "$earlier" "$noun" "$earlier_dist" "$unit"
+  else
+    printf 'Mapped %d %s · %s %s.' "$current" "$noun" "$current_dist" "$unit"
+  fi
+}
 # Post-archive hook: process newly archived dashcam clips for GPS/drive data.
 # Called by archiveloop after archive_clips completes, before awake_stop.
 # Only runs if DRIVE_MAP_ENABLED is set to true in the config.
@@ -99,7 +114,7 @@ function drive_data_size_guard_ok() {
   if [ -x /root/bin/send-push-message ]; then
     /root/bin/send-push-message "${NOTIFICATION_TITLE:-SentryUSB}:" \
       "Drive data sync blocked — local file shrunk to $((new_size / 1024 / 1024)) MB from $((last_size / 1024 / 1024)) MB. Archive backup preserved. Check ${DRIVE_DATA_JSON}." \
-      warning drives > /dev/null 2>&1 || true
+      warning drives "Drive data sync blocked: the local file may be damaged. Archive backup preserved. Check logs." > /dev/null 2>&1 || true
   fi
   return 1
 }
@@ -449,6 +464,7 @@ if [ -x /root/bin/send-push-message ]; then
 
     if [ -n "$MSG" ]; then
       /root/bin/send-push-message "${NOTIFICATION_TITLE:-SentryUSB}:" "$MSG" info drives \
+        "$(drive_mapping_summary "$AWAY_DRIVES" "$AWAY_DIST" "$NOW_DRIVES" "$NOW_DIST" "$DIST_LABEL")" \
         || log "Failed to send notification"
     else
       log "No new drives found, skipping drive stats notification."
@@ -496,7 +512,7 @@ if [ "$AUTO_UPDATE_CHECK" != "disabled" ]; then
       if [ ! -f "$NOTIFIED_FILE" ] && [ -x /root/bin/send-push-message ]; then
         /root/bin/send-push-message "${NOTIFICATION_TITLE:-SentryUSB}:" \
           "Update available: ${NOTIFY_VER}. Open Settings to install." \
-          info update || log "Failed to send update notification"
+          info update "Update available: ${NOTIFY_VER}. Open Settings to install." || log "Failed to send update notification"
         touch "$NOTIFIED_FILE"
       fi
       log "Update available: ${NOTIFY_VER}"

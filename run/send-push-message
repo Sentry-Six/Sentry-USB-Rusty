@@ -19,8 +19,8 @@
 # Everything else — per-channel HTTP, mobile push, history logging — is
 # handled by the Rust endpoint in a single server-side transaction.
 #
-# Call contract (unchanged from the previous bash implementation):
-#   send-push-message <title> <message> [type] [notification_type]
+# Call contract (existing four-argument callers remain supported):
+#   send-push-message <title> <message> [type] [notification_type] [summary]
 #
 # Reads env:
 #   SENTRYUSB_PORT             — API port (default 80)
@@ -31,6 +31,7 @@ title="$1"
 message="$2"
 type="${3:-}"
 notification_type="${4:-}"
+summary="${5:-}"
 
 LOG_FILE="${LOG_FILE:-/mutable/archiveloop.log}"
 log() {
@@ -76,6 +77,7 @@ fi
 # the BLE daemon and the RTC service, so no new requirement.
 payload=$(ARG_TITLE="$title" \
   ARG_MESSAGE="$message" \
+  ARG_SUMMARY="$summary" \
   ARG_TYPE="$type" \
   ARG_NOTIFICATION_TYPE="$notification_type" \
   ARG_ARCHIVE_TOTAL_COUNT="${ARCHIVE_TOTAL_COUNT:-}" \
@@ -85,6 +87,9 @@ body = {
     "title":   os.environ.get("ARG_TITLE", ""),
     "message": os.environ.get("ARG_MESSAGE", ""),
 }
+summary = os.environ.get("ARG_SUMMARY", "")
+if summary.strip():
+    body["summary"] = summary
 t = os.environ.get("ARG_TYPE", "")
 if t:
     body["type"] = t
@@ -143,7 +148,7 @@ PYEOF
     failed_list=$(echo "$parse_result" | sed -n 's/^failed_list=//p')
 
     if [ -n "$providers_val" ]; then
-      log "Notifications sent via: $providers_val"
+      log "Notifications attempted via: $providers_val"
     else
       attempted=$(echo "$body" | sed -n 's/.*"attempted" *: *\([0-9]*\).*/\1/p')
       [ -n "$attempted" ] && log "Notifications attempted: $attempted"

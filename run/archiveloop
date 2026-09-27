@@ -938,6 +938,41 @@ function convert_seconds_to_nice_time () {
   fi
 }
 
+function notification_duration {
+  local seconds=$1 h m s
+  (( seconds < 0 )) && seconds=0
+  h=$((seconds / 3600)); m=$((seconds % 3600 / 60)); s=$((seconds % 60))
+  if (( h > 0 )); then
+    printf '%dh' "$h"
+    if (( m > 0 )); then printf ' %dm' "$m"; fi
+  elif (( m > 0 )); then
+    printf '%dm' "$m"
+    if (( s > 0 )); then printf ' %ds' "$s"; fi
+  else
+    printf '%ds' "$s"
+  fi
+}
+
+function archive_start_summary {
+  local noun=files
+  if [[ $1 -eq 1 ]]; then noun=file; fi
+  # Candidate counts already exclude archived files. A prior progress marker
+  # cannot prove continuity of the batch and must never be subtracted again.
+  printf 'Archiving %d %s.' "$1" "$noun"
+}
+
+function archive_finish_summary {
+  local success=$1 total=$2 completed=$3 elapsed=$4 noun=files remaining
+  if [[ $completed -eq 1 ]]; then noun=file; fi
+  remaining=$((total - completed))
+  if (( remaining < 0 )); then remaining=0; fi
+  if [[ $success == true ]]; then
+    printf 'Archived %d %s in %s.' "$completed" "$noun" "$(notification_duration "$elapsed")"
+  else
+    printf 'Archive interrupted — %d %s archived, %d remaining.' "$completed" "$noun" "$remaining"
+  fi
+}
+
 function filterfile {
   if [ -x /root/bin/archive-filter ]
   then
@@ -1420,7 +1455,7 @@ function archive_teslacam_clips () {
       prior_done=${prior_done:-0}
     fi
     if [[ $prior_done -gt 0 ]]; then
-      message+=" ($prior_done already completed from prior run)"
+      message+=" (prior progress checkpoint: $prior_done completed; may refer to an earlier batch)"
     fi
 
     message+=" starting at $(date)"
@@ -1429,7 +1464,7 @@ function archive_teslacam_clips () {
       # failure push; don't re-announce the start every minute.
       log "Fast retry attempt: suppressing archive-start notification"
     else
-      ARCHIVE_TOTAL_COUNT=$total_count /root/bin/send-push-message "$NOTIFICATION_TITLE:" "$message" start archive_start || log "failed to send mobile app notification"
+      ARCHIVE_TOTAL_COUNT=$total_count /root/bin/send-push-message "$NOTIFICATION_TITLE:" "$message" start archive_start "$(archive_start_summary "$total_count")" || log "failed to send mobile app notification"
       /root/bin/send-live-activity start "$total_count" || true
     fi
 
@@ -1473,7 +1508,7 @@ function archive_teslacam_clips () {
       message="Archiving completed successfully. "
     else
       local arc_exit=$?
-      message="Error during archiving. "
+      message="Error during archiving (archive-clips.sh exit code $arc_exit). "
       archive_success=false
       if archive_cancel_requested; then
         message="Archiving cancelled by user. "
@@ -1564,7 +1599,10 @@ function archive_teslacam_clips () {
       # failure of a normal cycle) still notifies.
       log "Fast retry attempt failed: suppressing archive-finish notification (${message})"
     else
-      /root/bin/send-push-message "$NOTIFICATION_TITLE:" "${message}" finish archive_complete
+      local notification_category=archive_complete
+      if [[ "$archive_success" == false ]]; then notification_category=archive_error; fi
+      /root/bin/send-push-message "$NOTIFICATION_TITLE:" "${message}" finish "$notification_category" \
+        "$(archive_finish_summary "$archive_success" "$total_count" "$((sentry_archived + trackmode_archived))" "$delta")"
       # Live activity: only end what was started — retry attempts never
       # sent a start, so an end here would be unmatched.
       if [ "${ARCHIVE_RETRY_ATTEMPT:-0}" != "1" ]; then
@@ -1578,7 +1616,7 @@ function archive_teslacam_clips () {
       if [ -n "$rtc_year" ] && [ "$rtc_year" -lt 2024 ]; then
         /root/bin/send-push-message "$NOTIFICATION_TITLE:" \
           "RTC battery appears dead or missing. Replace the battery on the Pi 5's J5 header to maintain accurate time." \
-          warning rtc_battery || true
+          warning rtc_battery "RTC battery needs attention. The clock may reset without power." || true
       fi
     fi
 
@@ -2153,7 +2191,7 @@ function gadget_stall_watchdog () {
     then
       /root/bin/send-push-message "$NOTIFICATION_TITLE:" \
         "USB drive stall detected ($reason). Re-presented the drive to the car. Evidence: $evidence" \
-        warning gadget_stall 2>/dev/null || true
+        warning gadget_stall "USB recording connection stalled. Recovery attempted." 2>/dev/null || true
       last_recovery=$now
       recoveries=$((recoveries + 1))
       fresh_seen=0
@@ -2299,7 +2337,7 @@ function freespacemanager {
           local what="${pressure:-clip index nearly full}"
           /root/bin/send-push-message "${NOTIFICATION_TITLE:-SentryUSB}:" \
             "Storage pressure ($what) could not be relieved automatically. Recording or archiving may stop — check the dashboard." \
-            warning storage_pressure 2>/dev/null || true
+            warning storage_pressure "Storage is nearly full. Recording or archiving may stop — check the dashboard." 2>/dev/null || true
         fi
       fi
       if [ "$relieved" = "false" ]

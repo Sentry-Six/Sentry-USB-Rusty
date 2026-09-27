@@ -35,26 +35,60 @@ pub struct NotificationEvent {
     pub title: String,
     #[serde(default)]
     pub message: String,
+    /// Short external alert; message remains the diagnostic text for old clients.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub provider_errors: HashMap<String, String>,
     #[serde(default)]
     pub providers: Vec<String>,
     #[serde(default)]
     pub results: HashMap<String, String>,
 }
 
-fn load_history_locked() -> Vec<NotificationEvent> {
-    let raw = std::fs::read_to_string(HISTORY_PATH)
-        .or_else(|_| std::fs::read_to_string(LEGACY_HISTORY_PATH))
-        .unwrap_or_default();
-    if raw.is_empty() {
-        return Vec::new();
-    }
-    serde_json::from_str(&raw).unwrap_or_default()
+fn load_history_from(path: &std::path::Path, legacy: &std::path::Path) -> std::io::Result<Vec<NotificationEvent>> {
+    let raw = match std::fs::read_to_string(path) {
+        Ok(raw) => raw,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => match std::fs::read_to_string(legacy) {
+            Ok(raw) => raw,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(e) => return Err(e),
+        },
+        Err(e) => return Err(e),
+    };
+    serde_json::from_str(&raw).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
+}
+
+fn load_history_locked() -> std::io::Result<Vec<NotificationEvent>> {
+    load_history_from(std::path::Path::new(HISTORY_PATH), std::path::Path::new(LEGACY_HISTORY_PATH))
 }
 
 fn save_history_locked(events: &[NotificationEvent]) -> std::io::Result<()> {
+    save_history_to(std::path::Path::new(HISTORY_PATH), events)
+}
+
+fn save_history_to(path: &std::path::Path, events: &[NotificationEvent]) -> std::io::Result<()> {
+    use std::io::Write;
     let data = serde_json::to_vec_pretty(events)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
-    std::fs::write(HISTORY_PATH, data)
+    // HISTORY_LOCK serializes writers; create_new also avoids following a stale
+    // temporary symlink. A failed write never truncates the existing history.
+    let nonce = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default().as_nanos();
+    let temporary = path.with_extension(format!("{}.{nonce}.tmp", std::process::id()));
+    let mut file = std::fs::OpenOptions::new().write(true).create_new(true).open(&temporary)?;
+    let result = (|| {
+        file.write_all(&data)?;
+        file.sync_all()?;
+        std::fs::rename(&temporary, path)?;
+        #[cfg(unix)]
+        std::fs::File::open(path.parent().unwrap_or(std::path::Path::new(".")))?.sync_all()?;
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&temporary);
+    }
+    result
 }
 
 #[derive(Serialize, Deserialize, Clone, Copy)]
@@ -182,7 +216,10 @@ pub async fn get_history(
     Query(q): Query<HistoryQuery>,
 ) -> (StatusCode, Json<serde_json::Value>) {
     let _guard = HISTORY_LOCK.read().unwrap_or_else(|p| p.into_inner());
-    let mut events = load_history_locked();
+    let mut events = match load_history_locked() {
+        Ok(events) => events,
+        Err(e) => return crate::json_error(StatusCode::INTERNAL_SERVER_ERROR, &format!("Failed to read notification history: {e}")),
+    };
     if let Some(t) = &q.event_type {
         if !t.is_empty() {
             events.retain(|e| &e.event_type == t);
@@ -194,7 +231,7 @@ pub async fn get_history(
     let page: Vec<NotificationEvent> = if offset >= events.len() {
         Vec::new()
     } else {
-        let end = (offset + limit).min(events.len());
+        let end = offset.saturating_add(limit).min(events.len());
         events[offset..end].to_vec()
     };
     (StatusCode::OK, Json(serde_json::json!({
@@ -229,7 +266,16 @@ pub async fn append_history(
 ///
 /// Returns the event as persisted (with any auto-filled fields).
 pub(crate) fn record_event(
+    event: NotificationEvent,
+) -> std::io::Result<NotificationEvent> {
+    let _guard = HISTORY_LOCK.write().unwrap_or_else(|p| p.into_inner());
+    record_event_in(event, std::path::Path::new(HISTORY_PATH), std::path::Path::new(LEGACY_HISTORY_PATH))
+}
+
+fn record_event_in(
     mut event: NotificationEvent,
+    path: &std::path::Path,
+    legacy: &std::path::Path,
 ) -> std::io::Result<NotificationEvent> {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -246,13 +292,12 @@ pub(crate) fn record_event(
         event.id = to_base36(nanos);
     }
 
-    let _guard = HISTORY_LOCK.write().unwrap_or_else(|p| p.into_inner());
-    let mut events = load_history_locked();
+    let mut events = load_history_from(path, legacy)?;
     events.insert(0, event.clone());
     if events.len() > MAX_HISTORY {
         events.truncate(MAX_HISTORY);
     }
-    save_history_locked(&events)?;
+    save_history_to(path, &events)?;
     Ok(event)
 }
 
@@ -301,15 +346,19 @@ pub async fn delete_history_item(
         return crate::json_error(StatusCode::BAD_REQUEST, "Missing notification ID");
     }
     let _guard = HISTORY_LOCK.write().unwrap_or_else(|p| p.into_inner());
-    let mut events = load_history_locked();
-    events.retain(|e| e.id != id);
-    if let Err(e) = save_history_locked(&events) {
+    if let Err(e) = delete_history_from(std::path::Path::new(HISTORY_PATH), std::path::Path::new(LEGACY_HISTORY_PATH), &id) {
         return crate::json_error(
             StatusCode::INTERNAL_SERVER_ERROR,
             &format!("Failed to save notification history: {}", e),
         );
     }
     crate::json_ok()
+}
+
+fn delete_history_from(path: &std::path::Path, legacy: &std::path::Path, id: &str) -> std::io::Result<()> {
+    let mut events = load_history_from(path, legacy)?;
+    events.retain(|e| e.id != id);
+    save_history_to(path, &events)
 }
 
 #[derive(Deserialize)]
@@ -364,6 +413,115 @@ fn to_base36(mut n: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn notification_corrupt_history_rejects_append_and_dismiss_without_losing_bytes() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("history.json");
+        let legacy = dir.path().join("legacy.json");
+        std::fs::write(&path, "[broken-but-recoverable").unwrap();
+        assert!(record_event_in(NotificationEvent::default(), &path, &legacy).is_err());
+        assert!(delete_history_from(&path, &legacy, "old").is_err());
+        assert_eq!(std::fs::read_to_string(path).unwrap(), "[broken-but-recoverable");
+    }
+
+    #[test]
+    fn notification_atomic_write_preserves_old_reader_and_ignores_abandoned_temp() {
+        use std::io::Read;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("history.json");
+        let legacy = dir.path().join("legacy.json");
+        let old = r#"[{"id":"old","message":"original"}]"#;
+        std::fs::write(&path, old).unwrap();
+        std::fs::write(dir.path().join("history.abandoned.tmp"), "[partial").unwrap();
+        let mut reader = std::fs::File::open(&path).unwrap();
+        record_event_in(NotificationEvent { message: "new".into(), ..Default::default() }, &path, &legacy).unwrap();
+        let mut old_bytes = String::new();
+        reader.read_to_string(&mut old_bytes).unwrap();
+        assert_eq!(old_bytes, old, "saving must replace, not truncate the existing inode");
+        assert_eq!(load_history_from(&path, &legacy).unwrap().len(), 2);
+    }
+
+    #[test]
+    fn notification_failed_publish_leaves_destination_and_removes_temporary_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("history.json");
+        std::fs::create_dir(&path).unwrap(); // rename cannot replace a directory
+        std::fs::write(path.join("recoverable"), "original").unwrap();
+        assert!(save_history_to(&path, &[NotificationEvent::default()]).is_err());
+        assert_eq!(std::fs::read_to_string(path.join("recoverable")).unwrap(), "original");
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn notification_denied_write_preserves_existing_history() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("history.json");
+        let legacy = dir.path().join("legacy.json");
+        let old = r#"[{"id":"old","message":"original"}]"#;
+        std::fs::write(&path, old).unwrap();
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o500)).unwrap();
+        let result = record_event_in(NotificationEvent::default(), &path, &legacy);
+        // Privileged/root test runners can bypass mode bits. This permission
+        // case is exercised on ordinary Linux runners; the publish-failure
+        // case above is independent of privilege.
+        let bypasses_permissions = std::fs::write(dir.path().join("probe"), "probe").is_ok();
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        if bypasses_permissions { return; }
+        assert!(result.is_err());
+        assert_eq!(std::fs::read_to_string(path).unwrap(), old);
+    }
+
+    #[test]
+    fn notification_legacy_event_keeps_details_and_new_fields_are_optional() {
+        let event: NotificationEvent = serde_json::from_str(
+            r#"{"id":"old","ts":1,"type":"archive_error","title":"SentryUSB","message":"exit code 23","providers":["telegram"],"results":{"telegram":"error"}}"#
+        ).unwrap();
+        assert!(event.summary.is_none());
+        assert!(event.provider_errors.is_empty());
+        assert_eq!(event.message, "exit code 23");
+    }
+
+    #[test]
+    fn notification_history_roundtrip_and_corrupt_file_is_not_overwritten() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("history.json");
+        let legacy = dir.path().join("legacy.json");
+        let old = r#"[{"id":"old","message":"full old message"}]"#;
+        std::fs::write(&legacy, old).unwrap();
+        let mut events = load_history_from(&path, &legacy).unwrap();
+        assert_eq!(events[0].message, "full old message");
+        events.insert(0, NotificationEvent {
+            message: "HTTP 400: chat not found".into(),
+            summary: Some("Notification failed".into()),
+            provider_errors: HashMap::from([("telegram".into(), "HTTP 400: chat not found".into())]),
+            ..Default::default()
+        });
+        save_history_to(&path, &events).unwrap();
+        let saved = load_history_from(&path, &legacy).unwrap();
+        assert_eq!(saved.len(), 2);
+        assert_eq!(saved[0].message, "HTTP 400: chat not found");
+        assert_eq!(saved[0].summary.as_deref(), Some("Notification failed"));
+        assert_eq!(saved[0].provider_errors["telegram"], "HTTP 400: chat not found");
+        assert_eq!(std::fs::read_to_string(&legacy).unwrap(), old);
+        std::fs::write(&path, "[broken").unwrap();
+        assert!(load_history_from(&path, &legacy).is_err());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "[broken");
+    }
+
+    #[test]
+    fn notification_history_missing_is_empty_but_empty_existing_is_invalid() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("history.json");
+        let legacy = dir.path().join("legacy.json");
+        assert!(load_history_from(&path, &legacy).unwrap().is_empty());
+        std::fs::write(&path, "").unwrap();
+        assert!(load_history_from(&path, &legacy).is_err());
+        save_history_to(&path, &[]).unwrap(); // Explicit Clear can repair history.
+        assert!(load_history_from(&path, &legacy).unwrap().is_empty());
+    }
 
     #[test]
     fn settings_deserialize_defaults_storage_repair_on() {

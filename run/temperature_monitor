@@ -1,5 +1,18 @@
 #!/bin/bash -eu
 
+function temperature_summary {
+  local current peak unit="${TEMPERATURE_UNIT:-C}"
+  if [[ "$unit" == F ]]; then
+    current=$(awk -v r="$1" 'BEGIN { printf "%.0f", r/1000 * 9/5 + 32 }')
+    peak=$(awk -v r="$2" 'BEGIN { printf "%.0f", r/1000 * 9/5 + 32 }')
+  else
+    unit=C
+    current=$(awk -v r="$1" 'BEGIN { printf "%.0f", r/1000 }')
+    peak=$(awk -v r="$2" 'BEGIN { printf "%.0f", r/1000 }')
+  fi
+  printf 'Device temperature: %s°%s · Recent peak: %s°%s.' "$current" "$unit" "$peak" "$unit"
+}
+
 if [[ ( -z "${TEMPERATURE_WARNING:+x}" ) && ( -z "${TEMPERATURE_CAUTION:+x}" ) && ( -z "${TEMPERATURE_INTERVAL:+x}" ) && ( -z "${TEMPERATURE_POSTARCHIVE:+x}" ) ]]
 then
   log "Temperature Monitor: Not enabled."
@@ -46,7 +59,8 @@ do
     then
       set_warning=1
       message="Temperature Monitor: WARNING threshold exceeded ($(readable "$TEMPERATURE_WARNING"))!!!"
-      /root/bin/send-push-message "$NOTIFICATION_TITLE:" "$message" "" temperature || log "Temperature Monitor: Failed to send push message; likely no internet connection presently."
+      /root/bin/send-push-message "$NOTIFICATION_TITLE:" "$message" "" temperature \
+        "Device temperature above $(readable "$TEMPERATURE_WARNING"). Check cooling." || log "Temperature Monitor: Failed to send push message; likely no internet connection presently."
     fi
   fi
 
@@ -61,7 +75,8 @@ do
     then
       set_caution=1
       message="Temperature Monitor: CAUTION threshold exceeded ($(readable "$TEMPERATURE_CAUTION"))!!!"
-      /root/bin/send-push-message "$NOTIFICATION_TITLE:" "$message" "" temperature || log "Temperature Monitor: Failed to send push message; likely no internet connection presently."
+      /root/bin/send-push-message "$NOTIFICATION_TITLE:" "$message" "" temperature \
+        "Device temperature above $(readable "$TEMPERATURE_CAUTION"). Check cooling." || log "Temperature Monitor: Failed to send push message; likely no internet connection presently."
     fi
   fi
 
@@ -82,7 +97,8 @@ do
     if [[ "${TEMPERATURE_POSTARCHIVE:-false}" = "true" ]]
     then
       message="Temperature Monitor: $(readable "$raw_temp") (max=$(readable "$peak_temp") $peak_time)"
-      /root/bin/send-push-message "$NOTIFICATION_TITLE:" "$message" "" temperature || log "Temperature Monitor: Failed to send push message."
+      /root/bin/send-push-message "$NOTIFICATION_TITLE:" "$message" "" temperature \
+        "$(temperature_summary "$raw_temp" "$peak_temp")" || log "Temperature Monitor: Failed to send push message."
     fi
     # Start a fresh peak for the next cycle, after the message above has
     # reported the one just ending. Sits outside the POSTARCHIVE check

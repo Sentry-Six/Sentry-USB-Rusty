@@ -428,7 +428,7 @@ pub async fn send_test_notification(State(_s): State<AppState>) -> (StatusCode, 
         &creds.device_id,
         &creds.device_secret,
         "SentryUSB Test",
-        &format!("Test notification from {} — push notifications are working!", hostname),
+        &format!("Test notification from {}.", hostname),
     ).await;
 
     let (status_code, body, send_ok, error_msg) = match result {
@@ -442,7 +442,7 @@ pub async fn send_test_notification(State(_s): State<AppState>) -> (StatusCode, 
             )
         }
         Err(e) => {
-            let msg = e.to_string();
+            let msg = sentryusb_notify::safe_provider_error(&e, &[&creds.device_secret]);
             warn!("[notifications] Test notification failed: {}", msg);
             (
                 StatusCode::BAD_GATEWAY,
@@ -466,6 +466,10 @@ pub async fn send_test_notification(State(_s): State<AppState>) -> (StatusCode, 
         event_type: "test".to_string(),
         title: "SentryUSB Test".to_string(),
         message: format!("Test notification from {} — push notifications are working!", hostname),
+        summary: Some(format!("Test notification from {}.", hostname)),
+        provider_errors: if send_ok { Default::default() } else {
+            std::collections::HashMap::from([("sentry_connect".to_string(), error_msg)])
+        },
         providers: vec!["sentry_connect".to_string()],
         results: results_map,
     };
@@ -489,12 +493,128 @@ pub async fn send_test_notification(State(_s): State<AppState>) -> (StatusCode, 
 pub struct SendNotificationRequest {
     pub title: String,
     pub message: String,
+    #[serde(default)]
+    pub summary: Option<String>,
     #[serde(default, rename = "type")]
     pub type_hint: Option<String>,
     #[serde(default)]
     pub notification_type: Option<String>,
     #[serde(default)]
     pub archive_total_count: Option<u32>,
+}
+
+#[cfg(test)]
+mod notification_summary_tests {
+    use super::*;
+
+    #[test]
+    fn notification_summary_is_external_only_and_optional_for_old_callers() {
+        let old: SendNotificationRequest = serde_json::from_value(serde_json::json!({
+            "title": "SentryUSB", "message": "full diagnostic"
+        })).unwrap();
+        assert_eq!(outgoing_message(&old.message, old.summary.as_deref()), "full diagnostic");
+        let new: SendNotificationRequest = serde_json::from_value(serde_json::json!({
+            "title": "SentryUSB", "message": "full diagnostic", "summary": "Short alert",
+            "type": "start", "notification_type": "archive_start", "archive_total_count": 13
+        })).unwrap();
+        assert_eq!(outgoing_message(&new.message, new.summary.as_deref()), "Short alert");
+        assert_eq!(new.message, "full diagnostic");
+        assert_eq!(new.archive_total_count, Some(13));
+        assert_eq!(new.type_hint.as_deref(), Some("start"));
+        assert_eq!(outgoing_message("full diagnostic", Some("  ")), "full diagnostic");
+    }
+
+    #[tokio::test]
+    async fn notification_webhook_receives_summary_but_history_keeps_details_and_failure() {
+        use std::io::{Read, Write};
+        for status in ["200 OK", "400 Bad Request"] {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let address = listener.local_addr().unwrap();
+            let server = std::thread::spawn(move || {
+                let (mut socket, _) = listener.accept().unwrap();
+                socket.set_read_timeout(Some(std::time::Duration::from_secs(5))).unwrap();
+                let mut raw = Vec::new();
+                let mut byte = [0u8; 1];
+                while !raw.ends_with(b"\r\n\r\n") {
+                    socket.read_exact(&mut byte).unwrap();
+                    raw.push(byte[0]);
+                }
+                let headers = String::from_utf8(raw).unwrap();
+                let size: usize = headers.lines().find_map(|line| {
+                    line.to_ascii_lowercase().strip_prefix("content-length:").map(|s| s.trim().parse().unwrap())
+                }).unwrap();
+                let mut body = vec![0; size];
+                socket.read_exact(&mut body).unwrap();
+                let response = "chat not found";
+                write!(socket, "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{response}", response.len()).unwrap();
+                serde_json::from_slice::<serde_json::Value>(&body).unwrap()
+            });
+            let config = sentryusb_notify::NotifyConfig {
+                webhook_enabled: true,
+                webhook_url: format!("http://{address}/private-capability"),
+                ..Default::default()
+            };
+            let request: SendNotificationRequest = serde_json::from_value(serde_json::json!({
+                "title":"SentryUSB", "message":"archive-clips.sh exit code 23",
+                "summary":"Archive interrupted.", "notification_type":"archive_error", "type":"finish"
+            })).unwrap();
+            let (event, outcome) = dispatch_to_providers(&config, &request).await;
+            let payload = server.join().unwrap();
+            assert_eq!(payload["value1"], "SentryUSB");
+            assert_eq!(payload["value2"], "Archive interrupted.");
+            assert_eq!(event.message, "archive-clips.sh exit code 23");
+            assert_eq!(event.summary.as_deref(), Some("Archive interrupted."));
+            assert_eq!(event.event_type, "archive_error");
+            assert_eq!(outcome.providers, ["webhook"]);
+            if status.starts_with("400") {
+                assert_eq!(event.results["webhook"], "error");
+                assert!(event.provider_errors["webhook"].contains("400"));
+                assert!(event.provider_errors["webhook"].contains("chat not found"));
+                assert_eq!(outcome.failures.len(), 1);
+            } else {
+                assert_eq!(event.results["webhook"], "ok");
+                assert!(event.provider_errors.is_empty());
+                assert!(outcome.failures.is_empty());
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn notification_no_configured_provider_still_has_detailed_history() {
+        let request = serde_json::from_value(serde_json::json!({
+            "title": "SentryUSB", "message": "full message"
+        })).unwrap();
+        let (event, outcome) = dispatch_to_providers(&Default::default(), &request).await;
+        assert!(outcome.providers.is_empty());
+        assert_eq!(event.message, "full message");
+        assert!(event.summary.is_none());
+    }
+
+    #[tokio::test]
+    async fn notification_transport_failure_is_returned_even_when_history_write_fails() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        drop(listener); // A refused local connection; no external traffic.
+        let config = sentryusb_notify::NotifyConfig {
+            webhook_enabled: true, webhook_url: format!("http://{address}/private-token"),
+            ..Default::default()
+        };
+        let request = serde_json::from_value(serde_json::json!({
+            "title":"SentryUSB", "message":"full archive exit code 23", "summary":"Archive interrupted."
+        })).unwrap();
+        let recorded = std::cell::Cell::new(false);
+        let outcome = dispatch_and_record_using(&config, &request, |event| {
+            assert_eq!(event.message, "full archive exit code 23");
+            assert!(event.provider_errors["webhook"].to_lowercase().contains("connect"));
+            assert!(!event.provider_errors["webhook"].contains("private-token"));
+            recorded.set(true);
+            Err(std::io::Error::new(std::io::ErrorKind::PermissionDenied, "history is read-only"))
+        }).await;
+        assert!(recorded.get());
+        assert_eq!(outcome.providers, ["webhook"]);
+        assert_eq!(outcome.failures.len(), 1);
+        assert!(outcome.failures[0].to_lowercase().contains("connect"));
+    }
 }
 
 /// Per-provider outcome summary from a dispatch, pre-digested so callers
@@ -516,26 +636,61 @@ pub(crate) async fn dispatch_and_record(
     notification_type: Option<&str>,
     type_hint: Option<&str>,
     archive_total_count: Option<u32>,
+    summary: Option<&str>,
 ) -> Option<DispatchOutcome> {
     if !crate::notification_center::is_type_enabled(notification_type) {
         return None;
     }
 
     let config = sentryusb_notify::NotifyConfig::from_config();
-    let req = sentryusb_notify::NotifyRequest {
-        title,
-        message,
-        type_hint,
-        notification_type,
+    let request = SendNotificationRequest {
+        title: title.to_string(),
+        message: message.to_string(),
+        summary: summary.map(str::to_string),
+        notification_type: notification_type.map(str::to_string),
+        type_hint: type_hint.map(str::to_string),
         archive_total_count,
     };
-    let results = sentryusb_notify::send_to_all_with_context(&config, &req).await;
+    Some(dispatch_and_record_using(&config, &request, crate::notification_center::record_event).await)
+}
+
+async fn dispatch_and_record_using(
+    config: &sentryusb_notify::NotifyConfig,
+    request: &SendNotificationRequest,
+    record: impl FnOnce(crate::notification_center::NotificationEvent) -> std::io::Result<crate::notification_center::NotificationEvent>,
+) -> DispatchOutcome {
+    let (event, outcome) = dispatch_to_providers(config, request).await;
+    if let Err(e) = record(event) {
+        tracing::warn!("[notifications] Failed to record history event: {}", e);
+    }
+    outcome
+}
+
+/// Dispatch and describe the event separately from persistence, so a full or
+/// damaged history file cannot prevent a notification from being attempted.
+async fn dispatch_to_providers(
+    config: &sentryusb_notify::NotifyConfig,
+    request: &SendNotificationRequest,
+) -> (crate::notification_center::NotificationEvent, DispatchOutcome) {
+    let title = request.title.as_str();
+    let message = request.message.as_str();
+    let summary = request.summary.as_deref();
+    let notification_type = request.notification_type.as_deref();
+    let req = sentryusb_notify::NotifyRequest {
+        title,
+        message: outgoing_message(message, summary),
+        type_hint: request.type_hint.as_deref(),
+        notification_type,
+        archive_total_count: request.archive_total_count,
+    };
+    let results = sentryusb_notify::send_to_all_with_context(config, &req).await;
 
     // Build per-provider history results.
     let mut providers: Vec<String> = Vec::with_capacity(results.len());
     let mut result_map: std::collections::HashMap<String, String> =
         std::collections::HashMap::with_capacity(results.len());
     let mut failures: Vec<String> = Vec::new();
+    let mut provider_errors = std::collections::HashMap::new();
     for (name, res) in &results {
         providers.push(name.clone());
         match res {
@@ -544,6 +699,7 @@ pub(crate) async fn dispatch_and_record(
             }
             Err(e) => {
                 result_map.insert(name.clone(), "error".to_string());
+                provider_errors.insert(name.clone(), e.to_string());
                 failures.push(format!("{}: {}", name, e));
             }
         }
@@ -556,14 +712,12 @@ pub(crate) async fn dispatch_and_record(
         event_type: notification_type.unwrap_or("general").to_string(),
         title: title.to_string(),
         message: message.to_string(),
+        summary: summary.filter(|s| !s.trim().is_empty()).map(str::to_string),
+        provider_errors,
         providers: providers.clone(),
         results: result_map,
     };
-    if let Err(e) = crate::notification_center::record_event(event) {
-        tracing::warn!("[notifications] Failed to record history event: {}", e);
-    }
-
-    Some(DispatchOutcome { providers, failures })
+    (event, DispatchOutcome { providers, failures })
 }
 
 /// POST /api/notifications/send
@@ -587,6 +741,7 @@ pub async fn send_notification(
         notification_type,
         body.type_hint.as_deref(),
         body.archive_total_count,
+        body.summary.as_deref(),
     )
     .await
     else {
@@ -609,6 +764,10 @@ pub async fn send_notification(
             "failed": out.failures,
         })),
     )
+}
+
+fn outgoing_message<'a>(message: &'a str, summary: Option<&'a str>) -> &'a str {
+    summary.filter(|value| !value.trim().is_empty()).unwrap_or(message)
 }
 
 #[cfg(test)]

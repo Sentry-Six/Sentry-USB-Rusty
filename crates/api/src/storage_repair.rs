@@ -273,9 +273,9 @@ fn notification_title() -> String {
 
 /// Fire-and-record a storage_repair push (all configured channels +
 /// notification history). Best-effort; failures only log.
-async fn notify_storage_repair(message: &str) {
+async fn notify_storage_repair(message: &str, summary: &str) {
     let title = notification_title();
-    if crate::notifications::dispatch_and_record(&title, message, Some("storage_repair"), None, None)
+    if crate::notifications::dispatch_and_record(&title, message, Some("storage_repair"), None, None, Some(summary))
         .await
         .is_none()
     {
@@ -342,7 +342,7 @@ async fn boot_check(hub: sentryusb_ws::Hub, marker: &str) {
             tracing::warn!(
                 "[storage-boot] corrupt again after a previous auto repair — not retrying (marker {marker})"
             );
-            notify_storage_repair(MSG_REPEAT_CORRUPTION).await;
+            notify_storage_repair(MSG_REPEAT_CORRUPTION, "Drive corruption returned. Check power and cables, then run Repair Storage manually.").await;
         }
         BootAction::Repair => {
             let device = device.expect("BootAction::Repair implies device_found");
@@ -751,7 +751,7 @@ async fn run_repair(hub: sentryusb_ws::Hub, device: String, mode: RepairMode) {
                 }),
             );
             if auto {
-                notify_storage_repair(MSG_NEEDS_MANUAL_FORCE).await;
+                notify_storage_repair(MSG_NEEDS_MANUAL_FORCE, "Automatic drive repair failed. Open Settings → System → Repair Storage for manual recovery.").await;
             }
             return;
         }
@@ -782,7 +782,7 @@ async fn run_repair(hub: sentryusb_ws::Hub, device: String, mode: RepairMode) {
             }),
         );
         if auto {
-            notify_storage_repair(MSG_HARD_FAIL).await;
+            notify_storage_repair(MSG_HARD_FAIL, "Drive repair failed. The drive may be failing — check its power, cable and enclosure.").await;
         }
         return;
     }
@@ -832,7 +832,12 @@ async fn run_repair(hub: sentryusb_ws::Hub, device: String, mode: RepairMode) {
         if !cam_present {
             push.push_str(" Note: cam_disk.bin is missing — re-run the Setup Wizard to recreate the backing files after the reboot.");
         }
-        notify_storage_repair(&push).await;
+        let summary = if cam_present {
+            "Drive filesystem repaired. Rebooting the Pi now."
+        } else {
+            "Drive filesystem repaired, but camera storage is missing. Rebooting now — open Setup afterward."
+        };
+        notify_storage_repair(&push, summary).await;
         tracing::info!("[storage-boot] auto repair complete — rebooting");
         // Same mechanism as POST /api/system/reboot. Notification dispatch
         // above has already completed (bounded by the 30s provider timeout),
