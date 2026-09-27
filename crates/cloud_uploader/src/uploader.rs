@@ -40,7 +40,7 @@ pub async fn run_sweep_loop(state: Arc<CloudStateInner>) {
             }
         }
 
-        let _work = sentryusb_drives::archive_control::ArchiveWorkGuard::begin();
+        let Some(_work) = sentryusb_drives::archive_control::ArchiveWorkGuard::try_begin() else { continue; };
         if state.archive_cancel_requested() { continue; }
         match sweep_once(state.clone()).await {
             Ok(uploaded) if uploaded > 0 => {
@@ -49,6 +49,7 @@ pub async fn run_sweep_loop(state: Arc<CloudStateInner>) {
             Ok(_) => {}
             Err(e) => {
                 warn!("cloud sweep error: {}", e);
+                sentryusb_drives::archive_control::mark_cycle_failed();
                 let mut last_err = state.last_upload_error.lock().await;
                 *last_err = Some(format!("{:#}", e));
             }
@@ -63,6 +64,7 @@ pub async fn run_sweep_loop(state: Arc<CloudStateInner>) {
             Ok(_) => {}
             Err(e) => {
                 warn!("cloud charge sweep error: {}", e);
+                sentryusb_drives::archive_control::mark_cycle_failed();
                 let mut last_err = state.last_upload_error.lock().await;
                 *last_err = Some(format!("{:#}", e));
             }
@@ -77,6 +79,7 @@ pub async fn run_sweep_loop(state: Arc<CloudStateInner>) {
             Ok(_) => {}
             Err(e) => {
                 warn!("cloud charge delete error: {}", e);
+                sentryusb_drives::archive_control::mark_cycle_failed();
                 let mut last_err = state.last_upload_error.lock().await;
                 *last_err = Some(format!("{:#}", e));
             }
@@ -85,8 +88,8 @@ pub async fn run_sweep_loop(state: Arc<CloudStateInner>) {
         if state.archive_cancel_requested() { continue; }
         match crate::sync::run_once(state.clone()).await {
             Ok(())=>sync_failures=0,
-            Err(e) if crate::sync::work_pending(&e)=>sync_failures=1,
-            Err(e)=>{sync_failures=sync_failures.saturating_add(1);warn!("cloud sync error: {}",e);}
+            Err(e) if crate::sync::work_pending(&e)=>{sync_failures=1;sentryusb_drives::archive_control::mark_cycle_failed();},
+            Err(e)=>{sentryusb_drives::archive_control::mark_cycle_failed();sync_failures=sync_failures.saturating_add(1);warn!("cloud sync error: {}",e);}
         }
     }
 }

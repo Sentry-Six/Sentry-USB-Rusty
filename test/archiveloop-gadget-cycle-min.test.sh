@@ -27,7 +27,7 @@ eval "$(awk '
 ' "$script" | sed '$d')"
 
 eval "$(awk '
-  /^function clean_cam_mount / {keep=1}
+  /^function clean_empty_cam_directories / {keep=1}
   keep {print}
   /^# Directory structure car uses:/ {exit}
 ' "$script" | sed '$d')"

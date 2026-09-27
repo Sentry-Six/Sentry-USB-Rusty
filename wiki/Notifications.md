@@ -140,3 +140,42 @@ Push notifications to the Sentry USB iOS companion app. Currently in beta. Toggl
 The **Send Test** action for the paired mobile app sends a Sentry Connect test
 notification. It does not test the other configured providers. Their delivery
 results appear in notification history when an enabled event is sent.
+# Automatic stable updates
+
+Settings → Device → Update Preferences includes **Automatically install stable updates**.
+It is off by default. When enabled, installation is considered only after an archive
+cycle transfers new footage and all configured follow-up work finishes successfully.
+Zero-file, cancelled, interrupted, failed and Travel Mode cycles skip installation.
+Failed attempts can retry after the next qualifying archive; there is no hourly cooldown.
+
+After downloading, the archive must still be reachable. If Tesla BLE is paired,
+the updater also queries the car directly and requires Park and Sentry Mode off
+before installation. The Sentry Mode check is omitted when a configured
+keep-awake provider uses Sentry Mode (`SENTRY_CASE=1` or `2`); Park and archive
+reachability are still required. Normal archive keep-awake cleanup runs before
+these final checks. Drive, Reverse, Neutral, an unknown state or a failed BLE query
+skips the update until the next qualifying archive. Unpaired installs do not
+query BLE. These checks cannot prevent movement after the final check or cancel
+an installation once component replacement has started.
+
+Automatic installation ignores the prerelease visibility setting. The target must be
+a non-draft, non-prerelease GitHub release with a higher numeric version. For example,
+an installed GitHub prerelease `v3.10.22` can update to stable `v4.0.0`, but will not
+downgrade to stable `v3.9.9` or reinstall `v3.10.22`.
+
+Archive completion keeps its normal notification timing. Installation uses the update
+notification category: “Update v4.0.0 available. Installing now.” After a verified reboot,
+the outcome is “Updated to v4.0.0 successfully.” Errors and interrupted attempts produce
+a short update error notification, with detailed diagnostics retained locally.
+Undelivered terminal outcomes are retained for retry, per provider, when connectivity returns.
+Installation notices are also retried while the attempt is active; stale installation notices
+expire when that attempt finishes or is replaced.
+All update messages respect notification settings. Provider acceptance cannot guarantee
+delivery to a phone, and a lost provider response can lead to a duplicate retry.
+
+Installation restarts the device and briefly disconnects its USB drive. It needs free
+space for staged files and recovery copies. A failed or interrupted installation is not
+automatically resumed at boot. Existing manual update controls remain available after
+startup recovery completes.
+
+If an automatic-update recovery record is damaged, automatic installation stays blocked. An explicitly requested manual update preserves that record for diagnosis and can repair the installation.

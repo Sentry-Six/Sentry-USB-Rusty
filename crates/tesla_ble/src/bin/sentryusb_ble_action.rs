@@ -40,6 +40,7 @@
 //!   keep-accessory-off - turn Keep Accessory Power off
 //!   session-info       - pairing probe (see below)
 //!   drive-state        - current gear query (see below)
+//!   sentry-state       - current Sentry Mode query (Off/On; missing state fails)
 //!   pair               - add-key-to-whitelist request (prompts for NFC tap)
 //!   keygen             - generate the BLE P-256 keypair (replaces tesla-keygen)
 //!
@@ -72,7 +73,7 @@ use sentryusb_tesla_ble::{
     actions::{self, ActionPayload},
     keys::KeyPair,
     manager::{PairingStatus, PersistentSession},
-    responses::shift_state_token,
+    responses::{shift_state_token, sentry_mode_token},
 };
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
@@ -98,7 +99,7 @@ async fn main() -> ExitCode {
         Some(v) => v,
         None => {
             eprintln!(
-                "usage: sentryusb-ble-action <wake|sentry-on|sentry-off|charge-port-open|charge-port-close|keep-accessory-on|keep-accessory-off|charge-start|charge-stop|set-charging-amps:N|set-charge-limit:N|session-info|drive-state|pair|keygen>"
+                "usage: sentryusb-ble-action <wake|sentry-on|sentry-off|charge-port-open|charge-port-close|keep-accessory-on|keep-accessory-off|charge-start|charge-stop|set-charging-amps:N|set-charge-limit:N|session-info|drive-state|sentry-state|pair|keygen>"
             );
             return ExitCode::from(1);
         }
@@ -111,8 +112,8 @@ async fn main() -> ExitCode {
     }
     // `drive-state` is a query too — prints the gear token and uses
     // distinct exit codes, so handle it before the action dispatch.
-    if verb == "drive-state" {
-        return run_drive_state().await;
+    if matches!(verb.as_str(), "drive-state" | "sentry-state") {
+        return run_state_query(&verb).await;
     }
     // `pair` is a fire-and-forget add-key-to-whitelist request — it has
     // its own IPC-first / direct-fallback path and exit-code semantics
@@ -492,26 +493,26 @@ async fn session_info_via_ipc() -> Result<&'static str, IpcError> {
     }
 }
 
-/// `drive-state` verb. Prints the gear token (`P`/`R`/`N`/`D`) to stdout
+/// Read-only vehicle query. Prints gear (`P`/`R`/`N`/`D`) or Sentry (`Off`/`On`)
 /// and exits 0 on success; exits non-zero on any failure (so the
 /// lock-chime caller's `run_with_timeout` sees an Err). IPC-first so the
 /// query reuses the telemetry daemon's warm connection; direct fallback
 /// covers a disabled/crashed daemon.
-async fn run_drive_state() -> ExitCode {
-    match drive_state_via_ipc().await {
+async fn run_state_query(verb: &str) -> ExitCode {
+    match state_query_via_ipc(verb).await {
         Ok(token) => {
             println!("{token}");
             return ExitCode::SUCCESS;
         }
         Err(IpcError::Unavailable(reason)) => {
             info!(
-                "telemetry IPC unavailable ({}), reading drive state via direct BLE",
+                "telemetry IPC unavailable ({}), reading vehicle state via direct BLE",
                 reason
             );
         }
         Err(IpcError::DaemonRejected(msg)) => {
-            // Daemon is up but couldn't read the gear (car asleep /
-            // unreachable / no concrete gear). A direct attempt would
+            // Daemon is up but couldn't read the state (car asleep /
+            // unreachable / no concrete reading). A direct attempt would
             // just repeat against the same car, so surface the failure
             // instead of thrashing the radio.
             eprintln!("{msg}");
@@ -535,34 +536,36 @@ async fn run_drive_state() -> ExitCode {
         }
     };
     let session = PersistentSession::start(keypair, vin, adapter);
-    let result = tokio::time::timeout(Duration::from_secs(60), session.get_drive()).await;
+    let result = tokio::time::timeout(Duration::from_secs(60), async {
+        if verb == "sentry-state" {
+            let state = session.get_closures().await?;
+            sentry_mode_token(&state).map(str::to_owned).context("car reported no Sentry state")
+        } else {
+            let state = session.get_drive().await?;
+            shift_state_token(&state).map(str::to_owned).context("car reported no gear (may be asleep)")
+        }
+    }).await;
     session.shutdown().await;
     match result {
-        Ok(Ok(drive)) => match shift_state_token(&drive) {
-            Some(tok) => {
-                println!("{tok}");
-                ExitCode::SUCCESS
-            }
-            None => {
-                eprintln!("car reported no gear (may be asleep)");
-                ExitCode::from(3)
-            }
-        },
+        Ok(Ok(token)) => {
+            println!("{token}");
+            ExitCode::SUCCESS
+        }
         Ok(Err(e)) => {
             error!("{e:#}");
             ExitCode::from(3)
         }
         Err(_) => {
-            error!("drive-state timed out after 60s");
+            error!("{verb} timed out after 60s");
             ExitCode::from(3)
         }
     }
 }
 
-/// Send `drive-state` over the daemon IPC socket and map the reply to a
-/// gear token. `Unavailable` means no daemon is listening (caller falls
+/// Send a read-only state query over the daemon IPC socket and read its
+/// state token. `Unavailable` means no daemon is listening (caller falls
 /// back to direct); `DaemonRejected` carries the daemon's error line.
-async fn drive_state_via_ipc() -> Result<String, IpcError> {
+async fn state_query_via_ipc(verb: &str) -> Result<String, IpcError> {
     let stream = match tokio::time::timeout(
         Duration::from_millis(1000),
         UnixStream::connect(IPC_SOCKET),
@@ -585,7 +588,7 @@ async fn drive_state_via_ipc() -> Result<String, IpcError> {
     };
 
     let (read_half, mut write_half) = stream.into_split();
-    if let Err(e) = write_half.write_all(b"drive-state\n").await {
+    if let Err(e) = write_half.write_all(format!("{verb}\n").as_bytes()).await {
         return Err(IpcError::Unavailable(format!("writing verb: {}", e)));
     }
 
@@ -605,7 +608,7 @@ async fn drive_state_via_ipc() -> Result<String, IpcError> {
                 // Bare "OK" (no token) or anything unexpected — the
                 // daemon should always include a gear token here.
                 Err(IpcError::DaemonRejected(format!(
-                    "unexpected drive-state reply: {:?}",
+                    "unexpected state-query reply: {:?}",
                     line
                 )))
             }

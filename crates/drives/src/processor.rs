@@ -159,6 +159,7 @@ fn process_one_clip(store: &DriveStore, file: &str, full_path: &str) -> ClipOutc
             }
             if let Err(me) = store.mark_processed(file) {
                 warn!("failed to mark {} processed: {}", file, me);
+                out.error = Some(format!("failed to mark processed: {me}"));
             }
         }
         Ok(gps) => {
@@ -202,6 +203,7 @@ pub struct Processor {
     store: Arc<DriveStore>,
     hub: sentryusb_ws::Hub,
     running: AtomicBool,
+    run_work: std::sync::Mutex<Option<crate::archive_control::ArchiveWorkGuard>>,
     archive_control: crate::archive_control::ArchiveControl,
     run_cycle: std::sync::Mutex<Option<String>>,
     status: Mutex<ProcessingStatus>,
@@ -242,6 +244,7 @@ impl Processor {
             store,
             hub,
             running: AtomicBool::new(false),
+            run_work: std::sync::Mutex::new(None),
             archive_control: crate::archive_control::ArchiveControl::default(),
             run_cycle: std::sync::Mutex::new(None),
             status: Mutex::new(ProcessingStatus {
@@ -299,7 +302,9 @@ impl Processor {
     /// as "already finished".
     pub fn try_reserve(&self) -> bool {
         let mut cycle = self.run_cycle.lock().unwrap();
+        let Some(work) = crate::archive_control::ArchiveWorkGuard::try_begin() else { return false; };
         if self.running.swap(true, Ordering::SeqCst) { return false; }
+        *self.run_work.lock().unwrap() = Some(work);
         *cycle = self.archive_control.active_cycle();
         true
     }
@@ -309,7 +314,9 @@ impl Processor {
     /// error path, so a failure cannot wedge the processor.
     pub async fn process_new_reserved(&self) -> Result<()> {
         let result = self.do_process(false).await;
+        if result.is_err() { self.archive_control.mark_failed(); }
         self.status.lock().await.running = false;
+        self.run_work.lock().unwrap().take();
         self.running.store(false, Ordering::SeqCst);
         result
     }
@@ -321,7 +328,9 @@ impl Processor {
         }
 
         let result = self.do_process(false).await;
+        if result.is_err() { self.archive_control.mark_failed(); }
         self.status.lock().await.running = false;
+        self.run_work.lock().unwrap().take();
         self.running.store(false, Ordering::SeqCst);
         result
     }
@@ -339,7 +348,9 @@ impl Processor {
             self.store.clear_processed_for_reprocess()?;
             self.do_process(true).await
         }.await;
+        if result.is_err() { self.archive_control.mark_failed(); }
         self.status.lock().await.running = false;
+        self.run_work.lock().unwrap().take();
         self.running.store(false, Ordering::SeqCst);
         result
     }
@@ -360,10 +371,12 @@ impl Processor {
     /// detector's legacy speed fallback needs — plus aggregates that
     /// pre-v16 extractions computed with worse gear evidence.
     pub async fn check_summon(&self) -> Result<SummonCheckOutcome> {
-        if self.running.swap(true, Ordering::SeqCst) {
+        if !self.try_reserve() {
             anyhow::bail!("processing already in progress");
         }
         let result = self.do_check_summon().await;
+        if result.is_err() { self.archive_control.mark_failed(); }
+        self.run_work.lock().unwrap().take();
         self.running.store(false, Ordering::SeqCst);
         result
     }
@@ -424,11 +437,12 @@ impl Processor {
             if (i + 1) % SAVE_EVERY == 0
                 && let Err(e) = self.store.save()
             {
+                self.archive_control.mark_failed();
                 warn!("check-summon WAL checkpoint failed: {}", e);
             }
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
-        let _ = self.store.save();
+        if let Err(e) = self.store.save() { self.archive_control.mark_failed(); warn!("processor checkpoint failed: {e}"); }
 
         {
             let mut status = self.status.lock().await;
@@ -474,7 +488,7 @@ impl Processor {
         let cycle_cancelled = self.run_cycle.lock().unwrap().as_deref()
             .is_some_and(|id| self.archive_control.cycle_cancelled(id));
         if !cycle_cancelled && !self.archive_control.cancelled() { return false; }
-        let _ = self.store.save();
+        if let Err(e) = self.store.save() { self.archive_control.mark_failed(); warn!("processor checkpoint failed: {e}"); }
         let mut status = self.status.lock().await;
         status.current_file = None;
         self.hub.broadcast("drive_process", &serde_json::json!({
@@ -594,7 +608,7 @@ impl Processor {
                 unprocessed.extend(gap_fill);
             }
             Ok(_) => {}
-            Err(e) => warn!("gap-fill event scan failed: {}", e),
+            Err(e) => { self.archive_control.mark_failed(); warn!("gap-fill event scan failed: {}", e); },
         }
 
         let total = unprocessed.len();
@@ -667,6 +681,7 @@ impl Processor {
             }
             if let Some(msg) = clip.error {
                 error_count += 1;
+                self.archive_control.mark_failed();
                 if errors.len() < MAX_ERROR_MESSAGES {
                     errors.push(format!("{}: {}", file, msg));
                 }
@@ -685,6 +700,7 @@ impl Processor {
             // doesn't grow unbounded on a long reprocess run.
             if (i + 1) % SAVE_EVERY == 0 {
                 if let Err(e) = self.store.save() {
+                    self.archive_control.mark_failed();
                     warn!("processor WAL checkpoint failed: {}", e);
                 }
             }
@@ -695,7 +711,10 @@ impl Processor {
         }
 
         // Final checkpoint on the way out.
-        let _ = self.store.save();
+        if let Err(e) = self.store.save() {
+            self.archive_control.mark_failed();
+            warn!("processor final checkpoint failed: {}", e);
+        }
         if self.stop_if_cancelled().await { return Ok(()); }
 
         // Refresh the gap-fill manifest the snapshot builder reads to
@@ -707,6 +726,7 @@ impl Processor {
         // a manifest write failure only costs playback continuity, never
         // drive data.
         if let Err(e) = self.update_gapfill_manifest(&recent_ts) {
+            self.archive_control.mark_failed();
             warn!("gap-fill manifest update failed: {}", e);
         }
 
@@ -716,6 +736,7 @@ impl Processor {
         if self.stop_if_cancelled().await { return Ok(()); }
         if let Some(hook) = self.after_process.clone() {
             if let Err(e) = tokio::task::spawn_blocking(move || hook()).await {
+                self.archive_control.mark_failed();
                 warn!("after-process hook panicked: {}", e);
             }
         }
@@ -735,8 +756,8 @@ impl Processor {
             let store = self.store.clone();
             match tokio::task::spawn_blocking(move || store.sync_to_archive()).await {
                 Ok(Ok(())) => {}
-                Ok(Err(e)) => warn!("drive-data archive sync failed: {}", e),
-                Err(e) => warn!("drive-data archive sync task failed: {}", e),
+                Ok(Err(e)) => { self.archive_control.mark_failed(); warn!("drive-data archive sync failed: {}", e); },
+                Err(e) => { self.archive_control.mark_failed(); warn!("drive-data archive sync task failed: {}", e); },
             }
         }
 
@@ -1196,6 +1217,27 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn update_exclusion_blocks_every_processor_entrypoint() {
+        // Exercise the real process-wide exclusion in a fresh process so other
+        // parallel processor tests cannot interfere with this reservation.
+        if std::env::var_os("SENTRY_TEST_UPDATE_EXCLUSION").is_none() {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "processor::tests::update_exclusion_blocks_every_processor_entrypoint", "--nocapture"])
+                .env("SENTRY_TEST_UPDATE_EXCLUSION", "1").output().unwrap();
+            assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stdout));
+            return;
+        }
+        let store = Arc::new(crate::db::DriveStore::open_memory().unwrap());
+        let p = Processor::new(store, sentryusb_ws::Hub::new());
+        let guard = crate::archive_control::UpdateWorkGuard::try_acquire().unwrap();
+        assert!(!p.try_reserve());
+        assert!(p.check_summon().await.is_err(), "summon processing must not bypass the update lock");
+        assert!(crate::archive_control::ArchiveWorkGuard::try_begin().is_none());
+        drop(guard);
+        assert!(p.try_reserve());
+    }
+
     /// The reservation must be released even when the pass errors, or the
     /// processor would wedge and every later request would 409 forever.
     #[tokio::test]
@@ -1220,6 +1262,22 @@ mod tests {
             "a failed pass must still release the processor"
         );
         assert!(processor.try_reserve(), "processor must be claimable again");
+    }
+
+    #[tokio::test]
+    async fn best_effort_post_process_failure_disqualifies_auto_update() {
+        let root = tempfile::tempdir().unwrap();
+        let clips = root.path().join("TeslaCam");
+        std::fs::create_dir_all(&clips).unwrap();
+        let mut p = Processor::with_clip_dir_for_test(
+            Arc::new(crate::db::DriveStore::open_memory().unwrap()), clips.to_string_lossy().into_owned());
+        p.archive_control = crate::archive_control::ArchiveControl::new(root.path());
+        let id = format!("{}:failed-hook", std::process::id());
+        std::fs::write(root.path().join("archive-cycle"), &id).unwrap();
+        p.set_after_process(Arc::new(|| panic!("injected hook failure")));
+        p.process_new().await.unwrap(); // preserve best-effort processing behavior
+        assert!(!p.is_running());
+        assert!(root.path().join(format!("archive-stage-failed-{id}")).exists(), "failure must survive idle status");
     }
 
     #[tokio::test]

@@ -18,5 +18,7 @@ copy_script() {
 for backend in cifs nfs rsync rclone; do
   install_archive_scripts "$work/bin" "run/${backend}_archive"
   cmp "$root/run/archive-control.sh" "$work/bin/archive-control.sh"
+  cmp "$root/run/archiveloop" "$work/bin/archiveloop"
+  cmp "$root/run/post-archive-process.sh" "$work/bin/post-archive-process.sh"
 done
 echo 'archive installer tests passed'

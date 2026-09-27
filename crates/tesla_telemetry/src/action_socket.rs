@@ -13,10 +13,11 @@
 //!   `charge-port-close`, `keep-accessory-on`, `keep-accessory-off`,
 //!   `charge-start`, `charge-stop`, `set-charging-amps:<n>`,
 //!   `set-charge-limit:<n>`,
-//!   `session-info`, `drive-state`.
+//!   `session-info`, `drive-state`, `sentry-state`.
 //!
 //! `session-info` returns pairing status; `drive-state` returns `P`, `R`, `N`,
-//! or `D`. The socket is mode 0600.
+//! or `D`; `sentry-state` returns `Off` or `On`. Unknown state fails.
+//! The socket is mode 0600.
 
 use std::time::Duration;
 

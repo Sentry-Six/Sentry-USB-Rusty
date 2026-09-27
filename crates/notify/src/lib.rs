@@ -239,6 +239,15 @@ pub async fn send_to_all_with_context(
     config: &NotifyConfig,
     req: &NotifyRequest<'_>,
 ) -> Vec<(String, Result<()>)> {
+    send_to_selected(config, req, &[]).await
+}
+
+/// Retry only providers that have not already confirmed acceptance.
+pub async fn send_to_selected(
+    config: &NotifyConfig,
+    req: &NotifyRequest<'_>,
+    delivered: &[String],
+) -> Vec<(String, Result<()>)> {
     use futures::future::BoxFuture;
 
     let client = notify_client();
@@ -341,7 +350,7 @@ pub async fn send_to_all_with_context(
         )));
     }
 
-    futures::future::join_all(sends.into_iter().map(
+    futures::future::join_all(sends.into_iter().filter(|(_, key, _)| !delivered.contains(key)).map(
         |(display, key, fut)| async move {
             // Sanitize before either logging or returning errors to API/history.
             let r = fut.await.map_err(|e| anyhow::anyhow!(safe_provider_error(&e, &[
@@ -362,6 +371,28 @@ fn log_result(provider: &str, result: &Result<()>) {
     match result {
         Ok(()) => info!("[notify] {} — sent successfully", provider),
         Err(e) => warn!("[notify] {} — failed: {}", provider, e),
+    }
+}
+
+#[cfg(test)]
+mod update_retry_tests {
+    use super::*;
+    #[tokio::test]
+    async fn accepted_provider_is_not_contacted_again_on_retry() {
+        let config = NotifyConfig {
+            // A delivered provider must not be contacted even if its endpoint
+            // is now unavailable. The remaining provider must still be tried.
+            webhook_enabled: true, webhook_url: "http://127.0.0.1:1/already-delivered".into(),
+            ntfy_enabled: true, ntfy_url: "http://127.0.0.1:1/pending".into(),
+            ..Default::default()
+        };
+        let result = send_to_selected(&config, &NotifyRequest {
+            title: "Test", message: "Update complete", notification_type: Some("update"),
+            type_hint: Some("info"), archive_total_count: None,
+        }, &["webhook".into()]).await;
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].0, "ntfy");
+        assert!(result[0].1.is_err());
     }
 }
 

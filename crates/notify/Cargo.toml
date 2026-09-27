@@ -18,3 +18,6 @@ urlencoding = "2"
 chrono = { workspace = true }
 
 sentryusb-config = { path = "../config", package = "sentryusb-config" }
+
+[dev-dependencies]
+tokio = { workspace = true }

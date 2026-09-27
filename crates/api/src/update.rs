@@ -16,6 +16,22 @@ const UPDATE_CHECK_CACHE: &str = "/tmp/sentryusb-update-check.json";
 
 static UPDATE_RUNNING: AtomicBool = AtomicBool::new(false);
 
+pub(crate) struct UpdateGuard {
+    _lock: sentryusb_drives::archive_mount_lock::ArchiveMountGuard,
+}
+impl Drop for UpdateGuard {
+    fn drop(&mut self) { UPDATE_RUNNING.store(false, Ordering::SeqCst); }
+}
+pub(crate) async fn acquire_update() -> anyhow::Result<UpdateGuard> {
+    if UPDATE_RUNNING.swap(true, Ordering::SeqCst) { anyhow::bail!("Update already in progress"); }
+    let result = tokio::task::spawn_blocking(|| sentryusb_drives::archive_mount_lock::acquire_path(
+        std::path::Path::new("/tmp/sentryusb-update.lock"), std::time::Duration::ZERO)).await;
+    match result {
+        Ok(Ok(lock)) => Ok(UpdateGuard { _lock: lock }),
+        _ => { UPDATE_RUNNING.store(false, Ordering::SeqCst); anyhow::bail!("Update already in progress or lock unavailable") }
+    }
+}
+
 /// Keep fixed to preserve pseudonymous fingerprint continuity.
 const TELEMETRY_SALT: &str = "SENTRYUSB_2026_PROD";
 
@@ -88,8 +104,19 @@ pub async fn run_update(
     State(s): State<AppState>,
     body: String,
 ) -> (StatusCode, Json<serde_json::Value>) {
-    if UPDATE_RUNNING.swap(true, Ordering::SeqCst) {
-        return crate::json_error(StatusCode::CONFLICT, "Update already in progress");
+    let guard = match acquire_update().await {
+        Ok(guard) => guard,
+        Err(e) => return crate::json_error(StatusCode::CONFLICT, &e.to_string()),
+    };
+    match crate::update_attempt::load(&crate::update_attempt::current_path()) {
+        Ok(Some(a)) if !a.terminal() => return crate::json_error(StatusCode::CONFLICT, "Previous automatic update is being verified at startup"),
+        Err(_) => {
+            if let Err(e) = crate::update_attempt::preserve_before_manual_repair(&crate::update_attempt::current_path()) {
+                return crate::json_error(StatusCode::CONFLICT, &format!("Cannot preserve update recovery record before manual repair: {e}"));
+            }
+            tracing::warn!("Preserved unreadable automatic-update receipt; explicit manual repair may proceed");
+        },
+        _ => {},
     }
 
     // The client omits the body when installing the latest release.
@@ -104,14 +131,19 @@ pub async fn run_update(
 
     let hub = s.hub.clone();
     tokio::spawn(async move {
+        let _guard = guard;
         hub.broadcast("update_status", &serde_json::json!({"status": "running"}));
 
         let result = self_update(&hub, target_version).await;
 
-        UPDATE_RUNNING.store(false, Ordering::SeqCst);
-
         match result {
             Ok(msg) => {
+                // A successful explicit manual update supersedes a failed
+                // automatic attempt; its outcome queue remains independent.
+                if let Err(e) = crate::update_attempt::clear_after_manual_repair(&crate::update_attempt::current_path()) {
+                    hub.broadcast("update_status", &serde_json::json!({"status":"error", "error":format!("Installed files but could not clear superseded recovery state: {e}")}));
+                    return;
+                }
                 hub.broadcast("update_status", &serde_json::json!({
                     "status": "complete",
                     "output": msg
@@ -125,7 +157,13 @@ pub async fn run_update(
                 }));
                 tokio::time::sleep(std::time::Duration::from_secs(3)).await;
 
-                let _ = sentryusb_shell::run("reboot", &[]).await;
+                match sentryusb_shell::run("reboot", &[]).await {
+                    Ok(_) => {
+                        tokio::time::sleep(std::time::Duration::from_secs(90)).await;
+                        hub.broadcast("update_status", &serde_json::json!({"status":"error", "error":"Device did not reboot after update"}));
+                    }
+                    Err(e) => hub.broadcast("update_status", &serde_json::json!({"status":"error", "error":e.to_string()})),
+                }
             }
             Err(e) => hub.broadcast("update_status", &serde_json::json!({
                 "status": "error",
@@ -142,7 +180,7 @@ const DEFAULT_UPDATE_OWNER: &str = "Sentry-Six";
 const DEFAULT_UPDATE_REPO_NAME: &str = "Sentry-USB-Rusty";
 
 /// Resolves the configured owner while keeping the release repository name fixed.
-fn update_repo() -> String {
+pub(crate) fn update_repo() -> String {
     let path = sentryusb_config::find_config_path();
     let (active, _commented) = sentryusb_config::parse_file(path).unwrap_or_default();
     let owner = active
@@ -155,7 +193,7 @@ fn update_repo() -> String {
 
 /// Detects the release suffix selected by the boot picker or equivalent live
 /// CPU rules. Userspace architecture takes precedence over kernel architecture.
-async fn detect_release_suffix() -> anyhow::Result<String> {
+pub(crate) async fn detect_release_suffix() -> anyhow::Result<String> {
     // Older pickers recorded fallback names, so accept only release suffixes.
     const KNOWN_SUFFIXES: &[&str] = &[
         "linux-arm64-a53",
@@ -778,7 +816,7 @@ async fn self_update(
 }
 
 /// Reads the per-boot identifier used to verify that an update rebooted.
-fn read_boot_id() -> Option<String> {
+pub(crate) fn read_boot_id() -> Option<String> {
     std::fs::read_to_string("/proc/sys/kernel/random/boot_id")
         .ok()
         .map(|s| s.trim().to_string())
@@ -849,7 +887,7 @@ pub(crate) fn is_version_newer(candidate: &str, current: &str) -> bool {
     }
 }
 
-fn read_current_version() -> String {
+pub(crate) fn read_current_version() -> String {
     std::fs::read_to_string("/opt/sentryusb/version")
         .or_else(|_| std::fs::read_to_string("/root/.sentryusb_version"))
         .map(|s| s.trim().to_string())

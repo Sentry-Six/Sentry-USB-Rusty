@@ -23,6 +23,10 @@ if ! : >> "$LOG_FILE" 2>/dev/null; then
 fi
 
 function log () {
+  case "$*" in
+    *ERROR*|*Error:*|*Failed*|*failed*|*timed\ out*|*stalled*|*not\ mounted*|*Not\ Mounted*|*Could\ not*|*connection\ dead*)
+      [ -z "${ARCHIVE_STAGE_FAILURE_FILE:-}" ] || touch "$ARCHIVE_STAGE_FAILURE_FILE" 2>/dev/null || true ;;
+  esac
   echo "$( date ):" "$@" >> "$LOG_FILE" 2>/dev/null || true
   if [[ "$(stat --format="%s" "$LOG_FILE" 2>/dev/null)" -gt 1000000 ]] 2>/dev/null
   then
@@ -634,6 +638,9 @@ function travel_mode_pace () {
 }
 
 function run_archive_cycle () {
+  ARCHIVE_NEW_FILES=0
+  ARCHIVE_ALL_STAGES_OK=1
+  export ARCHIVE_STAGE_FAILURE_FILE="/tmp/archive-stage-failed-${ARCHIVE_CYCLE_ID:-unknown}"
   # Wrapper around archive_clips that owns the loop-level failure state.
   # ARCHIVE_RETRY_ATTEMPT must be derived from the PREVIOUS cycle's result
   # before it is cleared: it tells archive_teslacam_clips to suppress
@@ -648,13 +655,90 @@ function run_archive_cycle () {
   if archive_cancel_requested; then
     archive_cancel_cleanup
   else
-    archive_clips || ARCHIVE_CYCLE_FAILED=1
+    archive_clips || { ARCHIVE_CYCLE_FAILED=1; ARCHIVE_ALL_STAGES_OK=0; }
   fi
   ARCHIVE_CYCLE_CANCELLED=0
   if archive_cancel_requested; then
     ARCHIVE_CYCLE_CANCELLED=1
     ARCHIVE_CYCLE_FAILED=0
   fi
+}
+
+function auto_update_cycle_eligible () {
+  [[ ${ARCHIVE_NEW_FILES:-0} =~ ^[0-9]+$ ]] &&
+    [ "${ARCHIVE_NEW_FILES:-0}" -gt 0 ] &&
+    [ "${ARCHIVE_ALL_STAGES_OK:-0}" = 1 ] &&
+    [ ! -e "${ARCHIVE_STAGE_FAILURE_FILE:-/nonexistent}" ] &&
+    [ "${ARCHIVE_CYCLE_FAILED:-1}" = 0 ] &&
+    [ "${ARCHIVE_CYCLE_CANCELLED:-1}" = 0 ] &&
+    ! archive_cancel_requested && ! travel_mode_active && archive_is_reachable
+}
+
+function after_archive_needs_legacy_notification () {
+  [ "$1" = 404 ] && return 0
+  [ "$1" = 200 ] || return 1
+  # Older embedded web servers may return the SPA HTML with HTTP 200.
+  ! python3 -c 'import json,sys; r=json.load(open(sys.argv[1])); sys.exit(0 if isinstance(r,dict) and r.get("success") is True else 1)' "$2" 2>/dev/null
+}
+
+function legacy_available_update_notification () {
+  local api="$1" preference channel release version marker
+  preference=$(curl -sf --max-time 15 "$api/api/config/preference?key=auto_update_check") || return 0
+  [[ "$preference" != *'"disabled"'* ]] || return 0
+  channel=$(curl -sf --max-time 15 "$api/api/config/preference?key=update_channel") || return 0
+  release=$(curl -sf --max-time 20 -X POST "$api/api/system/check-update") || return 0
+  version=$(printf '%s' "$release" | python3 -c '
+import json,re,sys
+r=json.load(sys.stdin)
+version=r.get("latest_version","") if r.get("update_available") is True else ""
+if not version and "prerelease" in sys.argv[1]:
+ p=r.get("prerelease",{})
+ version=p.get("version","") if p.get("available") is True else ""
+if isinstance(version,str) and re.fullmatch(r"v?[0-9]+\.[0-9]+\.[0-9]+(?:-[A-Za-z0-9.-]+)?",version): print(version)
+' "$channel") || return 0
+  [ -n "$version" ] || return 0
+  marker="/tmp/sentryusb-update-notified-$version"
+  [ ! -e "$marker" ] || return 0
+  if /root/bin/send-push-message "${NOTIFICATION_TITLE:-SentryUSB}:" \
+      "Update available: $version. Open Settings to install." info update \
+      "Update available: $version. Open Settings to install."; then
+    touch "$marker"
+  fi
+}
+
+function auto_update_after_archive () {
+  local eligible=false api="http://127.0.0.1:${SENTRYUSB_PORT:-80}"
+  auto_update_cycle_eligible && eligible=true
+  # The server reads this local receipt, never trusts request-supplied success.
+  # Keep the cycle active until this synchronous handoff completes so cancel
+  # requests and the updater's final checks refer to the same cycle.
+  [ -n "${ARCHIVE_CYCLE_ID:-}" ] || return 0
+  python3 - "$ARCHIVE_CYCLE_ID" "$eligible" "${ARCHIVE_NEW_FILES:-0}" <<'PY'
+import json, os, sys
+from pathlib import Path
+p = Path('/tmp/sentryusb-auto-update-cycle.json')
+tmp = p.with_suffix('.new')
+tmp.write_text(json.dumps(dict(cycle_id=sys.argv[1], eligible=sys.argv[2]=='true',
+    newly_archived_files=int(sys.argv[3]), boot_id=Path('/proc/sys/kernel/random/boot_id').read_text().strip())))
+os.replace(tmp, p)
+PY
+  if [ $? -ne 0 ]; then log "Could not publish auto-update cycle result"; return 0; fi
+  log "Archive work finished; checking updates before waiting for archive to be unreachable"
+  local response code
+  response=$(mktemp /tmp/sentryusb-after-archive.XXXXXX) || return 0
+  code=$(curl -sS --max-time 1800 -o "$response" -w '%{http_code}' -X POST "$api/api/system/after-archive" -d '') || {
+    rm -f "$response"
+    log "Post-archive update check unavailable or failed"; return 0;
+  }
+  cat "$response" >> "$LOG_FILE" 2>/dev/null || true
+  if after_archive_needs_legacy_notification "$code" "$response"; then
+    # During a script/API upgrade mismatch, retain old notification behavior
+    # without treating an unsupported endpoint as authorization to install.
+    legacy_available_update_notification "$api"
+  elif [ "$code" != 200 ]; then
+    log "Post-archive update check unavailable or failed (HTTP $code)"
+  fi
+  rm -f "$response"
 }
 
 # Cancellation uses the normal wait-for-departure path, even in Travel Mode.
@@ -1123,6 +1207,17 @@ function archive_progress_monitor () {
   done
 }
 
+function clean_empty_cam_directories {
+  local root
+  local -a roots=()
+  for root in "$CAM_MOUNT/TeslaCam/RecentClips" "$CAM_MOUNT/TeslaCam/SavedClips" \
+    "$CAM_MOUNT/TeslaCam/SentryClips" "$CAM_MOUNT/TeslaTrackMode"; do
+    [ ! -d "$root" ] || roots+=("$root")
+  done
+  [ "${#roots[@]}" -gt 0 ] || return 0
+  archive_run_command find "${roots[@]}" -mindepth 1 -type d -empty -delete
+}
+
 function clean_cam_mount {
   archive_cancel_requested && return 0
   if [ -e "${CAM_CLEANUP_DEFERRED:-/mutable/sentryusb_cam_cleanup_deferred}" ]; then
@@ -1153,10 +1248,10 @@ function clean_cam_mount {
 
   # Delete the files that fsck "recovered". These are generally files
   # that were deleted previously by the car or teslausb
-  archive_run_command find "${CAM_MOUNT}" \( \( -type f -name FSCK\*.REC \) -o \( -type f -name "*~[0-9].MP4" \) \) -exec rm -rf -- {} + || true
+  archive_run_command find "${CAM_MOUNT}" \( \( -type f -name FSCK\*.REC \) -o \( -type f -name "*~[0-9].MP4" \) \) -exec rm -rf -- {} + || { ARCHIVE_ALL_STAGES_OK=0; [ -z "${ARCHIVE_STAGE_FAILURE_FILE:-}" ] || touch "$ARCHIVE_STAGE_FAILURE_FILE"; }
 
   # Delete short recordings
-  archive_run_command find "${CAM_MOUNT}" -type f -name \*.mp4 -size -100000c -delete || true
+  archive_run_command find "${CAM_MOUNT}" -type f -name \*.mp4 -size -100000c -delete || { ARCHIVE_ALL_STAGES_OK=0; [ -z "${ARCHIVE_STAGE_FAILURE_FILE:-}" ] || touch "$ARCHIVE_STAGE_FAILURE_FILE"; }
 
   if [ "$mode" = "freespace" ] && ! archive_cancel_requested
   then
@@ -1180,18 +1275,17 @@ function clean_cam_mount {
         break;
       fi
       archive_cancel_requested && break
-      rm "${CAM_MOUNT}/$line"
+      rm "${CAM_MOUNT}/$line" || ARCHIVE_ALL_STAGES_OK=0
     done < /tmp/rmcandidatesbytime.txt
     # Clean up temp files from RAM-backed /tmp
     rm -f /tmp/rmcandidates.txt /tmp/rmcandidatesbytime.txt
   fi
 
   # delete directories that are now empty
-  archive_run_command find "$CAM_MOUNT/TeslaCam/RecentClips" "$CAM_MOUNT/TeslaCam/SavedClips" \
-    "$CAM_MOUNT/TeslaCam/SentryClips" "$CAM_MOUNT/TeslaTrackMode" -mindepth 1 -type d -empty -delete || true
+  clean_empty_cam_directories || { ARCHIVE_ALL_STAGES_OK=0; [ -z "${ARCHIVE_STAGE_FAILURE_FILE:-}" ] || touch "$ARCHIVE_STAGE_FAILURE_FILE"; }
 
   # Trim the camera archive to reduce the number of blocks in the snapshot.
-  if ! archive_cancel_requested; then trim_free_space "$CAM_MOUNT"; fi
+  if ! archive_cancel_requested; then trim_free_space "$CAM_MOUNT" || ARCHIVE_ALL_STAGES_OK=0; fi
 
   unmount_cam_file
 
@@ -1559,6 +1653,7 @@ function archive_teslacam_clips () {
     # Cleanup still owed after files left the overlay (even if the car leaves
     # before free-space cleanup). Publish before the durable ledger so a
     # power cut cannot leave archived clips on cam with no cleanup obligation.
+    ARCHIVE_NEW_FILES=$((sentry_archived + trackmode_archived))
     if [ "$sentry_archived" -gt 0 ] || [ "$trackmode_archived" -gt 0 ]
     then
       mark_cam_cleanup_pending || true
@@ -1652,7 +1747,7 @@ function archive_teslacam_clips () {
         fi
       elif [ -e "$CAM_CLEANUP_PENDING" ]; then
         log "Completing deferred cam cleanup"
-        clean_cam_mount freespace
+        clean_cam_mount freespace || ARCHIVE_ALL_STAGES_OK=0
         retire_short_recording_links "$ignorelist" "$overlaylower" || log "ERROR: failed to retire cleaned short recording links"
       elif [ "$total_count" -eq 0 ] && [ "$ignore_count" -eq 0 ]; then
         # Zero-clip home archives used to always clean+reconnect, thrashing USB.
@@ -1664,7 +1759,7 @@ function archive_teslacam_clips () {
           log "Archived files require cam cleanup"
         fi
         mark_cam_cleanup_pending || true
-        clean_cam_mount freespace
+        clean_cam_mount freespace || ARCHIVE_ALL_STAGES_OK=0
         retire_short_recording_links "$ignorelist" "$overlaylower" || log "ERROR: failed to retire cleaned short recording links"
       fi
     else
@@ -1693,7 +1788,7 @@ function copy_music_files () {
   archive_run_command /root/bin/copy-music.sh || music_result=$?
 
   # Trim the empty space from the music archive.
-  if ! archive_cancel_requested; then trim_free_space "$MUSIC_MOUNT"; fi
+  if ! archive_cancel_requested; then trim_free_space "$MUSIC_MOUNT" || ARCHIVE_ALL_STAGES_OK=0; fi
 
   unmount_music_file
   return "$music_result"
@@ -1717,7 +1812,7 @@ function cloud_upload_step () {
   local status_json
   if ! status_json=$(curl -sf -m 5 "$api/api/cloud/status" 2>/dev/null); then
     log "Cloud upload: API unreachable, skipping"
-    return 0
+    return 1
   fi
   if ! echo "$status_json" | grep -q '"paired":true'; then
     log "Cloud upload: Pi not paired, skipping"
@@ -1726,7 +1821,7 @@ function cloud_upload_step () {
 
   local pending
   pending=$(echo "$status_json" | grep -o '"pendingRouteCount":[0-9]*' | cut -d: -f2)
-  pending=${pending:-0}
+  [[ "$pending" =~ ^[0-9]+$ ]] || return 1
   if [ "$pending" -eq 0 ]; then
     log "Cloud upload: nothing to upload (0 pending)"
     return 0
@@ -1735,7 +1830,7 @@ function cloud_upload_step () {
   log "Cloud upload: starting upload of $pending route(s)..."
 
   # Kick the sweep. Fire-and-forget — actual progress is observed via /status.
-  curl -sf -m 5 -X POST "$api/api/cloud/upload-now" -d '' > /dev/null 2>&1 || true
+  curl -sf -m 5 -X POST "$api/api/cloud/upload-now" -d '' > /dev/null 2>&1 || return 1
 
   # Hard cap = 30 min total. Stall detection = no decrease in pending for
   # 2 min ⇒ give up (cloud is rejecting, WiFi is dead, etc — next cycle retries).
@@ -1751,7 +1846,7 @@ function cloud_upload_step () {
       continue
     fi
     pending=$(echo "$status_json" | grep -o '"pendingRouteCount":[0-9]*' | cut -d: -f2)
-    pending=${pending:-0}
+    [[ "$pending" =~ ^[0-9]+$ ]] || return 1
 
     if [ "$pending" -eq 0 ]; then
       log "Cloud upload: complete (all routes uploaded)"
@@ -1764,7 +1859,7 @@ function cloud_upload_step () {
         local last_err
         last_err=$(echo "$status_json" | grep -o '"lastUploadError":"[^"]*"' | cut -d: -f2- | tr -d '"')
         log "Cloud upload: stalled at $pending pending for 2 min (lastError=${last_err:-none}); will retry next cycle"
-        return 0
+        return 1
       fi
     else
       stalled_for=0
@@ -1778,7 +1873,7 @@ function cloud_upload_step () {
   done
 
   log "Cloud upload: hit 30 min cap with $pending pending; will retry next cycle"
-  return 0
+  return 1
 }
 
 function archive_wait_for_processor () {
@@ -1875,6 +1970,7 @@ function archive_clips () {
       fi
     fi
   else
+    if [ -n "${MUSIC_SHARE_NAME:-}" ] && [ -f /backingfiles/music_disk.bin ]; then ARCHIVE_ALL_STAGES_OK=0; fi
     log "Music archive not configured or unreachable (MUSIC_ARCHIVE_MOUNT=${MUSIC_ARCHIVE_MOUNT:-unset})"
   fi
 
@@ -1894,9 +1990,9 @@ function archive_clips () {
   else
     ensure_usb_drives_connected || log "ERROR: failed to ensure USB gadget after archive"
   fi
-  archive_run_command /root/bin/post-archive-process.sh || log "Post-archive processing stopped (exit $?)"
+  archive_run_command /root/bin/post-archive-process.sh || { ARCHIVE_ALL_STAGES_OK=0; log "Post-archive processing stopped (exit $?)"; }
   if archive_cancel_requested; then archive_cancel_cleanup; return 125; fi
-  cloud_upload_step || true
+  cloud_upload_step || ARCHIVE_ALL_STAGES_OK=0
   if archive_cancel_requested; then archive_cancel_cleanup; return 125; fi
   # Same live-activity pairing rule as in archive_teslacam_clips: retry
   # attempts never sent a start, so don't send an unmatched end.
@@ -1904,9 +2000,10 @@ function archive_clips () {
     /root/bin/send-live-activity end complete || true
   fi
   if ! archive_is_reachable; then
+    ARCHIVE_ALL_STAGES_OK=0
     log "Archive became unreachable during drive processing, user likely drove away"
   fi
-  /root/bin/disconnect-archive.sh 2>> "$LOG_FILE" || true
+  /root/bin/disconnect-archive.sh 2>> "$LOG_FILE" || ARCHIVE_ALL_STAGES_OK=0
 
   [ "$clips_ok" = "true" ]
 }
@@ -2575,6 +2672,7 @@ then
 
   run_archive_cycle
 
+  auto_update_after_archive || log "Automatic update handoff failed"
   /root/bin/awake_stop || true
 
   doubleblink
@@ -2630,6 +2728,7 @@ do
 
   run_archive_cycle
 
+  auto_update_after_archive || log "Automatic update handoff failed"
   /root/bin/awake_stop || true
 
   doubleblink

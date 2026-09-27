@@ -104,3 +104,32 @@ pub fn parse_closures(payload: &[u8]) -> Result<ClosuresState> {
         .closures_state
         .context("response missing closures_state")
 }
+
+/// Only an explicit Off reading means Sentry is disabled. Missing/unknown
+/// fields must not authorize an automatic update.
+pub fn sentry_mode_token(closures: &ClosuresState) -> Option<&'static str> {
+    use crate::proto::car_server::closures_state::sentry_mode_state::Type;
+    match closures.sentry_mode_state.as_ref()?.r#type.as_ref()? {
+        Type::Off(_) => Some("Off"),
+        Type::Idle(_) | Type::Armed(_) | Type::Aware(_) | Type::Panic(_) | Type::Quiet(_) => Some("On"),
+    }
+}
+
+#[cfg(test)]
+mod update_state_tests {
+    use super::*;
+    #[test]
+    fn sentry_state_never_treats_an_absent_reading_as_off() {
+        use crate::proto::car_server::closures_state::{SentryModeState, sentry_mode_state::Type};
+        let mut closures = ClosuresState::default();
+        assert_eq!(sentry_mode_token(&closures), None);
+        closures.sentry_mode_state = Some(SentryModeState::default());
+        assert_eq!(sentry_mode_token(&closures), None);
+        for (state, expected) in [(Type::Off(Default::default()), "Off"), (Type::Idle(Default::default()), "On"),
+            (Type::Armed(Default::default()), "On"), (Type::Aware(Default::default()), "On"),
+            (Type::Panic(Default::default()), "On"), (Type::Quiet(Default::default()), "On")] {
+            closures.sentry_mode_state = Some(SentryModeState { r#type: Some(state) });
+            assert_eq!(sentry_mode_token(&closures), Some(expected));
+        }
+    }
+}

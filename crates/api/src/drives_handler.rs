@@ -723,7 +723,9 @@ pub async fn export_for_sync(
     if sentryusb_drives::archive_control::ArchiveControl::default().cancelled() {
         return crate::json_error(StatusCode::CONFLICT, "archive cycle is being cancelled");
     }
-    let work = sentryusb_drives::archive_control::ArchiveWorkGuard::begin();
+    let Some(work) = sentryusb_drives::archive_control::ArchiveWorkGuard::try_begin() else {
+        return crate::json_error(StatusCode::CONFLICT, "Update installation in progress");
+    };
     let store = state.drives.store.clone();
     let export_result = tokio::task::spawn_blocking(move || {
         let _work = work;
@@ -755,6 +757,10 @@ pub async fn upload_data(
     use axum::body::Body;
     use futures_util::StreamExt;
     use std::io::Write;
+
+    let Some(work) = sentryusb_drives::archive_control::ArchiveWorkGuard::try_begin() else {
+        return crate::json_error(StatusCode::CONFLICT, "Update installation in progress");
+    };
 
     if state.drives.processor.is_running() {
         return crate::json_error(
@@ -817,6 +823,7 @@ pub async fn upload_data(
     let importing = state.drives.importing.clone();
     let hub_task = hub.clone();
     let result = tokio::task::spawn_blocking(move || {
+        let _work = work;
         let hub_cb = hub_task.clone();
         let res = store.import_json_file_with_progress(tmp, move |routes| {
             hub_cb.broadcast(

@@ -7,6 +7,7 @@ import { PrefCard } from "@/components/settings/PrefCard"
 import { Pill } from "@/components/ui/Pill"
 import { Toggle } from "@/components/ui/Toggle"
 import { Modal } from "@/components/ui/Modal"
+import { AutoUpdateToggle } from "./AutoUpdateToggle"
 
 type UpdateStatus =
   | "idle"
@@ -498,6 +499,7 @@ export function UpdateSection({ onInstallStart }: Props) {
         halo="slate"
         title="Update Preferences"
       >
+        <AutoUpdateToggle />
         <Toggle
           checked={autoUpdateEnabled}
           onChange={async (next) => {

@@ -37,7 +37,13 @@ fi
 
 LOG_FILE="${LOG_FILE:-/mutable/archiveloop.log}"
 
+POST_ARCHIVE_FAILED=0
 function log() {
+  case "$*" in
+    *failed*|*Failed*|*timed\ out*|*unavailable*|*unreachable*|*refus*|*Refus*)
+      POST_ARCHIVE_FAILED=1
+      [ -z "${ARCHIVE_STAGE_FAILURE_FILE:-}" ] || touch "$ARCHIVE_STAGE_FAILURE_FILE" 2>/dev/null || true ;;
+  esac
   echo "$(date): [drive-map] $*" >> "$LOG_FILE"
 }
 
@@ -159,7 +165,7 @@ done
 
 if [ "$API_READY" != "true" ]; then
   log "SentryUSB API not reachable after 30s, skipping drive processing"
-  exit 0
+  exit 1
 fi
 
 # Clear archive status so the processing API doesn't think archiving is
@@ -223,7 +229,7 @@ function process_clips_dir() {
     fi
 
     RUNNING=$(echo "$STATUS" | grep -o '"running":true' || true)
-    if [ -z "$RUNNING" ]; then
+    if echo "$STATUS" | python3 -c 'import json,sys; s=json.load(sys.stdin); sys.exit(0 if s.get("running") is False and s.get("archive_work_running") is False and not s.get("error") else 1)'; then
       ROUTES=$(echo "$STATUS" | grep -o '"routes_count":[0-9]*' | cut -d: -f2)
       PROCESSED=$(echo "$STATUS" | grep -o '"processed_count":[0-9]*' | cut -d: -f2)
       log "Processing complete for $clips_dir. Routes: ${ROUTES:-0}, Files processed: ${PROCESSED:-0}"
@@ -275,6 +281,7 @@ fi
 
 process_clips_dir "$CLIPS_DIR"
 PROCESSED=$?
+[ "$PROCESSED" -eq 0 ] || POST_ARCHIVE_FAILED=1
 
 log "Drive processing complete. $PROCESSED directories processed."
 
@@ -306,6 +313,7 @@ if [ -x /root/bin/archive-is-reachable.sh ]; then
   if [ -n "$ARCHIVE_SERVER" ]; then
     if ! /root/bin/archive-is-reachable.sh "$ARCHIVE_SERVER" 2>/dev/null; then
       ARCHIVE_REACHABLE=false
+      POST_ARCHIVE_FAILED=1
       log "Archive unreachable after drive processing, skipping drive-data.json sync (user likely drove away)"
     fi
   fi
@@ -485,43 +493,4 @@ if [ -x /root/bin/send-push-message ]; then
   fi
 fi
 
-# Check for updates automatically (if not disabled)
-AUTO_UPDATE_CHECK=$(curl -sf "${API_URL}/api/config/preference?key=auto_update_check" 2>/dev/null | grep -o '"value":"[^"]*"' | cut -d'"' -f4)
-if [ "$AUTO_UPDATE_CHECK" != "disabled" ]; then
-  log "Checking for SentryUSB updates..."
-  UPDATE_RESULT=$(curl -sf -X POST "${API_URL}/api/system/check-update" 2>/dev/null)
-  if [ $? -eq 0 ]; then
-    # Determine which version to notify about (stable or prerelease)
-    NOTIFY_VER=""
-    UPDATE_AVAILABLE=$(echo "$UPDATE_RESULT" | grep -o '"update_available":true')
-    if [ -n "$UPDATE_AVAILABLE" ]; then
-      NOTIFY_VER=$(echo "$UPDATE_RESULT" | grep -o '"latest_version":"[^"]*"' | cut -d'"' -f4)
-    fi
-    # If user is on prerelease channel, also check for prerelease updates
-    UPDATE_CHANNEL=$(curl -sf "${API_URL}/api/config/preference?key=update_channel" 2>/dev/null | grep -o '"value":"[^"]*"' | cut -d'"' -f4)
-    if [ "$UPDATE_CHANNEL" = "prerelease" ] && [ -z "$NOTIFY_VER" ]; then
-      PRE_AVAILABLE=$(echo "$UPDATE_RESULT" | grep -o '"prerelease":{[^}]*"available":true')
-      if [ -n "$PRE_AVAILABLE" ]; then
-        NOTIFY_VER=$(echo "$UPDATE_RESULT" | grep -o '"prerelease":{[^}]*"version":"[^"]*"' | grep -o '"version":"[^"]*"' | cut -d'"' -f4)
-      fi
-    fi
-
-    if [ -n "$NOTIFY_VER" ]; then
-      # Only send notification once per version (check marker file)
-      NOTIFIED_FILE="/tmp/sentryusb-update-notified-${NOTIFY_VER}"
-      if [ ! -f "$NOTIFIED_FILE" ] && [ -x /root/bin/send-push-message ]; then
-        /root/bin/send-push-message "${NOTIFICATION_TITLE:-SentryUSB}:" \
-          "Update available: ${NOTIFY_VER}. Open Settings to install." \
-          info update "Update available: ${NOTIFY_VER}. Open Settings to install." || log "Failed to send update notification"
-        touch "$NOTIFIED_FILE"
-      fi
-      log "Update available: ${NOTIFY_VER}"
-    else
-      log "SentryUSB is up to date."
-    fi
-  else
-    log "Could not check for updates (no internet?)."
-  fi
-fi
-
-exit 0
+exit "${POST_ARCHIVE_FAILED:-0}"

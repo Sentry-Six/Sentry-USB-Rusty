@@ -5,20 +5,38 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 static BACKGROUND_WORK: AtomicUsize = AtomicUsize::new(0);
+const UPDATE_EXCLUSIVE: usize = usize::MAX;
 
 /// Detached export/upload workers retain this guard until their writes stop.
 /// Dropping an HTTP request must not falsely report the archive as quiescent.
 pub struct ArchiveWorkGuard;
 
 impl ArchiveWorkGuard {
-    pub fn begin() -> Self {
-        BACKGROUND_WORK.fetch_add(1, Ordering::SeqCst);
-        Self
+    pub fn try_begin() -> Option<Self> {
+        BACKGROUND_WORK.fetch_update(Ordering::SeqCst, Ordering::SeqCst,
+            |n| if n < UPDATE_EXCLUSIVE - 1 { Some(n + 1) } else { None }).ok()?;
+        Some(Self)
     }
 
     pub fn is_running() -> bool {
         BACKGROUND_WORK.load(Ordering::SeqCst) != 0
     }
+}
+
+/// Prevent a new processor/export/cloud sweep from starting during replacement.
+pub struct UpdateWorkGuard;
+impl UpdateWorkGuard {
+    pub fn try_acquire() -> Option<Self> {
+        BACKGROUND_WORK.compare_exchange(0, UPDATE_EXCLUSIVE, Ordering::SeqCst, Ordering::SeqCst).ok()?;
+        Some(Self)
+    }
+}
+impl Drop for UpdateWorkGuard {
+    fn drop(&mut self) { BACKGROUND_WORK.store(0, Ordering::SeqCst); }
+}
+
+pub fn mark_cycle_failed() {
+    ArchiveControl::default().mark_failed();
 }
 
 impl Drop for ArchiveWorkGuard {
@@ -41,6 +59,11 @@ impl Default for ArchiveControl {
 }
 
 impl ArchiveControl {
+    pub fn mark_failed(&self) {
+        if let Some(id) = self.active_cycle() {
+            let _ = std::fs::write(self.directory.join(format!("archive-stage-failed-{id}")), b"worker error\n");
+        }
+    }
     pub fn new(directory: impl AsRef<Path>) -> Self {
         Self {
             directory: directory.as_ref().to_owned(),

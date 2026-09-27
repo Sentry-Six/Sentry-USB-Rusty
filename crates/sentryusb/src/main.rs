@@ -148,7 +148,8 @@ async fn main() {
 
     // Run startup migration in background
     tokio::spawn(async {
-        migrate::run_startup_migration().await;
+        let migration_ok = migrate::run_startup_migration().await;
+        sentryusb_api::auto_update::recover_after_startup(migration_ok).await;
     });
 
     // Boot-time timezone safety net: if setup left TIME_ZONE=auto unresolved

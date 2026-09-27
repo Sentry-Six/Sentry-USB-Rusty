@@ -1691,18 +1691,20 @@ async fn handle_action_request(
     }
 
     // Resolve the verb before any BLE work (saves the radio handoff on
-    // a typo). The two query verbs (session-info, drive-state) reuse the
+    // a typo). State queries (session-info, drive-state, sentry-state) reuse the
     // held connection but return data rather than a fire-and-forget
     // action; every other verb must resolve to a typed ActionPayload.
     enum Dispatch {
         SessionInfo,
         DriveState,
+        SentryState,
         Pair,
         Action(sentryusb_tesla_ble::actions::ActionPayload),
     }
     let dispatch = match verb.as_str() {
         "session-info" => Dispatch::SessionInfo,
         "drive-state" => Dispatch::DriveState,
+        "sentry-state" => Dispatch::SentryState,
         "pair" => Dispatch::Pair,
         _ => match action_socket::parse_verb(&verb) {
             Ok(a) => Dispatch::Action(a),
@@ -1811,6 +1813,14 @@ async fn handle_action_request(
                     );
                     Err(anyhow::anyhow!("UNREACHABLE: {e:#}"))
                 }
+            }
+        }
+        Dispatch::SentryState => {
+            match session.get_closures().await {
+                Ok(closures) => sentryusb_tesla_ble::responses::sentry_mode_token(&closures)
+                    .map(str::to_owned)
+                    .ok_or_else(|| anyhow::anyhow!("UNREACHABLE: car reported no Sentry state")),
+                Err(e) => Err(anyhow::anyhow!("UNREACHABLE: {e:#}")),
             }
         }
         // Add-key-to-whitelist (pairing) request over the held

@@ -273,9 +273,23 @@ pub(crate) fn record_event(
 }
 
 fn record_event_in(
+    event: NotificationEvent,
+    path: &std::path::Path,
+    legacy: &std::path::Path,
+) -> std::io::Result<NotificationEvent> {
+    record_event_in_mode(event, path, legacy, false)
+}
+
+pub(crate) fn record_update_event(event: NotificationEvent) -> std::io::Result<NotificationEvent> {
+    let _guard = HISTORY_LOCK.write().unwrap_or_else(|p| p.into_inner());
+    record_event_in_mode(event, std::path::Path::new(HISTORY_PATH), std::path::Path::new(LEGACY_HISTORY_PATH), true)
+}
+
+fn record_event_in_mode(
     mut event: NotificationEvent,
     path: &std::path::Path,
     legacy: &std::path::Path,
+    replace_id: bool,
 ) -> std::io::Result<NotificationEvent> {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -293,6 +307,8 @@ fn record_event_in(
     }
 
     let mut events = load_history_from(path, legacy)?;
+    // Durable update delivery retries use one stable ID, not a new history row.
+    if replace_id { events.retain(|existing| existing.id != event.id); }
     events.insert(0, event.clone());
     if events.len() > MAX_HISTORY {
         events.truncate(MAX_HISTORY);

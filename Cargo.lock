@@ -2736,6 +2736,7 @@ dependencies = [
  "ring",
  "sentryusb-config",
  "serde_json",
+ "tokio",
  "tracing",
  "urlencoding",
 ]

@@ -19,19 +19,35 @@ const MIGRATE_DIR: &str = "/opt/sentryusb";
 const MIGRATE_REPO: &str = "Sentry-Six/Sentry-USB-Rusty";
 const MIGRATE_BRANCH: &str = "main";
 
-pub async fn run_startup_migration() {
+pub async fn run_startup_migration() -> bool {
     // Skip in dev mode (no version file, or explicit "dev")
     let current_version = match tokio::fs::read_to_string(VERSION_FILE).await {
         Ok(v) => v.trim().to_string(),
-        Err(_) => return,
+        Err(_) => return false,
     };
     if current_version.is_empty() || current_version == "dev" {
-        return;
+        return false;
     }
 
+    let automatic = match sentryusb_api::update_attempt::load(&sentryusb_api::update_attempt::current_path()) {
+        Ok(Some(a)) if !a.terminal() => {
+            if a.phase != "awaiting_reboot" || a.target != current_version { return false; }
+            if let Err(e) = sentryusb_api::auto_update::prepare_startup_verification() {
+                warn!("Automatic update did not complete an expected shutdown: {e:#}");
+                return false;
+            }
+            true
+        }
+        Ok(Some(a)) if a.phase != "verified" && a.target == current_version => {
+            warn!("Previous automatic update failed; not replaying its migration on a later boot");
+            return false;
+        }
+        Ok(_) => false,
+        Err(e) => { warn!("Cannot verify automatic update receipt: {e:#}"); return false; }
+    };
     let marker_file = format!("{}/.migrated-{}", MIGRATE_DIR, current_version);
-    if tokio::fs::metadata(&marker_file).await.is_ok() {
-        return;
+    if !automatic && tokio::fs::metadata(&marker_file).await.is_ok() {
+        return true;
     }
 
     info!("[migrate] Running startup migration for {}...", current_version);
@@ -47,7 +63,7 @@ pub async fn run_startup_migration() {
         MIGRATE_REPO, script_ref
     );
 
-    let script = build_migration_script(&tarball_url);
+    let script = migration_script_for_mode(&tarball_url, automatic);
 
     // Retry up to 3 times with exponential backoff. The script itself
     // fails fast on `curl: Could not resolve host: github.com` when DNS
@@ -91,10 +107,10 @@ pub async fn run_startup_migration() {
                     .await
                     {
                         Ok(_) => info!("[migrate] runtime-patches re-applied post-migration"),
-                        Err(e) => warn!(
+                        Err(e) => { warn!(
                             "[migrate] runtime-patches post-migration run failed: {} — BLE pairing may be broken on Rock 4C+",
                             e
-                        ),
+                        ); if automatic { return false; } },
                     }
                 } else {
                     info!("[migrate] runtime-patches script not present (pre-bootstrap install) — skipping; OTA path will populate it");
@@ -103,9 +119,10 @@ pub async fn run_startup_migration() {
                 let _ = tokio::fs::create_dir_all(MIGRATE_DIR).await;
                 if let Err(e) = tokio::fs::write(&marker_file, b"migrated\n").await {
                     warn!("[migrate] Failed to write marker {}: {}", marker_file, e);
+                    return false;
                 }
                 info!("[migrate] Startup migration complete for {}", current_version);
-                return;
+                return true;
             }
             Err(e) => {
                 let msg = e.to_string();
@@ -138,6 +155,21 @@ pub async fn run_startup_migration() {
         last_err.as_deref().unwrap_or("unknown")
     );
     // Don't write marker — retry on next boot.
+    false
+}
+
+fn migration_script_for_mode(tarball_url: &str, automatic: bool) -> String {
+    let mut script = build_migration_script(tarball_url);
+    if automatic {
+        // The payload was validated/staged with the target binary. Never fetch
+        // main or resume a partial installation after an unexpected power cut.
+        let start = script.find("# Download repo tarball").unwrap();
+        let end = script[start..].find("# ── Update run/ scripts").map(|n| n + start).unwrap();
+        script.replace_range(start..end, "tar xzf /opt/sentryusb/auto-update-source.tar.gz --strip-components=1 -C \"$TMPDIR\"\n\n");
+        script.insert_str(0, "SENTRYUSB_AUTOMATIC_UPDATE=1\n");
+    }
+
+    script
 }
 
 fn build_migration_script(tarball_url: &str) -> String {
@@ -432,6 +464,10 @@ if [ -f "$TMPDIR/server/ble/sentryusb-telemetry.service" ]; then
       if [ -L "/root/bin/$_name" ]; then
         continue
       fi
+      if [ "${{SENTRYUSB_AUTOMATIC_UPDATE:-0}}" = 1 ]; then
+        echo "migrate: staged automatic-update helper missing: $_name" >&2
+        exit 1
+      fi
       _url="https://github.com/{repo}/releases/latest/download/$_name-$_suffix"
       if curl -sfI --max-time 10 "$_url" >/dev/null 2>&1; then
         mkdir -p /root/bin /opt/sentryusb
@@ -501,6 +537,23 @@ rm -f /root/bin/tesla-control /root/bin/tesla-keygen \
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn automatic_migration_uses_cached_payload_and_preserves_manual_fallback() {
+        let automatic = migration_script_for_mode("https://example.invalid/release.tar.gz", true);
+        assert!(automatic.starts_with("SENTRYUSB_AUTOMATIC_UPDATE=1\n"));
+        assert!(automatic.contains("tar xzf /opt/sentryusb/auto-update-source.tar.gz"));
+        assert!(!automatic.contains("https://example.invalid/release.tar.gz"));
+        assert!(!automatic.contains("FALLBACK="));
+        let mut child = std::process::Command::new("bash").arg("-n")
+            .stdin(std::process::Stdio::piped()).spawn().unwrap();
+        use std::io::Write;
+        child.stdin.take().unwrap().write_all(automatic.as_bytes()).unwrap();
+        assert!(child.wait().unwrap().success());
+        let manual = migration_script_for_mode("https://example.invalid/release.tar.gz", false);
+        assert!(manual.contains("https://example.invalid/release.tar.gz"));
+        assert!(manual.contains("FALLBACK="));
+        assert!(!manual.starts_with("SENTRYUSB_AUTOMATIC_UPDATE=1"));
+    }
 
     /// The migration script is a format!() template full of shell — a
     /// stray unescaped `{` or a typo'd quote renders a script that fails
