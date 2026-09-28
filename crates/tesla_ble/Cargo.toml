@@ -53,7 +53,7 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 sentryusb-ble-health = { path = "../ble_health", package = "sentryusb-ble-health" }
 
-btleplug = "0.12"
+btleplug = "0.13"
 futures = "0.3"
 prost = "0.14"
 # Used only through build.rs's `.extern_path(".google.protobuf", "::prost_types")`
