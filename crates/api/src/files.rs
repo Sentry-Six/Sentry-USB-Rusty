@@ -70,6 +70,27 @@ fn is_path_allowed(req_path: &str) -> (PathBuf, bool) {
     (clean, false)
 }
 
+fn is_optional_media_root(path: &Path) -> bool {
+    matches!(path.to_str(), Some("/mutable/Wraps" | "/mutable/LockChime" | "/mutable/LicensePlate"))
+}
+
+fn read_media_directory(path: &Path, optional: bool) -> std::io::Result<Option<std::fs::ReadDir>> {
+    match std::fs::read_dir(path) {
+        Ok(entries) => Ok(Some(entries)),
+        Err(error) if optional && error.kind() == std::io::ErrorKind::NotFound => {
+            // An unused media folder is empty; missing storage or a broken link is not.
+            match std::fs::symlink_metadata(path) {
+                Err(missing) if missing.kind() == std::io::ErrorKind::NotFound => {
+                    std::fs::read_dir(path.parent().unwrap_or(Path::new("/")))?;
+                    Ok(None)
+                }
+                _ => Err(error),
+            }
+        }
+        Err(error) => Err(error),
+    }
+}
+
 #[derive(Serialize)]
 struct FileEntry {
     name: String,
@@ -135,14 +156,15 @@ fn list_files_blocking(params: ListParams) -> (StatusCode, Json<serde_json::Valu
 
     let clean_str = clean_path.to_str().unwrap_or("");
     for base in ALLOWED_BASES {
-        if clean_str == *base {
+        if clean_str == *base && !is_optional_media_root(&clean_path) {
             let _ = std::fs::create_dir_all(&clean_path);
             break;
         }
     }
 
-    let mut dir_entries: Vec<(String, bool)> = match std::fs::read_dir(&clean_path) {
-        Ok(entries) => entries
+    let mut dir_entries: Vec<(String, bool)> = match read_media_directory(&clean_path, is_optional_media_root(&clean_path)) {
+        Ok(None) => Vec::new(),
+        Ok(Some(entries)) => entries
             .filter_map(|e| e.ok())
             .map(|e| (e.file_name().to_string_lossy().to_string(), e.path().is_dir()))
             .collect(),
@@ -911,6 +933,28 @@ mod tests {
     use std::io::Read;
     use std::path::Path;
     use tempfile::TempDir;
+
+    #[test]
+    fn missing_optional_media_is_empty_without_creating_a_directory() {
+        let dir = TempDir::new().unwrap();
+        let missing = dir.path().join("Wraps");
+        assert!(read_media_directory(&missing, true).unwrap().is_none());
+        assert!(!missing.exists());
+        assert_eq!(read_media_directory(&missing, false).unwrap_err().kind(), std::io::ErrorKind::NotFound);
+        assert_eq!(read_media_directory(&missing.join("child"), true).unwrap_err().kind(), std::io::ErrorKind::NotFound);
+        assert!(is_optional_media_root(Path::new("/mutable/Wraps")));
+        assert!(!is_optional_media_root(Path::new("/mutable/Wraps/missing")));
+        assert!(!is_optional_media_root(Path::new("/var/www/html/fs/Music")));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn broken_media_symlinks_are_not_treated_as_empty() {
+        let dir = TempDir::new().unwrap();
+        let link = dir.path().join("Wraps");
+        std::os::unix::fs::symlink(dir.path().join("unmounted"), &link).unwrap();
+        assert_eq!(read_media_directory(&link, true).unwrap_err().kind(), std::io::ErrorKind::NotFound);
+    }
 
     #[test]
     fn allows_clip_paths_and_blocks_traversal() {

@@ -44,12 +44,13 @@ interface DriveTab {
   id: string
   base: string
   config?: string
+  optional?: boolean
 }
 const ALL_DRIVES: DriveTab[] = [
   { id: "TeslaCam", base: "/mutable/TeslaCam", config: "has_cam" },
-  { id: "Lock Sounds", base: "/mutable/LockChime" },
-  { id: "Wraps", base: "/mutable/Wraps" },
-  { id: "License Plates", base: "/mutable/LicensePlate" },
+  { id: "Lock Sounds", base: "/mutable/LockChime", optional: true },
+  { id: "Wraps", base: "/mutable/Wraps", optional: true },
+  { id: "License Plates", base: "/mutable/LicensePlate", optional: true },
   { id: "Music", base: "/var/www/html/fs/Music", config: "has_music" },
   { id: "LightShow", base: "/var/www/html/fs/LightShow", config: "has_lightshow" },
   { id: "Boombox", base: "/var/www/html/fs/Boombox", config: "has_boombox" },
@@ -143,8 +144,20 @@ export default function Files() {
         const params = new URLSearchParams({ path })
         if (query) params.set("search", query)
         const response = await fetch(`/api/files/ls?${params}`, { signal: abort.signal })
-        if (!response.ok) throw new Error(await responseError(response, "Could not load folder"))
-        const raw = await response.json()
+        let raw
+        if (response.status === 404 && activeDrive?.optional && path === activeDrive.base) {
+          // Older devices report unused media folders as missing drives.
+          const parent = path.slice(0, path.lastIndexOf("/"))
+          const parentResponse = await fetch(`/api/files/ls?${new URLSearchParams({ path: parent })}`, { signal: abort.signal })
+          const parentData = parentResponse.ok ? await parentResponse.json() : null
+          const siblings: FileEntry[] | undefined = Array.isArray(parentData) ? parentData : parentData?.entries
+          if (!Array.isArray(siblings) || siblings.some(entry => entry.name === path.slice(parent.length + 1)))
+            throw new Error(await responseError(response, "Could not load folder"))
+          raw = []
+        } else {
+          if (!response.ok) throw new Error(await responseError(response, "Could not load folder"))
+          raw = await response.json()
+        }
         if (id !== request.current || abort.signal.aborted) return
         const entries: FileEntry[] = Array.isArray(raw) ? raw : (raw.entries ?? [])
         if (activeDrive && path === activeDrive.base && !query) {
@@ -667,7 +680,7 @@ export default function Files() {
             </div>
             {!loading && !files.length && (
               <p className="p-8 text-center text-sm text-slate-400">
-                {search ? "No matching files" : "This folder is empty"}
+                {search ? "No matching files" : activeDrive.id === "Wraps" && currentPath === base ? "No wraps yet. Upload a wrap or choose one in Community." : "This folder is empty"}
               </p>
             )}
             {sorted.length > visibleCount && (

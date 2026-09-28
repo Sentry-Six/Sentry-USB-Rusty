@@ -113,3 +113,57 @@ test("failed deletion keeps the item selected and explains the failure", async (
     globalThis.fetch = previous
   }
 })
+
+for (const storage of ["available", "unavailable", "folder-present"] as const) {
+  test(`missing Wraps is empty only when its parent confirms absence: ${storage}`, async () => {
+    const previous = globalThis.fetch
+    const requests: string[] = []
+    globalThis.fetch = async (input, init) => {
+      assert.ok(!init?.method || init.method === "GET")
+      if (String(input) === "/api/config") return Response.json({ has_cam: "yes" })
+      const path = new URL(String(input), "http://localhost").searchParams.get("path")!
+      requests.push(path)
+      if (path === "/mutable/Wraps" || (path === "/mutable" && storage === "unavailable"))
+        return Response.json({ error: "Folder unavailable. Check that its drive is mounted." }, { status: 404 })
+      return Response.json({ entries: path === "/mutable" && storage === "folder-present" ? [entry("Wraps", "/mutable/Wraps", true)] : [] })
+    }
+    try {
+      await mount(async container => {
+        const location = container.querySelector<HTMLButtonElement>('[aria-label="File location"]')!
+        if (!location.textContent?.includes("Wraps")) {
+          await act(async () => location.click())
+          await act(async () => container.ownerDocument.querySelector<HTMLElement>('[role="option"][data-value="Wraps"]')!.click())
+          await act(async () => new Promise(resolve => setTimeout(resolve, 20)))
+        }
+        assert.ok(requests.includes("/mutable"))
+        assert.equal(!!container.querySelector('[role="alert"]'), storage !== "available")
+        assert.equal(container.textContent!.includes("No wraps yet."), storage === "available")
+      })
+    } finally {
+      globalThis.fetch = previous
+    }
+  })
+}
+
+test("missing Wraps subfolders retain the folder error", async () => {
+  const previous = globalThis.fetch
+  const requests: string[] = []
+  globalThis.fetch = async input => {
+    if (String(input) === "/api/config") return Response.json({ has_cam: "yes" })
+    const path = new URL(String(input), "http://localhost").searchParams.get("path")!
+    requests.push(path)
+    if (path === "/mutable/Wraps/gone")
+      return Response.json({ error: "Folder unavailable. Check that its drive is mounted." }, { status: 404 })
+    return Response.json({ entries: [entry("gone", "/mutable/Wraps/gone", true)] })
+  }
+  try {
+    await mount(async container => {
+      await act(async () => [...container.querySelectorAll("button")].find(button => button.textContent === "gone")!.click())
+      await act(async () => new Promise(resolve => setTimeout(resolve, 20)))
+      assert.ok(container.querySelector('[role="alert"]')?.textContent?.includes("Folder unavailable"))
+      assert.ok(!requests.includes("/mutable"))
+    })
+  } finally {
+    globalThis.fetch = previous
+  }
+})
