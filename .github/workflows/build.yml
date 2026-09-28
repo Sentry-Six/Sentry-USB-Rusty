@@ -314,6 +314,8 @@ jobs:
   test:
     name: Test
     runs-on: ubuntu-22.04
+    env:
+      RUSTFLAGS: -D warnings
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
@@ -337,6 +339,8 @@ jobs:
         run: |
           mkdir -p crates/sentryusb/static
           echo '<!DOCTYPE html><html><body>test</body></html>' > crates/sentryusb/static/index.html
+      - name: Test release artifact extraction
+        run: python3 -m unittest discover -s .github/scripts -p test_extract_release_artifacts.py
       - name: Run tests
         run: cargo test --workspace
 
@@ -374,9 +378,9 @@ jobs:
           npm run icons -- --check
 
   release:
-    name: Create Release
+    name: Prepare release artifacts
     needs: [build, test, lint-web]
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-22.04
     permissions:
       contents: write
@@ -386,14 +390,20 @@ jobs:
       - name: Download all binaries
         uses: actions/download-artifact@v8
         with:
-          path: release/
-          merge-multiple: true
+          path: ${{ runner.temp }}/release-artifacts
+          pattern: sentryusb-*-bundle
+          skip-decompress: true
+          digest-mismatch: error
+
+      - name: Extract verified release binaries
+        run: python3 .github/scripts/extract-release-artifacts.py "$RUNNER_TEMP/release-artifacts" release
 
       - name: List release files
         run: ls -lh release/
 
       # Preserve an existing manual pre-release flag; abort unexpected gh errors.
       - name: Read existing pre-release flag
+        if: startsWith(github.ref, 'refs/tags/v')
         id: relmeta
         env:
           GH_TOKEN: ${{ github.token }}
@@ -408,6 +418,7 @@ jobs:
           fi
 
       - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v3
         with:
           files: release/*

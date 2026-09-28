@@ -407,19 +407,6 @@ impl Archive {
         result
     }
 
-    /// Read a whole (small) file.
-    pub fn read_file(&self, path: &str) -> Result<Vec<u8>> {
-        let path = path.trim_matches('/');
-        let meta = self
-            .files
-            .get(path)
-            .ok_or_else(|| anyhow!("no such file: {path}"))?;
-        let cam_path = meta.real.as_deref().unwrap_or(path);
-        let cam = self.cam(meta.source)?;
-        let result = cam.lock().unwrap().0.read_file(cam_path);
-        result
-    }
-
     pub fn file_count(&self) -> usize {
         self.files.len()
     }

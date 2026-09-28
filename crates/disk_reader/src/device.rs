@@ -104,12 +104,6 @@ impl Window {
     pub fn len(&self) -> u64 {
         self.len
     }
-
-    /// A sub-window relative to this window's start.
-    pub fn sub(&self, start: u64, len: u64) -> Window {
-        let len = len.min(self.len.saturating_sub(start));
-        self.disk.window(self.start + start, len)
-    }
 }
 
 impl Read for Window {

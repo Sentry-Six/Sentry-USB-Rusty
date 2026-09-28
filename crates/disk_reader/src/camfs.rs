@@ -17,9 +17,6 @@ pub struct CamEntry {
     pub size: u64,
 }
 
-pub trait ReadSeek: Read + Seek + Send {}
-impl<T: Read + Seek + Send> ReadSeek for T {}
-
 /// What filesystem the CAM partition carries.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CamFsKind {

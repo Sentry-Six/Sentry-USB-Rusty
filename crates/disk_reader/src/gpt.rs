@@ -9,41 +9,9 @@ use anyhow::{bail, Context, Result};
 const SECTOR: u64 = 512;
 const GPT_SIGNATURE: &[u8; 8] = b"EFI PART";
 
-/// GUID for "Linux filesystem data" partitions (what parted creates for
-/// both `mutable` and `backingfiles`).
-pub const LINUX_FS_GUID: [u8; 16] = guid_bytes(0x0FC63DAF_8483_4772, 0x8E79_3D69D8477DE4);
-
-const fn guid_bytes(hi: u64, lo: u64) -> [u8; 16] {
-    // GUIDs store the first three groups little-endian, the rest big-endian.
-    let d1 = ((hi >> 32) & 0xFFFF_FFFF) as u32;
-    let d2 = ((hi >> 16) & 0xFFFF) as u16;
-    let d3 = (hi & 0xFFFF) as u16;
-    let d4 = ((lo >> 48) & 0xFFFF) as u16;
-    let d5 = lo & 0xFFFF_FFFF_FFFF;
-    [
-        d1 as u8,
-        (d1 >> 8) as u8,
-        (d1 >> 16) as u8,
-        (d1 >> 24) as u8,
-        d2 as u8,
-        (d2 >> 8) as u8,
-        d3 as u8,
-        (d3 >> 8) as u8,
-        (d4 >> 8) as u8,
-        d4 as u8,
-        (d5 >> 40) as u8,
-        (d5 >> 32) as u8,
-        (d5 >> 24) as u8,
-        (d5 >> 16) as u8,
-        (d5 >> 8) as u8,
-        d5 as u8,
-    ]
-}
-
 #[derive(Clone, Debug)]
 pub struct GptPartition {
     pub index: u32,
-    pub type_guid: [u8; 16],
     pub name: String,
     /// Byte offset of the partition start on the disk.
     pub start: u64,
@@ -89,7 +57,6 @@ pub fn read_partitions<R: Read + Seek>(dev: &mut R) -> Result<Vec<GptPartition>>
             .collect();
         parts.push(GptPartition {
             index: i as u32 + 1,
-            type_guid,
             name,
             start: first_lba * SECTOR,
             len: (last_lba + 1 - first_lba) * SECTOR,

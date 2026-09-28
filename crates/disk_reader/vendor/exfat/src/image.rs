@@ -27,7 +27,7 @@ impl<R: Read + Seek> Image<R> {
         &self.fat
     }
 
-    pub fn reader(&self) -> MutexGuard<R> {
+    pub fn reader(&self) -> MutexGuard<'_, R> {
         self.reader.lock().unwrap()
     }
 }
