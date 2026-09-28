@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react"
+import { useEffect, useState } from "react"
 import { CloseIcon, ProgressActivityIcon, WifiIcon, WifiOffIcon } from "@/components/icons"
 import { cn } from "@/lib/utils"
 import { useConnectionStatus, type ConnectionState } from "@/hooks/useConnectionStatus"
@@ -6,31 +6,8 @@ import { getStoredAwayMode } from "@/hooks/useAwayMode"
 
 export function ConnectionBanner() {
   const { state, degraded, retry } = useConnectionStatus()
-  const [visible, setVisible] = useState(false)
-  const [displayState, setDisplayState] = useState<ConnectionState | "connected-flash">(state)
-  const [dismissed, setDismissed] = useState(false)
-  // A ref tracks transitions without restarting the connected-flash timer.
-  const prevStateRef = useRef<ConnectionState>(state)
-
-  useEffect(() => {
-    const prevState = prevStateRef.current
-    if (state === prevState) return
-    const wasDisconnected = prevState === "disconnected" || prevState === "reconnecting"
-    prevStateRef.current = state
-    setDismissed(false)
-
-    if (state === "connected" && wasDisconnected) {
-      setDisplayState("connected-flash")
-      setVisible(true)
-      const timer = setTimeout(() => setVisible(false), 3000)
-      return () => clearTimeout(timer)
-    } else if (state === "reconnecting" || state === "disconnected") {
-      setDisplayState(state)
-      setVisible(true)
-    } else {
-      setVisible(false)
-    }
-  }, [state])
+  const [hasDisconnected, setHasDisconnected] = useState(state !== "connected")
+  if (state !== "connected" && !hasDisconnected) setHasDisconnected(true)
 
   // Database degradation outranks connectivity and cannot be dismissed.
   if (degraded) {
@@ -52,7 +29,22 @@ export function ConnectionBanner() {
     )
   }
 
-  if (!visible || dismissed) return null
+  if (state === "connected" && !hasDisconnected) return null
+  return <ConnectionNotice key={state} displayState={state === "connected" ? "connected-flash" : state} retry={retry} />
+}
+
+function ConnectionNotice({ displayState, retry }: {
+  displayState: Exclude<ConnectionState, "connected"> | "connected-flash"
+  retry: () => void
+}) {
+  const [dismissed, setDismissed] = useState(false)
+  const [expired, setExpired] = useState(false)
+  useEffect(() => {
+    if (displayState !== "connected-flash") return
+    const timer = setTimeout(() => setExpired(true), 3000)
+    return () => clearTimeout(timer)
+  }, [displayState])
+  if (dismissed || expired) return null
 
   // Away Mode persists its deadline before the connection drops.
   const awayInfo = (displayState === "disconnected" || displayState === "reconnecting")

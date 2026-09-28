@@ -40,10 +40,12 @@ export function useDrivesList() {
   if (filters.minDistanceMi !== undefined) query.set("min_distance", String(filters.minDistanceMi))
   const key = query.toString()
   const [loaded, setLoaded] = useState<{ key: string; value: DrivePage } | null>(() => pages.has(key) ? { key, value: pages.get(key)!.value } : null)
-  const [error, setError] = useState<string | null>(null)
+  const [failure, setFailure] = useState<{ key: string; refresh: number; message: string } | null>(null)
   const [refreshTick, setRefreshTick] = useState(0)
   const [, setRouteVersion] = useState(0)
+  if (failure && (failure.key !== key || failure.refresh !== refreshTick)) setFailure(null)
   const value = loaded?.key === key ? loaded.value : pages.get(key)?.value
+  const error = failure?.key === key && failure.refresh === refreshTick ? failure.message : null
   const loading = !value && !error
   const drives = value?.drives ?? []
 
@@ -51,14 +53,14 @@ export function useDrivesList() {
     const cached = pages.get(key)
     if (cached && Date.now() - cached.at < 30_000 && refreshTick === 0) return
     const controller = new AbortController()
-    setError(null)
     fetchDrivePage(key, controller.signal).then((result) => {
       if (controller.signal.aborted) return
       pages.set(key, { value: result, at: Date.now() })
       if (pages.size > 20) pages.delete(pages.keys().next().value!)
       for (const drive of result.drives) previews.delete(drive.startTime)
       setLoaded({ key, value: result })
-    }).catch((reason) => { if (!controller.signal.aborted) setError(reason instanceof Error ? reason.message : String(reason)) })
+      setFailure(null)
+    }).catch((reason) => { if (!controller.signal.aborted) setFailure({ key, refresh: refreshTick, message: reason instanceof Error ? reason.message : String(reason) }) })
     return () => controller.abort()
   }, [key, refreshTick])
 

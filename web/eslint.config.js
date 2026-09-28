@@ -20,8 +20,7 @@ export default defineConfig([
       globals: globals.browser,
     },
     rules: {
-      // Keep compiler-specific effect diagnostics advisory until adoption.
-      'react-hooks/set-state-in-effect': 'warn',
+      'react-hooks/set-state-in-effect': 'error',
       // Intentional dependency omissions require an inline explanation.
       'react-hooks/exhaustive-deps': 'error',
       // Underscores mark intentionally unused signature fields.

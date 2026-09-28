@@ -60,13 +60,11 @@ export default function Snapshots() {
     abort.current = controller
     let timedOut = false
     const timeout = setTimeout(() => { timedOut = true; controller.abort() }, 20000)
-    try {
-      const [listResponse, spaceResponse] = await Promise.all([
-        fetch("/api/snapshots", { signal: controller.signal }),
-        fetch("/api/backingfiles/free-space", { signal: controller.signal }),
-      ])
-      if (!listResponse.ok)
-        throw new Error(await responseError(listResponse, "Could not load snapshots"))
+    return Promise.all([
+      fetch("/api/snapshots", { signal: controller.signal }),
+      fetch("/api/backingfiles/free-space", { signal: controller.signal }),
+    ]).then(async ([listResponse, spaceResponse]) => {
+      if (!listResponse.ok) throw new Error(await responseError(listResponse, "Could not load snapshots"))
       const data = await listResponse.json()
       if (controller.signal.aborted || id !== requestId.current) return
       setSnapshots(data.snapshots ?? [])
@@ -76,16 +74,16 @@ export default function Snapshots() {
         const space = await spaceResponse.json()
         if (!controller.signal.aborted && id === requestId.current) setFree(space)
       }
-    } catch (e) {
+    }).catch(e => {
       if (id === requestId.current && (!controller.signal.aborted || timedOut))
         setError(timedOut ? "Loading snapshots timed out. Please retry." : e instanceof Error ? e.message : "Could not load snapshots")
-    } finally {
+    }).finally(() => {
       clearTimeout(timeout)
       if (id === requestId.current) {
         inFlight.current = false
         if (!controller.signal.aborted || timedOut) setLoading(false)
       }
-    }
+    })
   }, [])
   useEffect(() => {
     void refresh(true)

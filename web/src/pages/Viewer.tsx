@@ -225,17 +225,19 @@ export default function Viewer() {
 
   // Fetch clips by category (only active category, not all 3)
   useEffect(() => {
-    setLoading(true)
-    fetch(`/api/clips?category=${activeCategory}&limit=${CLIPS_PAGE_SIZE}`)
+    const controller = new AbortController()
+    fetch(`/api/clips?category=${activeCategory}&limit=${CLIPS_PAGE_SIZE}`, { signal: controller.signal })
       .then((r) => r.json())
       .then((data: ClipGroup[]) => {
+        if (controller.signal.aborted) return
         setGroups((prev) => {
           const others = prev.filter((g) => g.name !== activeCategory)
           return [...others, ...data]
         })
         setLoading(false)
       })
-      .catch(() => setLoading(false))
+      .catch(() => { if (!controller.signal.aborted) setLoading(false) })
+    return () => controller.abort()
   }, [activeCategory])
 
   const [loadingMore, setLoadingMore] = useState(false)
@@ -266,30 +268,27 @@ export default function Viewer() {
 
   const activeGroup = groups.find((g) => g.name === activeCategory)
 
-  // When clip changes, build clip sets
-  useEffect(() => {
-    if (selectedClip) {
-      const sets = groupByTimestamp(selectedClip.files, selectedClip.path)
-      setClipSets(sets)
-      setCurrentSetIdx(0)
-      setPlaying(false)
-      setFocusedCamera(null)
-      setActiveCameras(new Set(["front"]))
-      pendingSeekRef.current = null
-      setCurrentTime(0)
-      currentTimeRef.current = 0
-      globalTimeRef.current = 0
-    }
-  }, [selectedClip])
+  function selectClip(clip: ClipEntry | null) {
+    const sets = clip ? groupByTimestamp(clip.files, clip.path) : []
+    setSelectedClip(clip)
+    setClipSets(sets)
+    setSegmentDurations(new Array(sets.length).fill(60))
+    setCurrentSetIdx(0)
+    setPlaying(false)
+    setFocusedCamera(null)
+    setActiveCameras(new Set(["front"]))
+    pendingSeekRef.current = null
+    setCurrentTime(0)
+    currentTimeRef.current = 0
+    globalTimeRef.current = 0
+  }
 
   // Preload segment durations — only probe the first few segments eagerly,
   // defer the rest until the user navigates near them
   const EAGER_PROBE_COUNT = 6
   useEffect(() => {
-    if (!clipSets.length) { setSegmentDurations([]); return }
+    if (!clipSets.length) return
     const durations = new Array(clipSets.length).fill(60)
-    setSegmentDurations([...durations])
-
     let cancelled = false
     const cleanups: (() => void)[] = []
 
@@ -624,8 +623,7 @@ export default function Viewer() {
         )
       )
       if (selectedClip?.date === clip.date) {
-        setSelectedClip(null)
-        setClipSets([])
+        selectClip(null)
       }
       setDeleteConfirm(null)
     } catch { /* ignore */ }
@@ -695,7 +693,7 @@ export default function Viewer() {
         {["RecentClips", "SavedClips", "SentryClips"].map((cat) => (
           <button
             key={cat}
-            onClick={() => { setActiveCategory(cat); setSelectedClip(null); setClipSets([]); setSegmentDurations([]) }}
+            onClick={() => { if (cat !== activeCategory) setLoading(true); setActiveCategory(cat); selectClip(null) }}
             className={cn(
               "rounded-lg px-3 py-1.5 text-sm font-medium transition-colors",
               activeCategory === cat
@@ -748,7 +746,7 @@ export default function Viewer() {
                   return (
                     <div key={clip.date} className="group relative">
                       <button
-                        onClick={() => setSelectedClip(clip)}
+                        onClick={() => selectClip(clip)}
                         className={cn(
                           "w-full rounded-lg px-2.5 py-2 text-left transition-colors",
                           isSelected

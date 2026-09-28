@@ -127,9 +127,11 @@ export function BlePairButton() {
   const [outputOpen, setOutputOpen] = useState(false)
   const [latestSample, setLatestSample] = useState<BleLatestSample | null>(null)
   const [sampleLoading, setSampleLoading] = useState(false)
+  const [sampleError, setSampleError] = useState<string | null>(null)
   const [adapters, setAdapters] = useState<BleAdaptersResp | null>(null)
   const [adapterSwitching, setAdapterSwitching] = useState(false)
   const [adapterError, setAdapterError] = useState<string | null>(null)
+  const [adapterReadError, setAdapterReadError] = useState<string | null>(null)
   const [clockStatus, setClockStatus] = useState<ClockStatusResp | null>(null)
   const [vinRevealed, setVinRevealed] = useState(false)
 
@@ -138,14 +140,25 @@ export function BlePairButton() {
   const connPollRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const tickRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const samplePollRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const statusRequest = useRef<AbortController | null>(null)
+  const sampleRequest = useRef<AbortController | null>(null)
+  const adapterRequest = useRef<AbortController | null>(null)
 
-  const reloadStatus = useCallback(async () => {
-    try {
-      const [enabledRes, statusRes] = await Promise.all([
-        fetch("/api/system/ble-enabled").then((r) => r.json() as Promise<BleEnabledResp>),
-        fetch("/api/system/ble-status?quick=true").then((r) => r.json() as Promise<BleStatusResp>),
-      ])
-      const en = Boolean(enabledRes?.enabled)
+  const reloadStatus = useCallback(() => {
+    statusRequest.current?.abort()
+    const controller = new AbortController()
+    statusRequest.current = controller
+    const read = <T,>(url: string): Promise<T> => fetch(url, { signal: controller.signal }).then(response => {
+      if (!response.ok) throw new Error("Could not load BLE status.")
+      return response.json() as Promise<T>
+    })
+    return Promise.all([
+      read<BleEnabledResp>("/api/system/ble-enabled"),
+      read<BleStatusResp>("/api/system/ble-status?quick=true"),
+    ]).then(([enabledRes, statusRes]) => {
+      if (controller.signal.aborted) return
+      if (typeof enabledRes.enabled !== "boolean" || !["not_paired", "keys_generated", "paired", "repair_required"].includes(statusRes.status)) throw new Error("Could not read BLE status.")
+      const en = enabledRes.enabled
       setEnabled(en)
       setBinariesInstalled(Boolean(statusRes?.binaries_installed))
       const fetchedVin = statusRes?.vin ?? ""
@@ -190,15 +203,16 @@ export function BlePairButton() {
       }
       setBleState("idle")
       setBleMsg("")
-    } catch {
-      setEnabled(false)
+    }).catch(error => {
+      if (controller.signal.aborted) return
       setBleState("error")
-      setBleMsg("Could not load BLE status.")
-    }
+      setBleMsg(error instanceof Error ? error.message : "Could not load BLE status.")
+    })
   }, [])
 
   useEffect(() => {
-    reloadStatus()
+    void reloadStatus()
+    return () => statusRequest.current?.abort()
   }, [reloadStatus])
 
   useEffect(() => {
@@ -291,54 +305,55 @@ export function BlePairButton() {
   }, [])
 
   // Poll the latest sample every five seconds while output is visible.
-  const fetchLatestSample = useCallback(async () => {
-    setSampleLoading(true)
-    try {
-      const res = await fetch("/api/system/ble-latest-sample")
-      const d = (await res.json()) as BleLatestSample
-      setLatestSample(d)
-    } catch {
-      /* leave previous value */
-    } finally {
-      setSampleLoading(false)
-    }
+  const fetchLatestSample = useCallback(() => {
+    if (sampleRequest.current && !sampleRequest.current.signal.aborted) return Promise.resolve()
+    const controller = new AbortController()
+    sampleRequest.current = controller
+    return fetch("/api/system/ble-latest-sample", { signal: controller.signal })
+      .then(async response => {
+        if (!response.ok) throw new Error("Could not refresh live data.")
+        const sample = await response.json() as BleLatestSample
+        if (sample?.ts !== null && typeof sample?.ts !== "number") throw new Error("Could not read live data.")
+        if (!controller.signal.aborted) { setLatestSample(sample); setSampleError(null) }
+      })
+      .catch(error => { if (!controller.signal.aborted) setSampleError(error instanceof Error ? error.message : "Could not refresh live data.") })
+      .finally(() => {
+        if (sampleRequest.current === controller) sampleRequest.current = null
+        if (!controller.signal.aborted) setSampleLoading(false)
+      })
   }, [])
 
-
   useEffect(() => {
-    if (!outputOpen) {
-      if (samplePollRef.current) {
-        clearInterval(samplePollRef.current)
-        samplePollRef.current = null
-      }
-      return
-    }
-    fetchLatestSample()
-    samplePollRef.current = setInterval(fetchLatestSample, 5_000)
+    if (!outputOpen) return
+    void fetchLatestSample()
+    samplePollRef.current = setInterval(() => { setSampleLoading(true); void fetchLatestSample() }, 5_000)
     return () => {
+      sampleRequest.current?.abort()
       if (samplePollRef.current) clearInterval(samplePollRef.current)
       samplePollRef.current = null
     }
   }, [outputOpen, fetchLatestSample])
 
   // Poll adapters every five seconds so hot-plugged radios appear without refresh.
-  const fetchAdapters = useCallback(async () => {
-    try {
-      const res = await fetch("/api/system/ble-adapters")
-      if (res.ok) {
-        const d = (await res.json()) as BleAdaptersResp
-        // Validate the array before render maps over it.
-        if (Array.isArray(d?.available)) setAdapters(d)
-      }
-    } catch {
-      /* leave previous value */
-    }
+  const fetchAdapters = useCallback(() => {
+    if (adapterRequest.current && !adapterRequest.current.signal.aborted) return Promise.resolve()
+    const controller = new AbortController()
+    adapterRequest.current = controller
+    return fetch("/api/system/ble-adapters", { signal: controller.signal })
+      .then(async response => {
+        if (!response.ok) throw new Error("Could not read Bluetooth adapters.")
+        const data = await response.json() as BleAdaptersResp
+        if (!Array.isArray(data?.available)) throw new Error("Could not read Bluetooth adapters.")
+        if (!controller.signal.aborted) { setAdapters(data); setAdapterReadError(null) }
+      })
+      .catch(error => { if (!controller.signal.aborted) setAdapterReadError(error instanceof Error ? error.message : "Could not read Bluetooth adapters.") })
+      .finally(() => { if (adapterRequest.current === controller) adapterRequest.current = null })
   }, [])
 
   useEffect(() => {
-    fetchAdapters()
-    const iv = setInterval(fetchAdapters, 5_000)
-    return () => clearInterval(iv)
+    void fetchAdapters()
+    const interval = setInterval(fetchAdapters, 5_000)
+    return () => { adapterRequest.current?.abort(); clearInterval(interval) }
   }, [fetchAdapters])
 
   // Stop polling after sync; the sampler pauses while timestamps cannot match drives.
@@ -369,6 +384,7 @@ export function BlePairButton() {
   }, [])
 
   const switchAdapter = useCallback(async (id: string) => {
+    adapterRequest.current?.abort()
     setAdapterSwitching(true)
     setAdapterError(null)
     try {
@@ -638,7 +654,7 @@ export function BlePairButton() {
     isActive ||
     bleState === "loading" ||
     bleState === "disabled" ||
-    !validVin(vin)
+    (bleState !== "error" && !validVin(vin))
 
   const buttonHandler = bleState === "error" ? handleReset : handlePair
   const statusMessage = showLive && healthPresentation.severity !== "green"
@@ -647,6 +663,7 @@ export function BlePairButton() {
 
   return (
     <PrefCard icon={icon} halo={halo} title="BLE Pairing" badge={badge}>
+      {adapterReadError && !adapters && <p role="alert" className="text-xs text-rose-300">{adapterReadError}</p>}
       {/* VIN input — always visible so users can update it any time.
           Masked by default once a full 17-char VIN is set, since
           screenshots of the settings page (like the ones users share
@@ -737,7 +754,7 @@ export function BlePairButton() {
         {bleState === "paired" && !repairRequired &&
           ((secondsAgo !== null && secondsAgo < 600) || sampleCount10min > 0) && (
             <button
-              onClick={() => setOutputOpen((v) => !v)}
+              onClick={() => { setSampleLoading(!outputOpen); setOutputOpen(value => !value) }}
               className="inline-flex items-center gap-1 self-start rounded-lg bg-white/5 px-3 py-1.5 text-xs font-medium text-slate-300 transition-colors hover:bg-white/10"
             >
               {outputOpen ? <ExpandLessIcon className="h-3 w-3" /> : <ExpandMoreIcon className="h-3 w-3" />}
@@ -784,10 +801,12 @@ export function BlePairButton() {
         <TelemetryOutputPanel
           sample={latestSample}
           loading={sampleLoading}
+          error={sampleError}
           onRefresh={async () => {
             // Also refetch the connection pill so the user sees
             // immediate visible feedback (Last seen Xm ago updates)
             // even when the sample row itself hasn't changed.
+            setSampleLoading(true)
             await fetchLatestSample()
             try {
               const res = await fetch("/api/system/ble-connected")
@@ -813,7 +832,7 @@ export function BlePairButton() {
         <AdapterPicker
           adapters={adapters}
           switching={adapterSwitching}
-          error={adapterError}
+          error={adapterError ?? adapterReadError}
           onSwitch={switchAdapter}
         />
       )}
@@ -920,12 +939,14 @@ function AdapterPicker({
 function TelemetryOutputPanel({
   sample,
   loading,
+  error,
   onRefresh,
   radioOwner,
   archiving,
 }: {
   sample: BleLatestSample | null
   loading: boolean
+  error: string | null
   onRefresh: () => void
   radioOwner: string | null
   archiving: boolean
@@ -1007,6 +1028,7 @@ function TelemetryOutputPanel({
           </button>
         </div>
       </div>
+      {error && <p role="alert" className="mb-2 text-xs text-rose-300">{error}</p>}
       {pollMsg && (
         <p className="mb-2 text-[10px] text-blue-400/80">{pollMsg}</p>
       )}

@@ -2,77 +2,68 @@ import { useEffect, useRef, useState } from "react"
 import { ProgressActivityIcon, SpeedIcon } from "@/components/icons"
 import { Modal } from "@/components/ui/Modal"
 
+async function measureOnce(signal: AbortSignal, onProgress: (mbps: string) => void) {
+  const response = await fetch("/api/system/speedtest", { signal })
+  if (signal.aborted) { await response.body?.cancel(); return }
+  if (!response.ok || !response.body) throw new Error("Speed test failed")
+  const reader = response.body.getReader()
+  const cancel = () => { void reader.cancel().catch(() => {}) }
+  signal.addEventListener("abort", cancel, { once: true })
+  const started = Date.now()
+  let bytes = 0
+  let lastUpdate = started
+  try {
+    while (!signal.aborted) {
+      const { done, value } = await reader.read()
+      if (done || signal.aborted) break
+      bytes += value.length
+      const now = Date.now()
+      if (now - lastUpdate >= 250) {
+        onProgress(((bytes * 8) / ((now - started) / 1000) / 1_000_000).toFixed(1))
+        lastUpdate = now
+      }
+    }
+    const elapsed = (Date.now() - started) / 1000
+    if (!signal.aborted && elapsed > 0 && bytes > 0) onProgress(((bytes * 8) / elapsed / 1_000_000).toFixed(1))
+  } finally {
+    signal.removeEventListener("abort", cancel)
+    reader.releaseLock()
+  }
+}
+
 export function SpeedTestModal({ onClose }: { onClose: () => void }) {
-  const [running, setRunning] = useState(false)
+  const [running, setRunning] = useState(true)
+  const [runId, setRunId] = useState(0)
   const [mbps, setMbps] = useState<string | null>(null)
   const [error, setError] = useState(false)
-  const cancelRef = useRef(false)
-  const readerRef = useRef<ReadableStreamDefaultReader<Uint8Array> | null>(null)
-
-  async function runOnce() {
-    const res = await fetch("/api/system/speedtest")
-    if (!res.ok || !res.body) throw new Error("Speed test failed")
-
-    const reader = res.body.getReader()
-    readerRef.current = reader
-    const start = Date.now()
-    let totalBytes = 0
-    let lastUpdate = start
-
-    try {
-      while (true) {
-        const { done, value } = await reader.read()
-        if (done) break
-        totalBytes += value.length
-        const now = Date.now()
-        if (now - lastUpdate >= 250) {
-          const elapsedSec = (now - start) / 1000
-          if (elapsedSec > 0)
-            setMbps(((totalBytes * 8) / elapsedSec / 1_000_000).toFixed(1))
-          lastUpdate = now
-        }
-      }
-    } finally {
-      readerRef.current = null
-    }
-
-    const elapsed = (Date.now() - start) / 1000
-    if (elapsed > 0 && totalBytes > 0) {
-      setMbps(((totalBytes * 8) / elapsed / 1_000_000).toFixed(1))
-    }
-  }
-
-  async function startTest() {
-    setRunning(true)
-    cancelRef.current = false
-    setMbps(null)
-    setError(false)
-    while (!cancelRef.current) {
-      try {
-        await runOnce()
-        if (cancelRef.current) break
-      } catch {
-        if (cancelRef.current) break
-        setError(true)
-        break
-      }
-    }
-    setRunning(false)
-  }
-
-  function stopTest() {
-    cancelRef.current = true
-    if (readerRef.current) {
-      readerRef.current.cancel().catch(() => {})
-      readerRef.current = null
-    }
-  }
+  const controllerRef = useRef<AbortController | null>(null)
 
   useEffect(() => {
-    void startTest()
-    return () => stopTest()
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+    const controller = new AbortController()
+    controllerRef.current = controller
+    async function measure() {
+      while (!controller.signal.aborted) {
+        await measureOnce(controller.signal, value => {
+          if (!controller.signal.aborted) setMbps(value)
+        })
+      }
+    }
+    void measure()
+      .catch(() => { if (!controller.signal.aborted) setError(true) })
+      .finally(() => { if (!controller.signal.aborted) setRunning(false) })
+    return () => controller.abort()
+  }, [runId])
+
+  function startTest() {
+    setRunning(true)
+    setMbps(null)
+    setError(false)
+    setRunId(value => value + 1)
+  }
+  function stopTest() {
+    controllerRef.current?.abort()
+    setRunning(false)
+  }
 
   return (
     <Modal
@@ -116,7 +107,7 @@ export function SpeedTestModal({ onClose }: { onClose: () => void }) {
         ) : error ? (
           <p className="text-sm text-red-400">Speed test failed. Try again?</p>
         ) : (
-          <p className="text-xs text-slate-500">Starting…</p>
+          <p className="text-xs text-slate-500">Test stopped</p>
         )}
       </div>
     </Modal>

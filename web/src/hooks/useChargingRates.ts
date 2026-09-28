@@ -8,36 +8,52 @@ export function useChargingRates() {
   const [error, setError] = useState<string | null>(null)
   const source = useRef<RateDocument | null>(null)
   const generation = useRef(0)
+  const request = useRef<AbortController | null>(null)
 
-  const refresh = useCallback(async () => {
+  const read = useCallback(() => {
+    request.current?.abort()
+    const controller = new AbortController()
+    request.current = controller
     const ticket = ++generation.current
-    setLoading(true)
-    setError(null)
     source.current = null
-    try {
-      const document = await loadRates()
-      if (generation.current !== ticket) return null
-      source.current = document
-      const rates = parseRates(document)
-      setRates(rates)
-      return rates
-    } catch (error) {
-      if (generation.current === ticket) setError(error instanceof Error ? error.message : "Rates could not be loaded.")
-      return null
-    } finally {
-      if (generation.current === ticket) setLoading(false)
-    }
+    const current = () => generation.current === ticket && !controller.signal.aborted
+    return loadRates((url, init) => fetch(url, { ...init, signal: controller.signal }))
+      .then((document) => {
+        if (!current()) return null
+        source.current = document
+        const rates = parseRates(document)
+        setRates(rates)
+        setError(null)
+        setLoading(false)
+        return rates
+      })
+      .catch((error) => {
+        if (current()) {
+          setError(error instanceof Error ? error.message : "Rates could not be loaded.")
+          setLoading(false)
+        }
+        return null
+      })
+      .finally(() => { if (request.current === controller) request.current = null })
   }, [])
 
-  const invalidate = useCallback(() => {
+  const refresh = useCallback(() => {
+    setLoading(true)
+    setError(null)
+    return read()
+  }, [read])
+
+  const cancel = useCallback(() => {
     generation.current++
     source.current = null
+    request.current?.abort()
+    request.current = null
   }, [])
 
   useEffect(() => {
-    void refresh()
-    return invalidate
-  }, [refresh, invalidate])
+    void read()
+    return cancel
+  }, [read, cancel])
 
   const save = useCallback(async (next: ChargingRates) => {
     const expected = source.current

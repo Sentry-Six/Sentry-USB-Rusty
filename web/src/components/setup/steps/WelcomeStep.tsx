@@ -212,6 +212,8 @@ export function WelcomeStep({ data: _data, onChange: _onChange, onBatchChange }:
   const [showRestore, setShowRestore] = useState(false)
   const [backups, setBackups] = useState<BackupEntry[]>([])
   const [loadingBackups, setLoadingBackups] = useState(false)
+  const [backupsError, setBackupsError] = useState<string | null>(null)
+  const [backupReload, setBackupReload] = useState(0)
   const [restoringDate, setRestoringDate] = useState<string | null>(null)
   const [restoringUpload, setRestoringUpload] = useState(false)
   const [uploadError, setUploadError] = useState<string | null>(null)
@@ -269,21 +271,20 @@ export function WelcomeStep({ data: _data, onChange: _onChange, onBatchChange }:
     })
   }
 
-  // Load available backups when restore panel is opened
   useEffect(() => {
     if (!showRestore) return
-    setLoadingBackups(true)
-    fetch("/api/system/backups")
-      .then((r) => r.json())
-      .then((data: BackupEntry[]) => {
-        setBackups(data || [])
-        setLoadingBackups(false)
+    const controller = new AbortController()
+    fetch("/api/system/backups", { signal: controller.signal })
+      .then(async response => {
+        if (!response.ok) throw new Error("Could not load backups. Try again.")
+        const data = await response.json()
+        if (!Array.isArray(data)) throw new Error("Could not read the backup list.")
+        if (!controller.signal.aborted) setBackups(data)
       })
-      .catch(() => {
-        setBackups([])
-        setLoadingBackups(false)
-      })
-  }, [showRestore])
+      .catch(error => { if (!controller.signal.aborted) setBackupsError(error instanceof Error ? error.message : "Could not load backups.") })
+      .finally(() => { if (!controller.signal.aborted) setLoadingBackups(false) })
+    return () => controller.abort()
+  }, [showRestore, backupReload])
 
   // Handle restoring from a backup
   async function handleRestore(backup: BackupEntry) {
@@ -470,7 +471,7 @@ export function WelcomeStep({ data: _data, onChange: _onChange, onBatchChange }:
             {/* Restore from backup button / panel */}
             {!showRestore ? (
               <button
-                onClick={() => setShowRestore(true)}
+                onClick={() => { setLoadingBackups(true); setBackupsError(null); setShowRestore(true) }}
                 className="flex w-full items-center justify-center gap-2 rounded-xl border border-white/10 bg-white/[0.02] px-4 py-3 text-sm text-slate-400 transition-colors hover:border-white/20 hover:bg-white/[0.04] hover:text-slate-300"
               >
                 <RotateLeftIcon className="h-4 w-4" />
@@ -484,6 +485,8 @@ export function WelcomeStep({ data: _data, onChange: _onChange, onBatchChange }:
                     <span className="text-sm font-medium text-blue-300">Available Backups</span>
                   </div>
                   <button
+                    type="button"
+                    aria-label="Close backup list"
                     onClick={() => setShowRestore(false)}
                     className="rounded-lg p-1 text-slate-500 transition-colors hover:bg-white/5 hover:text-slate-300"
                   >
@@ -491,6 +494,7 @@ export function WelcomeStep({ data: _data, onChange: _onChange, onBatchChange }:
                   </button>
                 </div>
 
+                {backupsError && <p role="alert" className="mb-3 text-xs text-rose-300">{backupsError} <button type="button" className="text-blue-300 underline" onClick={() => { setLoadingBackups(true); setBackupsError(null); setBackupReload(value => value + 1) }}>Retry</button></p>}
                 {loadingBackups ? (
                   <div className="flex items-center justify-center py-4">
                     <ProgressActivityIcon className="h-5 w-5 animate-spin text-blue-400" />
@@ -498,9 +502,9 @@ export function WelcomeStep({ data: _data, onChange: _onChange, onBatchChange }:
                   </div>
                 ) : backups.length === 0 ? (
                   <div className="space-y-3">
-                    <p className="py-1 text-center text-xs text-slate-500">
+                    {!backupsError && <p className="py-1 text-center text-xs text-slate-500">
                       No backups found on this device.
-                    </p>
+                    </p>}
                     <button
                       onClick={() => backupFileInputRef.current?.click()}
                       disabled={restoringUpload}

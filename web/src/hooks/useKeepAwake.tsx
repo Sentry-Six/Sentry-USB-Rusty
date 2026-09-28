@@ -37,19 +37,38 @@ export function KeepAwakeProvider({ children }: { children: React.ReactNode }) {
   const mutation = useRef(0)
   const busy = useRef(false)
   const mounted = useRef(true)
+  const preferenceRequest = useRef<AbortController | null>(null)
   useEffect(() => { mounted.current = true; return () => { mounted.current = false } }, [])
 
-  const reloadPreferences = useCallback(async () => {
-    setError(null)
-    try {
-      const response = await checkedFetch("/api/config/preference?key=keep_awake_webui_mode")
-      const data = await response.json()
-      if (mounted.current) setMode(data.value || "")
-    } catch (e) {
-      if (mounted.current) setError(e instanceof Error ? e.message : "Could not load keep-awake settings.")
-    }
+  const readPreferences = useCallback(() => {
+    preferenceRequest.current?.abort()
+    const request = new AbortController()
+    preferenceRequest.current = request
+    const version = mutation.current
+    const current = () => mounted.current && !request.signal.aborted && preferenceRequest.current === request && version === mutation.current
+    return checkedFetch("/api/config/preference?key=keep_awake_webui_mode", { signal: request.signal })
+      .then((response) => response.json())
+      .then((data) => {
+        if (!current()) return
+        setMode(data.value || "")
+        setError(null)
+      })
+      .catch((reason) => {
+        if (current()) setError(reason instanceof Error ? reason.message : "Could not load keep-awake settings.")
+      })
+      .finally(() => { if (preferenceRequest.current === request) preferenceRequest.current = null })
   }, [])
-  useEffect(() => { void reloadPreferences() }, [reloadPreferences])
+  const reloadPreferences = useCallback(() => {
+    setError(null)
+    return readPreferences()
+  }, [readPreferences])
+  useEffect(() => {
+    void readPreferences()
+    return () => {
+      preferenceRequest.current?.abort()
+      preferenceRequest.current = null
+    }
+  }, [readPreferences])
 
   useEffect(() => {
     let stopped = false
@@ -98,6 +117,8 @@ export function KeepAwakeProvider({ children }: { children: React.ReactNode }) {
     if (busy.current) return
     busy.current = true
     mutation.current++
+    preferenceRequest.current?.abort()
+    preferenceRequest.current = null
     setPending(true)
     setError(null)
     try { await operation() }

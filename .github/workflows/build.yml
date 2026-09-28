@@ -138,13 +138,19 @@ jobs:
 
       - name: Install build dependencies
         run: |
+          # Retain the runner's provider instead of replacing pkgconf with pkg-config.
+          pkg_config_package=pkgconf
+          if [ "$(dpkg-query -W -f='${db:Status-Status}' pkgconf 2>/dev/null)" != installed ] &&
+             [ "$(dpkg-query -W -f='${db:Status-Status}' pkg-config 2>/dev/null)" = installed ]; then
+            pkg_config_package=pkg-config
+          fi
           # Native aarch64 uses host libraries; armv7 needs ports.ubuntu.com,
           # cross GCC, and target-architecture libdbus headers.
           case "${{ matrix.target }}" in
             aarch64-*)
               sudo apt-get update -qq
-              sudo apt-get install -y -qq \
-                brotli mold pkg-config libdbus-1-dev
+              sudo apt-get install -y -qq --no-remove \
+                brotli mold "$pkg_config_package" libdbus-1-dev
               ;;
             armv7-*|arm-*)
               UBUNTU_CODENAME=$(lsb_release -cs)
@@ -164,20 +170,40 @@ jobs:
           EOF
               sudo dpkg --add-architecture armhf
               sudo apt-get update -qq
-              sudo apt-get install -y -qq \
-                ${{ matrix.gcc }} brotli mold pkg-config \
+              sudo apt-get install -y -qq --no-remove \
+                ${{ matrix.gcc }} brotli mold "$pkg_config_package" \
                 libdbus-1-dev libdbus-1-dev:armhf
               ;;
           esac
 
-      - name: Configure pkg-config for cross-compile
-        # Native aarch64 uses host pkg-config defaults.
-        if: startsWith(matrix.target, 'armv7-') || startsWith(matrix.target, 'arm-')
+      - name: Verify target D-Bus and configure pkg-config
         run: |
-          # Point pkg-config exclusively at the installed armhf metadata.
-          echo "PKG_CONFIG_PATH=/usr/lib/arm-linux-gnueabihf/pkgconfig" >> "$GITHUB_ENV"
-          echo "PKG_CONFIG_SYSROOT_DIR=/" >> "$GITHUB_ENV"
-          echo "PKG_CONFIG_ALLOW_CROSS=1" >> "$GITHUB_ENV"
+          case "${{ matrix.target }}" in
+            aarch64-*) dbus_triplet=aarch64-linux-gnu; dbus_machine=AArch64 ;;
+            armv7-*|arm-*) dbus_triplet=arm-linux-gnueabihf; dbus_machine=ARM ;;
+            *) echo "::error::Unsupported D-Bus target"; exit 1 ;;
+          esac
+          test "$("${{ matrix.linker }}" -dumpmachine)" = "$dbus_triplet"
+          # LIBDIR replaces the default search path; PATH alone still permits host fallback.
+          export PKG_CONFIG_PATH= PKG_CONFIG_LIBDIR="/usr/lib/$dbus_triplet/pkgconfig" PKG_CONFIG_SYSROOT_DIR=/
+          pkg-config --version
+          pkg-config --print-errors --exists dbus-1
+          test "$(pkg-config --variable=pcfiledir dbus-1)" = "$PKG_CONFIG_LIBDIR"
+          test "$(pkg-config --variable=libdir dbus-1)" = "/usr/lib/$dbus_triplet"
+          read -r -a dbus_cflags <<< "$(pkg-config --cflags dbus-1)"
+          read -r -a dbus_libs <<< "$(pkg-config --libs dbus-1)"
+          printf '#include <dbus/dbus.h>\nint main(void) { return dbus_threads_init_default() ? 0 : 1; }\n' > "$RUNNER_TEMP/dbus-link.c"
+          "${{ matrix.linker }}" "${dbus_cflags[@]}" "$RUNNER_TEMP/dbus-link.c" "${dbus_libs[@]}" -o "$RUNNER_TEMP/dbus-link"
+          test "$(readelf -h "$RUNNER_TEMP/dbus-link" | awk '/Machine:/ {print $2}')" = "$dbus_machine"
+          pkg-config --modversion --cflags --libs dbus-1
+          # Scope Cargo's metadata search to the target; host build dependencies keep their own defaults.
+          dbus_target=${{ matrix.target }}
+          dbus_target=${dbus_target//-/_}
+          {
+            echo "PKG_CONFIG_PATH_${dbus_target}="
+            echo "PKG_CONFIG_LIBDIR_${dbus_target}=$PKG_CONFIG_LIBDIR"
+            echo "PKG_CONFIG_SYSROOT_DIR_${dbus_target}=/"
+          } >> "$GITHUB_ENV"
 
       - name: Cache cargo registry
         uses: actions/cache@v6
@@ -210,7 +236,7 @@ jobs:
           set -e
           cd web
           npm ci
-          npm run build
+          npm run build -- --configLoader native
           cd ..
           # Never package an empty frontend.
           if [ ! -s "web/dist/index.html" ]; then
@@ -299,8 +325,14 @@ jobs:
       - name: Install bluez build deps
         # bluer/btleplug require libdbus headers through pkg-config.
         run: |
+          pkg_config_package=pkgconf
+          if [ "$(dpkg-query -W -f='${db:Status-Status}' pkgconf 2>/dev/null)" != installed ] &&
+             [ "$(dpkg-query -W -f='${db:Status-Status}' pkg-config 2>/dev/null)" = installed ]; then
+            pkg_config_package=pkg-config
+          fi
           sudo apt-get update -qq
-          sudo apt-get install -y -qq libdbus-1-dev pkg-config
+          sudo apt-get install -y -qq --no-remove libdbus-1-dev "$pkg_config_package"
+          pkg-config --print-errors --exists dbus-1
       - name: Ensure static dir exists
         run: |
           mkdir -p crates/sentryusb/static
@@ -319,18 +351,18 @@ jobs:
           cache: npm
           cache-dependency-path: web/package-lock.json
       - name: Lint
-        # Do not increase the reviewed warning budget in eslint.config.js.
+        # Keep lint warnings out of release builds.
         run: |
           cd web
           npm ci
           npm test
-          npx eslint . --max-warnings 30
+          npx eslint . --max-warnings 0
       - name: Production build
         # Exercise Vite/Rolldown on PRs; release slices cover tags/manual runs.
         if: github.event_name == 'pull_request'
         run: |
           cd web
-          npm run build
+          npm run build -- --configLoader native
           if [ ! -s "dist/index.html" ]; then
             echo "::error::web/dist/index.html missing or empty after npm run build"
             exit 1

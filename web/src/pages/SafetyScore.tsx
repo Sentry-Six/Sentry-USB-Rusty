@@ -149,11 +149,12 @@ export default function SafetyScore() {
   }, [])
 
   useEffect(() => {
-    setLoading(true)
+    let current = true
     api.getSafetyAnalytics(period)
-      .then((resp) => setData(normalizeSafety(resp)))
-      .catch(() => setData(null))
-      .finally(() => setLoading(false))
+      .then(resp => { if (current) setData(normalizeSafety(resp)) })
+      .catch(() => { if (current) setData(null) })
+      .finally(() => { if (current) setLoading(false) })
+    return () => { current = false }
   }, [period])
 
   if (loading) {
@@ -283,6 +284,7 @@ export default function SafetyScore() {
             <button
               key={p}
               onClick={() => {
+                if (p !== period) setLoading(true)
                 setPeriod(p)
                 saveSafetyPeriod(browserSafetyPeriodStorage(), p)
               }}

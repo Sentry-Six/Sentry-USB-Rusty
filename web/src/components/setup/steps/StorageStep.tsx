@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react"
+import { useState, useEffect, useCallback, useRef } from "react"
 import { CachedIcon, HardDriveIcon } from "@/components/icons"
 import type { StepProps } from "../SetupWizard"
 import { SelectMenu } from "@/components/ui/SelectMenu"
@@ -13,19 +13,26 @@ interface BlockDevice {
 
 export function StorageStep({ data, onChange }: StepProps) {
   const [devices, setDevices] = useState<BlockDevice[]>([])
-  const [loadingDevices, setLoadingDevices] = useState(false)
+  const [loadingDevices, setLoadingDevices] = useState(true)
+  const [devicesError, setDevicesError] = useState<string | null>(null)
+  const devicesRequest = useRef<AbortController | null>(null)
 
-  async function fetchDevices() {
-    setLoadingDevices(true)
-    try {
-      const res = await fetch("/api/system/block-devices")
-      const data = await res.json()
-      setDevices(Array.isArray(data) ? data : [])
-    } catch { setDevices([]) }
-    setLoadingDevices(false)
-  }
+  const fetchDevices = useCallback(() => {
+    devicesRequest.current?.abort()
+    const controller = new AbortController()
+    devicesRequest.current = controller
+    return fetch("/api/system/block-devices", { signal: controller.signal })
+      .then(async response => {
+        if (!response.ok) throw new Error("Could not read storage devices. Try Refresh.")
+        const data = await response.json()
+        if (!Array.isArray(data) || !data.every(device => typeof device.path === "string" && typeof device.name === "string")) throw new Error("Could not read storage devices. Try Refresh.")
+        if (!controller.signal.aborted) { setDevices(data); setDevicesError(null) }
+      })
+      .catch(error => { if (!controller.signal.aborted) setDevicesError(error instanceof Error ? error.message : "Could not read storage devices.") })
+      .finally(() => { if (!controller.signal.aborted) setLoadingDevices(false) })
+  }, [])
 
-  useEffect(() => { fetchDevices() }, [])
+  useEffect(() => { void fetchDevices(); return () => devicesRequest.current?.abort() }, [fetchDevices])
 
   // Calculate dashcam warning — only meaningful for GB values
   const camRaw = data.CAM_SIZE ?? ""
@@ -121,7 +128,7 @@ export function StorageStep({ data, onChange }: StepProps) {
             ]} />
           <button
             type="button"
-            onClick={fetchDevices}
+            onClick={() => { setLoadingDevices(true); setDevicesError(null); void fetchDevices() }}
             disabled={loadingDevices}
             className="flex items-center gap-1.5 rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-xs font-medium text-slate-300 transition-colors hover:bg-white/10 disabled:opacity-50"
           >
@@ -129,6 +136,7 @@ export function StorageStep({ data, onChange }: StepProps) {
             Refresh
           </button>
         </div>
+        {devicesError && <p role="alert" className="mt-2 text-xs text-rose-300">{devicesError}</p>}
         <p className="mt-1 text-xs text-slate-600">
           Optional. Use an external USB or NVMe drive instead of the SD card.
           <span className="font-medium text-amber-400"> WARNING: The selected drive will be wiped.</span>

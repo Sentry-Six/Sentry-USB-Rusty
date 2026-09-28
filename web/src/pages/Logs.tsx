@@ -324,6 +324,8 @@ export default function Logs() {
     cursorRef.current = null
     legacy.current = false
     setBefore(null); setContent(""); setError(null)
+    followRef.current = true
+    setShowScrollBtn(false)
     setActiveTabState(tab)
     const next = new URLSearchParams(searchParams)
     next.set("tab", tab)
@@ -352,10 +354,6 @@ export default function Logs() {
     }
   }
 
-  useEffect(() => {
-    followRef.current = true
-    setShowScrollBtn(false)
-  }, [activeTab])
 
   useEffect(() => {
     if (!live && loaded.current) return

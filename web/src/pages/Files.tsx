@@ -171,9 +171,6 @@ export default function Files() {
     locationRef.current = currentPath
     controller.current?.abort()
     request.current++
-    setSelected(new Set())
-    setVisibleCount(100)
-    if (changedPath) setFiles([])
     if (!currentPath) return
     const timer = setTimeout(() => void fetchFiles(currentPath, search), changedPath ? 0 : 300)
     return () => {
@@ -190,6 +187,10 @@ export default function Files() {
   function navigate(path: string) {
     controller.current?.abort()
     request.current++
+    setSelected(new Set())
+    setVisibleCount(100)
+    if (currentPath !== path) setFiles([])
+    if (currentPath !== path || search) setLoading(true)
     setCurrentPath(path)
     setSearch("")
     setOperationError(null)
@@ -451,7 +452,7 @@ export default function Files() {
             aria-label="Search files"
             placeholder="Search this location"
             value={search}
-            onChange={(e) => setSearch(e.target.value)}
+            onChange={(e) => { setSelected(new Set()); setVisibleCount(100); setSearch(e.target.value) }}
             className="min-h-10 w-full rounded-xl border border-white/10 bg-white/5 py-2 pl-9 pr-3 text-sm text-slate-200"
           />
         </div>

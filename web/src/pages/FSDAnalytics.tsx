@@ -105,22 +105,25 @@ export default function FSDAnalytics() {
   }, [])
 
   useEffect(() => {
-    setLoading(true)
+    let current = true
     api.getFSDAnalytics(period === "all" ? "all" : period)
       .then(async (resp) => {
+        if (!current) return
         const normalized = normalizeFsdAnalytics(resp)
         // If week/day cache returns empty object, fall back to All Time so
         // users still see existing FSD history instead of a false empty state.
         if (period !== "all" && (!normalized || !normalized.fsd_grade)) {
           const all = normalizeFsdAnalytics(await api.getFSDAnalytics("all"))
+          if (!current) return
           setData(all)
           setPeriod("all")
           return
         }
         setData(normalized)
       })
-      .catch(() => setData(null))
-      .finally(() => setLoading(false))
+      .catch(() => { if (current) setData(null) })
+      .finally(() => { if (current) setLoading(false) })
+    return () => { current = false }
   }, [period])
 
   if (loading) {
@@ -259,7 +262,7 @@ export default function FSDAnalytics() {
           {(["day", "week", "all"] as Period[]).map((p) => (
             <button
               key={p}
-              onClick={() => { setPeriod(p); setSelectedMonth(null) }}
+              onClick={() => { if (p !== period) setLoading(true); setPeriod(p); setSelectedMonth(null) }}
               className={cn(
                 "rounded-full px-3 py-1 text-xs font-medium transition-colors",
                 period === p ? "bg-white/10 text-slate-100" : "text-slate-500 hover:text-slate-300"

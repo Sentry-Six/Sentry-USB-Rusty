@@ -226,7 +226,6 @@ function BrowseTab({ adminPasscode, onAdminExit }: { adminPasscode: string | nul
     return () => clearTimeout(timer)
   }, [fetchWraps, search])
 
-  useEffect(() => { setPage(1) }, [model, search, sort])
 
   const totalPages = Math.ceil(total / limit)
 
@@ -327,14 +326,14 @@ function BrowseTab({ adminPasscode, onAdminExit }: { adminPasscode: string | nul
           <input
             type="text"
             value={search}
-            onChange={(e) => setSearch(e.target.value)}
+            onChange={(e) => { setSearch(e.target.value); setPage(1) }}
             placeholder="Search wraps..."
             className="w-full rounded-lg border border-white/10 bg-white/[0.03] py-2 pl-10 pr-4 text-sm text-slate-200 placeholder:text-slate-600 focus:border-blue-500/50 focus:outline-none"
           />
         </div>
-        <SelectMenu label="Filter wraps by Tesla model" value={model} onChange={setModel}
+        <SelectMenu label="Filter wraps by Tesla model" value={model} onChange={value => { setModel(value); setPage(1) }}
           options={FILTER_MODELS.map((value) => ({ value, label: value }))} />
-        <SelectMenu label="Sort wraps" value={sort} onChange={(value) => setSort(value as SortOption)} align="end"
+        <SelectMenu label="Sort wraps" value={sort} onChange={(value) => { setSort(value as SortOption); setPage(1) }} align="end"
           options={[{ value: "newest", label: "Newest" }, { value: "oldest", label: "Oldest" }, { value: "popular", label: "Most Popular" }, { value: "name", label: "Name (A-Z)" }]} />
       </div>
 

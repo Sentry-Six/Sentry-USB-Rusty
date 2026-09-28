@@ -23,17 +23,17 @@ jobs:
           cache: npm
           cache-dependency-path: web/package-lock.json
       - name: Lint
-        # Match build.yml and do not increase eslint.config.js's warning budget.
+        # Match the release workflow’s zero-warning check.
         run: |
           cd web
           npm ci
           npm test
-          npx eslint . --max-warnings 30
+          npx eslint . --max-warnings 0
       - name: Production build
         # Direct pushes otherwise receive no production bundle check.
         run: |
           cd web
-          npm run build
+          npm run build -- --configLoader native
           if [ ! -s "dist/index.html" ]; then
             echo "::error::web/dist/index.html missing or empty after npm run build"
             exit 1

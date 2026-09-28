@@ -131,6 +131,10 @@ export default function Notifications() {
     return tab === "delivery" ? "delivery" : tab === "events" || tab === "settings" ? "events" : "history"
   })
   function selectTab(tab: Tab) {
+    if (tab !== activeTab) {
+      if (tab === "history") { setLoading(true); setHistoryError("") }
+      if (tab === "events") { setSettingsLoading(true); setSettingsError("") }
+    }
     setActiveTab(tab)
     const url = new URL(window.location.href)
     url.searchParams.set("tab", tab)
@@ -143,7 +147,7 @@ export default function Notifications() {
   const [settings, setSettings] = useState<NotificationSettings | null>(null)
   const [savingSettings, setSavingSettings] = useState(false)
   const [settingsError, setSettingsError] = useState("")
-  const [settingsLoading, setSettingsLoading] = useState(false)
+  const [settingsLoading, setSettingsLoading] = useState(true)
   const settingsSaving = useRef(false)
   const historyRequest = useRef<AbortController | null>(null)
   const settingsRequest = useRef<AbortController | null>(null)
@@ -156,40 +160,34 @@ export default function Notifications() {
     historyRequest.current?.abort()
     const controller = new AbortController()
     historyRequest.current = controller
-    setLoading(true)
-    setHistoryError("")
-    try {
-      const params = new URLSearchParams({ limit: String(PAGE_SIZE), offset: String(currentOffset) })
-      if (filter) params.set("type", filter)
-      const res = await fetch(`/api/notifications/history?${params}`, { signal: controller.signal })
-      if (!res.ok) throw new Error("Failed to load history")
-      const data: HistoryResponse = await res.json()
-      if (controller.signal.aborted) return
-      setEvents(data.events || [])
-      setTotal(data.total)
-    } catch {
-      if (!controller.signal.aborted) setHistoryError("Could not load notification history. Retry, or check the device logs. Clear All will permanently reset history.")
-    } finally {
-      if (!controller.signal.aborted) setLoading(false)
-    }
+    const params = new URLSearchParams({ limit: String(PAGE_SIZE), offset: String(currentOffset) })
+    if (filter) params.set("type", filter)
+    return fetch(`/api/notifications/history?${params}`, { signal: controller.signal })
+      .then(async res => {
+        if (!res.ok) throw new Error("Failed to load history")
+        const data: HistoryResponse = await res.json()
+        if (controller.signal.aborted) return
+        setEvents(data.events || [])
+        setTotal(data.total)
+      })
+      .catch(() => { if (!controller.signal.aborted) setHistoryError("Could not load notification history. Retry, or check the device logs. Clear All will permanently reset history.") })
+      .finally(() => { if (!controller.signal.aborted) setLoading(false) })
   }, [])
 
   const loadSettings = useCallback(async () => {
     if (settingsSaving.current) return
-    setSettingsLoading(true)
     settingsRequest.current?.abort()
     const controller = new AbortController()
     settingsRequest.current = controller
-    setSettingsError("")
-    try {
-      const res = await fetch("/api/notifications/settings", { signal: controller.signal })
-      if (!res.ok) throw new Error("Failed to load settings")
-      const data: NotificationSettings = await res.json()
-      if (!NOTIFICATION_TYPES.every(({ key }) => typeof data[key] === "boolean")) throw new Error("Invalid event settings")
-      if (!controller.signal.aborted) setSettings(data)
-    } catch {
-      if (!controller.signal.aborted) setSettingsError("Could not load event settings. Retry before making changes.")
-    } finally { if (!controller.signal.aborted) setSettingsLoading(false) }
+    return fetch("/api/notifications/settings", { signal: controller.signal })
+      .then(async res => {
+        if (!res.ok) throw new Error("Failed to load settings")
+        const data: NotificationSettings = await res.json()
+        if (!NOTIFICATION_TYPES.every(({ key }) => typeof data[key] === "boolean")) throw new Error("Invalid event settings")
+        if (!controller.signal.aborted) setSettings(data)
+      })
+      .catch(() => { if (!controller.signal.aborted) setSettingsError("Could not load event settings. Retry before making changes.") })
+      .finally(() => { if (!controller.signal.aborted) setSettingsLoading(false) })
   }, [])
 
   useEffect(() => {
@@ -264,6 +262,7 @@ export default function Notifications() {
 
   // Filter change
   function handleFilterChange(filter: string) {
+    if (filter !== typeFilter || offset !== 0) { setLoading(true); setHistoryError("") }
     setTypeFilter(filter)
     setOffset(0)
   }
@@ -271,6 +270,7 @@ export default function Notifications() {
   // Pagination
   function handlePage(direction: "next" | "prev") {
     const newOffset = direction === "next" ? offset + PAGE_SIZE : Math.max(0, offset - PAGE_SIZE)
+    if (newOffset !== offset) { setLoading(true); setHistoryError("") }
     setOffset(newOffset)
   }
 
@@ -350,7 +350,7 @@ export default function Notifications() {
           ) : historyError ? (
             <div role="alert" className="glass-card space-y-3 p-5 text-sm text-amber-300">
               <p>{historyError}</p>
-              <button onClick={() => loadHistory(offset, typeFilter)} className="rounded-lg border border-white/10 px-3 py-1.5 text-slate-200">Retry</button>
+              <button onClick={() => { setLoading(true); setHistoryError(""); void loadHistory(offset, typeFilter) }} className="rounded-lg border border-white/10 px-3 py-1.5 text-slate-200">Retry</button>
             </div>
           ) : events.length === 0 ? (
             <div className="glass-card flex flex-col items-center justify-center py-16 text-center">
@@ -411,7 +411,7 @@ export default function Notifications() {
       </div>}
       {activeTab === "events" && settingsError && <div role="alert" className="glass-card p-4 text-sm text-rose-300">
         <p>{settingsError}</p>
-        <button type="button" className="mt-2 text-blue-400" disabled={savingSettings} onClick={() => void loadSettings()}>Retry</button>
+        <button type="button" className="mt-2 text-blue-400" disabled={savingSettings} onClick={() => { setSettingsLoading(true); setSettingsError(""); void loadSettings() }}>Retry</button>
       </div>}
       {activeTab === "events" && !settings && !settingsError && <p role="status" className="text-sm text-slate-400">Loading event settings…</p>}
       {activeTab === "events" && settings && (

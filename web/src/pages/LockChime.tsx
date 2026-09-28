@@ -371,8 +371,7 @@ function MyLibraryTab({ volume }: { volume: number }) {
   const { showToast, ToastView } = useToast()
 
   const fetchSounds = useCallback(async () => {
-    try {
-      const res = await fetch(`${API_BASE}/lockchime/list`)
+    return fetch(`${API_BASE}/lockchime/list`).then(async res => {
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
       const data: ListResponse = await res.json()
       setSounds(data.sounds ?? [])
@@ -383,24 +382,15 @@ function MyLibraryTab({ volume }: { volume: number }) {
       setAssActiveSet(data.ass_active_set ?? false)
       setAssActiveGainApplied(data.ass_active_gain_applied ?? 0)
       setGains(Object.fromEntries((data.sounds ?? []).map((s) => [s.name, s.gain_db ?? 0])))
-    } catch {
-      showToast("Failed to load sounds", "error")
-    } finally {
-      setLoading(false)
-    }
+    }).catch(() => showToast("Failed to load sounds", "error")).finally(() => setLoading(false))
   }, [showToast])
 
   const fetchRandomConfig = useCallback(async () => {
-    try {
-      const res = await fetch(`${API_BASE}/lockchime/random-config`)
+    return fetch(`${API_BASE}/lockchime/random-config`).then(async res => {
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
       const data: RandomConfig = await res.json()
       setRandomCfg(data)
-    } catch {
-      // Random config is optional — silently fail
-    } finally {
-      setRandomLoading(false)
-    }
+    }).catch(() => {}).finally(() => setRandomLoading(false))
   }, [])
 
   const saveVolume = useCallback(async (name: string, db: number) => {

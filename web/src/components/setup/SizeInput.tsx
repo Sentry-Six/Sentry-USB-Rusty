@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react"
+import { useState } from "react"
 import { SelectMenu } from "@/components/ui/SelectMenu"
 import { WarningIcon } from "@/components/icons"
 import type { StepProps } from "./SetupWizard"
@@ -33,14 +33,12 @@ export function SizeInput({
   const [localVal, setLocalVal] = useState(numericVal)
   const [focused, setFocused] = useState(false)
 
-  useEffect(() => {
+  const [observedRaw, setObservedRaw] = useState(raw)
+  if (raw !== observedRaw) {
+    setObservedRaw(raw)
     if (/[mM]$/.test(raw)) setUnit("M")
     else if (/[gG]$/.test(raw)) setUnit("G")
-  }, [raw])
-
-  useEffect(() => {
-    if (!focused) setLocalVal(numericVal)
-  }, [numericVal, focused])
+  }
 
   const handleFocus = () => {
     if (disabled) return

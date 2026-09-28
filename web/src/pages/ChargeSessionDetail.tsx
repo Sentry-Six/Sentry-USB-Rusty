@@ -50,6 +50,10 @@ const VOLTAGE_Y_DOMAIN: [number | string, number | string] = [0, "dataMax + 10"]
 
 export default function ChargeSessionDetailPage() {
   const { id } = useParams<{ id: string }>()
+  return <ChargeSessionDetail key={id ?? "missing"} id={id} />
+}
+
+function ChargeSessionDetail({ id }: { id: string | undefined }) {
   const [session, setSession] = useState<ChargeSessionDetail | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -63,8 +67,6 @@ export default function ChargeSessionDetailPage() {
     if (!id) return
     let cancelled = false
     const controller = new AbortController()
-    setLoading(true)
-    setError(null)
     fetchChargeSession(id, controller.signal)
       .then((s) => {
         if (!cancelled) { setSession(s); invalidateChargingHistory() }

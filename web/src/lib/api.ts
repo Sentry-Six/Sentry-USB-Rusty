@@ -314,6 +314,6 @@ export const api = {
     request<FSDAnalytics>(`/drives/fsd-analytics?period=${period}`),
   getSafetyAnalytics: (period: string = "month") =>
     request<SafetyAnalytics>(`/drives/safety-analytics?period=${period}`),
-  getClipTelemetry: (clipPath: string, file: string) =>
-    request<ClipTelemetry>(`/clips/telemetry?path=${encodeURIComponent(clipPath)}&file=${encodeURIComponent(file)}`),
+  getClipTelemetry: (clipPath: string, file: string, signal?: AbortSignal) =>
+    request<ClipTelemetry>(`/clips/telemetry?path=${encodeURIComponent(clipPath)}&file=${encodeURIComponent(file)}`, { signal }),
 }

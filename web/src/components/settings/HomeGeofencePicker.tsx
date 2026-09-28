@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from "react"
+import { useState, type ReactNode } from "react"
 import { LocationOnIcon, ProgressActivityIcon } from "@/components/icons"
 import { cn } from "@/lib/utils"
 import { normalizeLon } from "@/lib/geo"
@@ -45,9 +45,11 @@ export function HomeGeofencePicker({
 
   // Clamp the free-form radius only on blur or Enter.
   const [radiusText, setRadiusText] = useState(String(values.radiusM))
-  useEffect(() => {
+  const [observedRadius, setObservedRadius] = useState(values.radiusM)
+  if (!Object.is(values.radiusM, observedRadius)) {
+    setObservedRadius(values.radiusM)
     setRadiusText(String(values.radiusM))
-  }, [values.radiusM])
+  }
 
   function commitRadius() {
     const n = Math.round(Number(radiusText))

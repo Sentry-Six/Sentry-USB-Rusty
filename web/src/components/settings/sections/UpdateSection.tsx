@@ -50,6 +50,7 @@ export function UpdateSection({ onInstallStart }: Props) {
   const preferenceBusy = useRef(false)
   const [showUpdateModal, setShowUpdateModal] = useState(false)
   const [downloadPercent, setDownloadPercent] = useState<number | null>(null)
+  const initialUpdateRequest = useRef<AbortController | null>(null)
 
   useEffect(() => {
     if (!showUpdateModal) return
@@ -57,16 +58,18 @@ export function UpdateSection({ onInstallStart }: Props) {
       const t = setTimeout(() => setShowUpdateModal(false), 3000)
       return () => clearTimeout(t)
     }
-    // Close on failure so the card's inline error remains visible.
-    if (updateStatus === "idle" || updateStatus === "error") {
-      setShowUpdateModal(false)
-    }
   }, [showUpdateModal, updateStatus])
 
   useEffect(() => {
-    fetch("/api/system/update-status")
-      .then((r) => r.json())
+    const controller = new AbortController()
+    initialUpdateRequest.current = controller
+    fetch("/api/system/update-status", { signal: controller.signal })
+      .then((r) => {
+        if (!r.ok) throw new Error("Could not read available updates. Check again.")
+        return r.json()
+      })
       .then((data) => {
+        if (controller.signal.aborted) return
         if (data.stable?.available) {
           setStableUpdate({
             version: data.stable.version,
@@ -95,7 +98,8 @@ export function UpdateSection({ onInstallStart }: Props) {
           })
         }
       })
-      .catch(() => {})
+      .catch(() => { if (!controller.signal.aborted) setUpdateError("Could not read available updates. Check again.") })
+    return () => controller.abort()
   }, [])
 
   useEffect(() => {
@@ -132,6 +136,7 @@ export function UpdateSection({ onInstallStart }: Props) {
   }
 
   async function handleCheckForUpdate(oneTimePrerelease = false) {
+    initialUpdateRequest.current?.abort()
     setIsCheckingUpdate(true)
     setStableUpdate(null)
     setPrereleaseUpdate(null)
@@ -183,6 +188,7 @@ export function UpdateSection({ onInstallStart }: Props) {
           setUpdateStatus("done")
           setUpdateMessage(`You're up to date (${data.current_version || version})`)
           setTimeout(() => {
+            setShowUpdateModal(false)
             setUpdateStatus("idle")
             setUpdateMessage(null)
           }, 4000)
@@ -196,6 +202,7 @@ export function UpdateSection({ onInstallStart }: Props) {
   }
 
   async function handleInstallUpdate(targetVersion?: string) {
+    initialUpdateRequest.current?.abort()
     onInstallStart?.()
     setUpdateStatus("checking_internet")
     setUpdateError(null)
@@ -232,6 +239,7 @@ export function UpdateSection({ onInstallStart }: Props) {
       }
       if (msg.error) {
         cleanup()
+        setShowUpdateModal(false)
         setUpdateStatus("error")
         setUpdateError(msg.error)
         setUpdateMessage(null)
@@ -314,6 +322,7 @@ export function UpdateSection({ onInstallStart }: Props) {
           setUpdateStatus("done")
           setUpdateMessage(`Update complete — now running ${newVersion || polled || "latest"}`)
           setTimeout(() => {
+            setShowUpdateModal(false)
             setUpdateStatus("idle")
             setUpdateMessage(null)
             setInstalledVersion(null)
@@ -327,6 +336,7 @@ export function UpdateSection({ onInstallStart }: Props) {
       setTimeout(() => {
         if (!reconnected) {
           clearInterval(pollInterval)
+          setShowUpdateModal(false)
           setUpdateStatus("idle")
           setUpdateMessage(null)
           setInstalledVersion(null)
@@ -340,6 +350,7 @@ export function UpdateSection({ onInstallStart }: Props) {
       const checkData = await checkRes.json()
       if (!checkData.connected) {
         cleanup()
+        setShowUpdateModal(false)
         setUpdateStatus("error")
         setUpdateError("No internet connection. Connect to WiFi first.")
         setUpdateMessage(null)
@@ -357,6 +368,7 @@ export function UpdateSection({ onInstallStart }: Props) {
       fallbackTimer = setTimeout(enterReconnect, 120000)
     } catch (err) {
       cleanup()
+      setShowUpdateModal(false)
       setUpdateStatus("error")
       setUpdateError(err instanceof Error ? err.message : "Update failed")
       setUpdateMessage(null)
