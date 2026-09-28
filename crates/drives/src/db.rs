@@ -6,7 +6,7 @@
 //! fast path.
 
 use std::path::Path;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 
 use anyhow::{Context, Result};
@@ -367,6 +367,8 @@ pub struct DriveStore {
     /// Cached `/api/drives/routes` overview JSON; rebuilt lazily on the first
     /// request after a route mutation.
     route_overview_cache: Mutex<Option<RouteOverviewCache>>,
+    /// One revision of grouping metadata; point BLOBs stay request-local.
+    preview_plan_cache: Mutex<Option<Arc<RoutePreviewPlanCache>>>,
     /// Serializes overview rebuilds. Without it, concurrent cold misses
     /// each ran the full-store decode — the single heaviest allocation in
     /// the process — so two map requests during an archive could stack
@@ -383,6 +385,13 @@ struct RouteOverviewCache {
     generation: u64,
     max_points: usize,
     json: String,
+}
+
+struct RoutePreviewPlanCache {
+    revision: i64,
+    metas: Vec<crate::grouper::OverviewClipMeta>,
+    plans: Vec<crate::grouper::PlannedDrive>,
+    indices_by_start: std::collections::HashMap<String, Vec<usize>>,
 }
 
 impl DriveStore {
@@ -430,6 +439,7 @@ impl DriveStore {
             drive_cache_dirty: AtomicBool::new(true),
             rebuild_lock: Mutex::new(()),
             route_overview_cache: Mutex::new(None),
+            preview_plan_cache: Mutex::new(None),
             overview_rebuild_lock: Mutex::new(()),
             route_overview_gen: AtomicU64::new(0),
         };
@@ -460,6 +470,7 @@ impl DriveStore {
             drive_cache_dirty: AtomicBool::new(false),
             rebuild_lock: Mutex::new(()),
             route_overview_cache: Mutex::new(None),
+            preview_plan_cache: Mutex::new(None),
             overview_rebuild_lock: Mutex::new(()),
             route_overview_gen: AtomicU64::new(0),
         };
@@ -3128,6 +3139,27 @@ impl DriveStore {
         Ok(json)
     }
 
+    fn route_preview_plan(&self, conn: &Connection, revision: i64) -> Result<Arc<RoutePreviewPlanCache>> {
+        let mut cache = self.preview_plan_cache.lock().unwrap();
+        if let Some(plan) = cache.as_ref().filter(|plan| plan.revision == revision) {
+            return Ok(Arc::clone(plan));
+        }
+        // Drop the old generation before loading the next metadata snapshot.
+        *cache = None;
+        let metas = select_overview_metas(conn)?;
+        let plans = crate::grouper::plan_overviews(&metas);
+        let mut indices_by_start: std::collections::HashMap<String, Vec<usize>> = std::collections::HashMap::new();
+        for (index, drive) in plans.iter().enumerate() {
+            if let Some(first) = drive.fragments.first() {
+                let start = first.timestamp.format("%Y-%m-%dT%H:%M:%S%.3f").to_string();
+                indices_by_start.entry(start).or_default().push(index);
+            }
+        }
+        let plan = Arc::new(RoutePreviewPlanCache { revision, metas, plans, indices_by_start });
+        *cache = Some(Arc::clone(&plan));
+        Ok(plan)
+    }
+
     /// Only decode points belonging to the requested visible drives. The durable
     /// route clock prevents previews surviving an import, edit or deletion.
     pub fn get_route_previews_json(&self, starts: &[String], max_points: usize) -> Result<String> {
@@ -3149,19 +3181,21 @@ impl DriveStore {
             }
             let mut built = Vec::new();
             if !missing.is_empty() {
-                let metas = select_overview_metas(&tx)?;
-                let plans = crate::grouper::plan_overviews(&metas);
-                for (index, plan) in plans.iter().enumerate() {
-                    let Some(first) = plan.fragments.first() else { continue };
-                    let start = first.timestamp.format("%Y-%m-%dT%H:%M:%S%.3f").to_string();
-                    if !missing.contains(start.as_str()) { continue }
+                let grouping = self.route_preview_plan(&tx, revision)?;
+                let metas = &grouping.metas;
+                let mut requested: Vec<(usize, &str)> = missing.iter().flat_map(|&start| {
+                    grouping.indices_by_start.get(start).into_iter().flatten().map(move |&index| (index, start))
+                }).collect();
+                requested.sort_unstable_by_key(|(index, _)| *index);
+                for (index, start) in requested {
+                    let plan = &grouping.plans[index];
                     let files: std::collections::BTreeSet<&str> = plan.fragments.iter()
                         .map(|f| metas[f.meta_idx].file.as_str()).collect();
                     let points = select_points_by_files(&tx, &files.into_iter().collect::<Vec<_>>())?;
-                    let overview = crate::grouper::overview_from_fragments(index as i32, plan, &metas,
+                    let overview = crate::grouper::overview_from_fragments(index as i32, plan, metas,
                         &mut |idx| Ok(points.get(&metas[idx].file).cloned().unwrap_or_default()), max_points)?;
                     let value = serde_json::to_value(overview)?;
-                    built.push((start, serde_json::to_string(&value)?));
+                    built.push((start.to_string(), serde_json::to_string(&value)?));
                     out.push(value);
                 }
             }
@@ -5260,6 +5294,61 @@ mod tests {
         store.add_route("2025-02-02_09-00-00-front.mp4","2025-02-02",&[[38.0,-122.0],[38.1,-122.1]],&[4,4],&[0,0],&[15.0,16.0],&[0.0,0.0],0,2,&[],&[]).unwrap();
         assert_ne!(store.get_route_previews_json(&[selected],20).unwrap(),first);
         assert!(store.get_route_previews_json(&vec!["invalid".to_string();21],20).is_err());
+    }
+
+    #[test]
+    fn incremental_previews_share_one_plan_and_refresh_after_source_mutations() {
+        let dir = tempfile::tempdir().unwrap();
+        let file_store = DriveStore::open(dir.path().join("previews.db").to_str().unwrap()).unwrap();
+        for store in [DriveStore::open_memory().unwrap(), file_store] {
+            let points = [[37.7749, -122.4194], [37.7760, -122.4180]];
+            let add = |name: &str, points: &[GpsPoint]| {
+                store.add_route(name, "2025-02-02", points, &[4, 4], &[0, 0],
+                    &[15.0, 16.0], &[0.0, 0.0], 0, 2, &[], &[]).unwrap();
+            };
+            for name in ["2025-02-02_09-00-00-front.mp4", "2025-02-02_12-00-00-front.mp4"] {
+                add(name, &points);
+            }
+            let live = || serde_json::to_value(crate::grouper::route_overviews(store.get_routes().unwrap(), 20)).unwrap();
+            let assert_preview = |start: &str| {
+                let expected = live().as_array().unwrap().iter()
+                    .filter(|route| route["startTime"] == start).cloned().collect::<Vec<_>>();
+                let actual: Vec<serde_json::Value> = serde_json::from_str(
+                    &store.get_route_previews_json(&[start.to_string()], 20).unwrap()).unwrap();
+                assert_eq!(actual, expected);
+            };
+            let first = "2025-02-02T09:00:00.000";
+            let second = "2025-02-02T12:00:00.000";
+            assert_preview(first);
+            let original = Arc::clone(store.preview_plan_cache.lock().unwrap().as_ref().unwrap());
+            assert_preview(second);
+            assert!(Arc::ptr_eq(&original, store.preview_plan_cache.lock().unwrap().as_ref().unwrap()),
+                "a different uncached preview must reuse the metadata and grouping plan");
+            let reverse_batch: serde_json::Value = serde_json::from_str(
+                &store.get_route_previews_json(&[second.to_string(), first.to_string()], 5).unwrap()).unwrap();
+            assert_eq!(reverse_batch, serde_json::to_value(
+                crate::grouper::route_overviews(store.get_routes().unwrap(), 5)).unwrap(),
+                "cold batch output must keep grouping order regardless of request order");
+            assert!(Arc::ptr_eq(&original, store.preview_plan_cache.lock().unwrap().as_ref().unwrap()),
+                "downsampling does not change the grouping plan");
+
+            // An earlier new drive changes the IDs of both previously cached previews.
+            let earlier = "2025-02-02_06-00-00-front.mp4";
+            add(earlier, &points);
+            assert_preview(second);
+            let inserted = Arc::clone(store.preview_plan_cache.lock().unwrap().as_ref().unwrap());
+            assert!(!Arc::ptr_eq(&original, &inserted));
+            assert!(inserted.revision > original.revision);
+            assert_eq!(inserted.metas.len(), 3);
+            store.delete_routes_by_files(&[earlier.to_string()], &[]).unwrap();
+            assert_preview(second);
+            let deleted = Arc::clone(store.preview_plan_cache.lock().unwrap().as_ref().unwrap());
+            assert!(deleted.revision > inserted.revision);
+            assert_eq!(deleted.metas.len(), 2);
+            add("2025-02-02_12-00-00-front.mp4", &[[38.0, -122.0], [38.1, -122.1]]);
+            assert_preview(second);
+            assert!(store.preview_plan_cache.lock().unwrap().as_ref().unwrap().revision > deleted.revision);
+        }
     }
 
     #[test]

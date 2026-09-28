@@ -252,6 +252,7 @@ export default function Drives() {
               key={d.startTime}
               drive={d}
               routePoints={list.routesByStartTime.get(d.startTime) ?? []}
+              routeStatus={list.routePreviewStatus.get(d.startTime) ?? "loading"}
               metric={metric}
               selectMode={selectMode}
               selected={selected.has(d.startTime)}

@@ -10,7 +10,7 @@ export type { DrivesFilteredStats }
 
 const PAGE_SIZE = 10
 const pages = new Map<string, { value: DrivePage; at: number }>()
-const previews = new Map<string, RouteOverview>()
+const previews = new Map<string, { points: RouteOverview["points"]; status: "ready" | "unavailable" }>()
 export interface DrivesFilters { tag?: string; minDistanceMi?: number }
 
 function readRange(params: URLSearchParams): DateRange {
@@ -39,7 +39,7 @@ export function useDrivesList() {
   if (filters.tag) query.set("tag", filters.tag)
   if (filters.minDistanceMi !== undefined) query.set("min_distance", String(filters.minDistanceMi))
   const key = query.toString()
-  const [loaded, setLoaded] = useState<{ key: string; value: DrivePage } | null>(() => pages.has(key) ? { key, value: pages.get(key)!.value } : null)
+  const [loaded, setLoaded] = useState<{ key: string; value: DrivePage; refresh: number } | null>(() => pages.has(key) ? { key, value: pages.get(key)!.value, refresh: 0 } : null)
   const [failure, setFailure] = useState<{ key: string; refresh: number; message: string } | null>(null)
   const [refreshTick, setRefreshTick] = useState(0)
   const [, setRouteVersion] = useState(0)
@@ -58,34 +58,53 @@ export function useDrivesList() {
       pages.set(key, { value: result, at: Date.now() })
       if (pages.size > 20) pages.delete(pages.keys().next().value!)
       for (const drive of result.drives) previews.delete(drive.startTime)
-      setLoaded({ key, value: result })
+      setLoaded({ key, value: result, refresh: refreshTick })
       setFailure(null)
     }).catch((reason) => { if (!controller.signal.aborted) setFailure({ key, refresh: refreshTick, message: reason instanceof Error ? reason.message : String(reason) }) })
     return () => controller.abort()
   }, [key, refreshTick])
 
   const visibleKey = drives.map((drive) => drive.startTime).join(",")
+  const previewRefresh = loaded?.key === key ? loaded.refresh : 0
   useEffect(() => {
-    if (!visibleKey) return
+    if (!visibleKey || previewRefresh !== refreshTick) return
     const missing = visibleKey.split(",").filter((start) => !previews.has(start))
     if (!missing.length) return
-    const controller = new AbortController()
-    fetchVisibleRoutePreviews(missing, controller.signal).then((routes) => {
-      if (controller.signal.aborted) return
-      for (const route of routes) previews.set(route.startTime, route)
-      while (previews.size > 200) previews.delete(previews.keys().next().value!)
-      setRouteVersion((version) => version + 1)
-    }).catch(() => { /* Preview failures do not prevent opening a drive. */ })
-    return () => controller.abort()
-  }, [visibleKey, value])
+    let cancelled = false
+    let activeRequest: AbortController | undefined
+    const loadPreviews = async () => {
+      // Render each row as soon as its preview arrives, in the displayed order.
+      for (const start of missing) {
+        if (cancelled) return
+        const request = new AbortController()
+        activeRequest = request
+        try {
+          const routes = await fetchVisibleRoutePreviews([start], request.signal)
+          if (cancelled) return
+          previews.set(start, { points: routes.find((route) => route.startTime === start)?.points ?? [], status: "ready" })
+        } catch {
+          if (cancelled) return
+          previews.set(start, { points: [], status: "unavailable" })
+        }
+        while (previews.size > 200) previews.delete(previews.keys().next().value!)
+        setRouteVersion((version) => version + 1)
+      }
+    }
+    void loadPreviews()
+    return () => { cancelled = true; activeRequest?.abort() }
+  }, [visibleKey, value, previewRefresh, refreshTick])
   const routesByStartTime = new Map([...previews].map(([start, route]) => [start, route.points]))
+  const routePreviewStatus = new Map([...previews].map(([start, route]) => [start, route.status]))
+  if (error) for (const drive of drives) {
+    if (!routePreviewStatus.has(drive.startTime)) routePreviewStatus.set(drive.startTime, "unavailable")
+  }
   const total = value?.total ?? 0
   const page = value?.page ?? requestedPage
   const pageCount = Math.max(1, Math.ceil(total/PAGE_SIZE))
   const update = (change: (next: URLSearchParams) => void) => {
     const next = new URLSearchParams(params); change(next); setParams(next, { replace: true })
   }
-  const refresh = async () => { pages.clear(); previews.clear(); invalidateDriveApiCache(); setRefreshTick((tick) => tick + 1) }
+  const refresh = async () => { pages.clear(); invalidateDriveApiCache(); setRefreshTick((tick) => tick + 1) }
   const patchDriveTags = (id: number, tags: string[]) => {
     const start = drives.find((drive) => drive.id === id)?.startTime
     if (!start) return
@@ -109,7 +128,7 @@ export function useDrivesList() {
   return {
     drives, visible: drives, total, page, pageCount, pageStart: total ? (page-1)*PAGE_SIZE+1 : 0,
     pageEnd: Math.min(total,page*PAGE_SIZE), range, filters, sortDir, loading, error,
-    filteredStats: value?.stats ?? computeFilteredStats([]), tags: value?.tags ?? [], routesByStartTime,
+    filteredStats: value?.stats ?? computeFilteredStats([]), tags: value?.tags ?? [], routesByStartTime, routePreviewStatus,
     setPage: (page: number) => update((next) => next.set("page", String(Math.max(1,Math.min(pageCount,page))))),
     setRange: (range: DateRange) => update((next) => {
       for (const name of ["page","start","end","range"]) next.delete(name)

@@ -10,6 +10,7 @@ import { TagPopover } from "./TagPopover"
 interface DriveRowProps {
   drive: DriveSummary
   routePoints: [number, number][]
+  routeStatus: "loading" | "ready" | "unavailable"
   metric: boolean
   selectMode: boolean
   selected: boolean
@@ -20,6 +21,7 @@ interface DriveRowProps {
 export function DriveRow({
   drive,
   routePoints,
+  routeStatus,
   metric,
   selectMode,
   selected,
@@ -152,7 +154,7 @@ export function DriveRow({
               onChange={(tags) => onTagsChange(drive.id, tags)}
             />
           </div>
-          <MiniRouteMap points={routePoints} source={drive.source} />
+          <MiniRouteMap status={routeStatus} points={routePoints} source={drive.source} />
         </div>
       </div>
     </div>

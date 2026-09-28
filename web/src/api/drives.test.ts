@@ -94,3 +94,42 @@ test("legacy all-history previews are reduced to requested stable keys",async()=
   assert.equal((await fetchVisibleRoutePreviews([rows[0].startTime])).length,1)
   assert.equal(requests,1)
 }))
+
+
+test("a failed legacy full-history preview is not downloaded once per row; refresh permits retry", async () => withFetch(async () => {
+  globalThis.fetch=async()=>json([drive(1),drive(2)])
+  await fetchDrivePage("limit=10")
+  let requests=0
+  globalThis.fetch=async()=> { requests++; return json({},503) }
+  await assert.rejects(fetchVisibleRoutePreviews([drive(1).startTime]),/HTTP 503/)
+  await assert.rejects(fetchVisibleRoutePreviews([drive(2).startTime]),/HTTP 503/)
+  assert.equal(requests,1)
+  invalidateDriveApiCache()
+  await assert.rejects(fetchVisibleRoutePreviews([drive(1).startTime]),/HTTP 503/)
+  assert.equal(requests,2)
+}))
+
+test("legacy preview cancellation propagates but does not poison the next page", async () => withFetch(async () => {
+  globalThis.fetch=async()=>json([drive(1)])
+  await fetchDrivePage("limit=10")
+  const originalTimeout=globalThis.setTimeout
+  const deadlines:number[]=[]
+  globalThis.setTimeout=((callback: () => void,delay?: number) => {
+    if (delay !== undefined) deadlines.push(delay)
+    return originalTimeout(callback,delay)
+  }) as typeof setTimeout
+  let requests=0
+  globalThis.fetch=async(_url,options)=> {
+    if (++requests > 1) return json([])
+    return new Promise<Response>((_,reject)=>options?.signal?.addEventListener("abort",()=>reject(new DOMException("Aborted","AbortError"))))
+  }
+  try {
+    const controller=new AbortController()
+    const pending=fetchVisibleRoutePreviews([drive(1).startTime],controller.signal)
+    controller.abort()
+    await assert.rejects(pending,/Aborted/)
+    assert.deepEqual(await fetchVisibleRoutePreviews([drive(1).startTime]),[])
+    assert.equal(requests,2)
+    assert.deepEqual(deadlines,[60_000,60_000])
+  } finally { globalThis.setTimeout=originalTimeout }
+}))

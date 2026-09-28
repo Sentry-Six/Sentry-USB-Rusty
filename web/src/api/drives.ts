@@ -6,6 +6,7 @@ let backend: Backend = "unknown"
 let additiveTags = false
 let legacySnapshot: { drives: DriveSummary[]; at: number; revision: string } | null = null
 let legacyPreviews: { routes: RouteOverview[]; at: number } | null = null
+let legacyPreviewFailure: { error: unknown; at: number } | null = null
 const CACHE_MS = 30_000
 
 class DriveApiError extends Error {
@@ -61,6 +62,7 @@ function rememberLegacy(drives: DriveSummary[]) {
 export function invalidateDriveApiCache() {
   legacySnapshot = null
   legacyPreviews = null
+  legacyPreviewFailure = null
 }
 
 export async function fetchDrives(signal?: AbortSignal): Promise<DriveSummary[]> {
@@ -165,12 +167,33 @@ export async function fetchRouteOverviews(maxPoints = 20): Promise<RouteOverview
 }
 export async function fetchVisibleRoutePreviews(starts: string[], signal?: AbortSignal): Promise<RouteOverview[]> {
   const requested = new Set(starts)
-  if (backend === "legacy" && legacyPreviews && Date.now() - legacyPreviews.at < CACHE_MS) return legacyPreviews.routes.filter((route) => requested.has(route.startTime))
+  const legacy = backend === "legacy"
+  if (signal?.aborted) throw new DOMException("Aborted", "AbortError")
+  if (legacy && legacyPreviews && Date.now() - legacyPreviews.at < CACHE_MS) return legacyPreviews.routes.filter((route) => requested.has(route.startTime))
+  if (legacy && legacyPreviewFailure && Date.now() - legacyPreviewFailure.at < CACHE_MS) throw legacyPreviewFailure.error
   const query = new URLSearchParams({ starts: starts.join(","), max_points: "20" })
-  const response = await fetch(`/api/drives/routes?${query}`, { signal })
-  const routes = routeOverviews(await responseJson(response, "Route previews"))
-  if (backend === "legacy" && !signal?.aborted) legacyPreviews = { routes, at: Date.now() }
-  return routes.filter((route) => requested.has(route.startTime))
+  const request = new AbortController()
+  // Older devices still return all routes, so allow their larger first response more time.
+  const timeout = setTimeout(() => request.abort(), legacy ? 60_000 : 30_000)
+  const cancel = () => { clearTimeout(timeout); request.abort() }
+  signal?.addEventListener("abort", cancel, { once: true })
+  try {
+    const response = await fetch(`/api/drives/routes?${query}`, { signal: request.signal })
+    const routes = routeOverviews(await responseJson(response, "Route previews"))
+    if (request.signal.aborted) throw new DOMException("Aborted", "AbortError")
+    if (legacy) {
+      legacyPreviews = { routes, at: Date.now() }
+      legacyPreviewFailure = null
+    }
+    return routes.filter((route) => requested.has(route.startTime))
+  } catch (error) {
+    // One failed full-history read must not be repeated for every queued row.
+    if (legacy && !signal?.aborted) legacyPreviewFailure = { error, at: Date.now() }
+    throw error
+  } finally {
+    clearTimeout(timeout)
+    signal?.removeEventListener("abort", cancel)
+  }
 }
 
 export async function setDriveTags(id: string | number, tags: string[], add = false): Promise<void> {
