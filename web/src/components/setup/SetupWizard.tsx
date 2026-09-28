@@ -158,11 +158,15 @@ function securityError(data: SetupFormData): string | null {
   return null
 }
 
-function getStepError(stepIdx: number, data: SetupFormData): string | null {
+function getStepError(stepIdx: number, data: SetupFormData, setupAlreadyFinished: boolean): string | null {
   // Indices shifted by +1 from the original because the Privacy step was
   // inserted at index 1 (between Welcome and Network).
   switch (stepIdx) {
-    // case 1 is the Privacy step — no validation (opt-in is independent of wizard apply)
+    case 1:
+      if (!setupAlreadyFinished && data._analytics_saving === "true") return "Saving your privacy choice…"
+      return !setupAlreadyFinished && data._analytics_choice !== "true" && data._analytics_choice !== "false"
+        ? "Choose Yes, count me or No thanks to continue."
+        : null
     case 2: return networkError(data)
     case 3: return storageError(data)
     // case 4 is the Community step — no validation needed (both can be unchecked)
@@ -357,6 +361,7 @@ export function SetupWizard({ initialData, initialStepId, onClose }: SetupWizard
 
   const handleChange = useCallback((key: string, value: string) => {
     setFormData((prev) => ({ ...prev, [key]: value }))
+    if (key === "_analytics_choice" && (value === "true" || value === "false")) setSaveError(null)
   }, [])
 
   const handleBatchChange = useCallback((updates: Record<string, string>) => {
@@ -563,7 +568,7 @@ export function SetupWizard({ initialData, initialStepId, onClose }: SetupWizard
   }, [phase])
 
   const StepComponent = steps[currentStep].component
-  const currentStepError = getStepError(currentStep, formData)
+  const currentStepError = getStepError(currentStep, formData, setupAlreadyFinished)
 
   // Core apply logic — sends the given data to the server and triggers setup.
   async function doApply(dataToSave: SetupFormData) {
@@ -709,10 +714,10 @@ export function SetupWizard({ initialData, initialStepId, onClose }: SetupWizard
     await new Promise<void>((r) => requestAnimationFrame(() => r()))
     const data = formDataRef.current
 
-    const firstInvalidIdx = steps.findIndex((_, i) => getStepError(i, data) !== null)
+    const firstInvalidIdx = steps.findIndex((_, i) => getStepError(i, data, setupAlreadyFinished) !== null)
     if (firstInvalidIdx !== -1) {
       setCurrentStep(firstInvalidIdx)
-      setSaveError(getStepError(firstInvalidIdx, data))
+      setSaveError(getStepError(firstInvalidIdx, data, setupAlreadyFinished))
       return
     }
 
@@ -752,7 +757,7 @@ export function SetupWizard({ initialData, initialStepId, onClose }: SetupWizard
   function selectStep(index: number) {
     if (index > currentStep) {
       for (let step = 0; step < index; step++) {
-        if (getStepError(step, formData) !== null) { setCurrentStep(step); return }
+        if (getStepError(step, formData, setupAlreadyFinished) !== null) { setCurrentStep(step); return }
       }
     }
     setCurrentStep(index)
@@ -938,7 +943,7 @@ export function SetupWizard({ initialData, initialStepId, onClose }: SetupWizard
                     "h-1 w-full rounded-full transition-all",
                     i === currentStep
                       ? "bg-blue-400"
-                      : i < currentStep && getStepError(i, formData) !== null
+                      : i < currentStep && getStepError(i, formData, setupAlreadyFinished) !== null
                         ? "bg-red-500/70"
                         : i < currentStep
                           ? "bg-blue-500"
@@ -959,7 +964,7 @@ export function SetupWizard({ initialData, initialStepId, onClose }: SetupWizard
         </div>
 
         {/* Step content */}
-        <div className="flex-1 overflow-y-auto px-6 py-5">
+        <div key={currentStep} className="flex-1 overflow-y-auto px-6 py-5">
           <StepComponent
             data={formData}
             onChange={handleChange}
@@ -1048,7 +1053,7 @@ export function SetupWizard({ initialData, initialStepId, onClose }: SetupWizard
               </button>
             ) : (
               <button
-                onClick={() => setCurrentStep((s) => s + 1)}
+                onClick={() => selectStep(currentStep + 1)}
                 disabled={!!currentStepError}
                 className="flex items-center gap-1.5 rounded-lg bg-blue-500/20 px-4 py-2 text-sm font-medium text-blue-400 transition-colors hover:bg-blue-500/30 disabled:opacity-40 disabled:cursor-not-allowed"
               >

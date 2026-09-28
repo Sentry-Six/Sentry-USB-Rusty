@@ -3,30 +3,44 @@ import { CheckIcon, CloseIcon, ProgressActivityIcon, VerifiedUserIcon } from "@/
 import type { StepProps } from "../SetupWizard"
 import { cn } from "@/lib/utils"
 
-/**
- * Privacy disclosure and analytics preference. The choice is saved
- * immediately so update checks honor it even if setup is not completed.
- */
-export function PrivacyStep(_props: StepProps) {
-  const [choice, setChoice] = useState<boolean | null>(null)
-  const [saving, setSaving] = useState(false)
+export function PrivacyStep({ data, onChange, setupAlreadyFinished }: StepProps) {
+  const [choice, setChoice] = useState<boolean | null>(() =>
+    data._analytics_choice === "true" ? true : data._analytics_choice === "false" ? false : null)
+  const [saving, setSaving] = useState<boolean | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [reload, setReload] = useState(0)
   const [error, setError] = useState<string | null>(null)
 
-  // Load existing value on mount so re-running setup shows the current state.
   useEffect(() => {
-    fetch("/api/config/preference?key=analytics_opt_in")
-      .then((r) => r.json())
-      .then((data) => {
-        if (typeof data?.value === "boolean") setChoice(data.value)
+    const controller = new AbortController()
+    let cancelled = false
+    const timeout = setTimeout(() => controller.abort(), 10_000)
+    fetch("/api/config/preference?key=analytics_opt_in", { signal: controller.signal })
+      .then(async (res) => {
+        if (!res.ok) throw new Error(`HTTP ${res.status}`)
+        const result = await res.json()
+        if (result?.value !== null && typeof result?.value !== "boolean") throw new Error("Invalid preference response")
+        if (controller.signal.aborted) return
+        setChoice(result.value)
+        onChange("_analytics_choice", result.value === null ? "" : String(result.value))
       })
       .catch(() => {
-        // Pref hasn't been set yet — leave as null so neither button is
-        // highlighted, forcing an explicit choice.
+        if (!cancelled) setError("Couldn't load your privacy choice. Try again or choose an option below.")
       })
-  }, [])
+      .finally(() => {
+        clearTimeout(timeout)
+        if (!cancelled) setLoading(false)
+      })
+    return () => {
+      cancelled = true
+      clearTimeout(timeout)
+      controller.abort()
+    }
+  }, [onChange, reload])
 
   async function persist(value: boolean) {
-    setSaving(true)
+    setSaving(value)
+    onChange("_analytics_saving", "true")
     setError(null)
     try {
       const res = await fetch("/api/config/preference", {
@@ -36,39 +50,81 @@ export function PrivacyStep(_props: StepProps) {
       })
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
       setChoice(value)
+      onChange("_analytics_choice", String(value))
     } catch (e) {
       setError(`Couldn't save preference: ${e instanceof Error ? e.message : String(e)}`)
     } finally {
-      setSaving(false)
+      setSaving(null)
+      onChange("_analytics_saving", "false")
     }
   }
 
   return (
-    <div className="flex flex-col items-center py-6">
-      <div className="mb-6 flex h-20 w-20 items-center justify-center rounded-2xl bg-emerald-500/15">
-        <VerifiedUserIcon className="h-10 w-10 text-emerald-400" />
+    <div className="flex flex-col items-center py-1">
+      <div className="flex items-center gap-3">
+        <VerifiedUserIcon className="h-6 w-6 text-emerald-400" />
+        <h2 className="text-xl font-bold text-slate-100">Privacy</h2>
       </div>
-
-      <h2 className="text-center text-2xl font-bold text-slate-100">
-        Privacy
-      </h2>
-      <p className="mt-3 max-w-xl text-center text-sm leading-relaxed text-slate-400">
-        Before going further, here's everything Sentry-USB sends from your
-        device and when — so you know what's leaving your network before it
-        does.
-      </p>
-
-      {/* Outbound data-flow disclosure. */}
-      <div className="mt-8 w-full max-w-2xl rounded-xl border border-white/10 bg-white/[0.02] p-5">
-        <p className="mb-3 text-xs font-semibold uppercase tracking-wider text-slate-400">
-          What we send, when, and why
+      <section aria-labelledby="analytics-choice-title" className="mt-5 w-full max-w-2xl rounded-xl border border-white/10 bg-white/[0.02] p-5">
+        <h3 id="analytics-choice-title" className="text-sm font-semibold text-slate-200">
+          Help us count installations?
+        </h3>
+        <p className="mt-2 text-xs leading-relaxed text-slate-400">
+          Share a stable, hashed ID derived from your board's serial number in daily update
+          checks. This lets us count unique devices and software versions without counting
+          reinstalls twice. You can change your choice in Settings → System.
         </p>
+
+        <div className="mt-4 flex flex-col gap-2 sm:flex-row" role="group" aria-label="Share installation analytics">
+          {[{ value: true, label: "Yes, count me", Icon: CheckIcon }, { value: false, label: "No thanks", Icon: CloseIcon }].map(({ value, label, Icon }) => (
+            <button
+              key={label}
+              type="button"
+              aria-pressed={choice === value}
+              disabled={loading || saving !== null}
+              onClick={() => persist(value)}
+              className={cn(
+                "flex flex-1 items-center justify-center gap-2 rounded-lg border px-4 py-3 text-sm font-medium transition-colors disabled:opacity-50",
+                choice === value
+                  ? "border-emerald-400/60 bg-emerald-500/15 text-emerald-200"
+                  : "border-white/10 bg-white/[0.02] text-slate-300 hover:border-white/20 hover:bg-white/[0.05]"
+              )}
+            >
+              {saving === value ? <ProgressActivityIcon className="h-4 w-4 animate-spin" /> : <Icon className="h-4 w-4" />}
+              {label}
+            </button>
+          ))}
+        </div>
+
+        <p className="mt-3 text-xs text-slate-400" role="status">
+          {loading ? "Loading your privacy choice…"
+            : saving !== null ? "Saving your choice…"
+              : choice !== null ? `Saved: ${choice ? "opted in" : "opted out"}.`
+                : setupAlreadyFinished ? "Optional. No choice means the device ID is not shared."
+                  : "Choose either option to continue. Both give you the same features."}
+        </p>
+        {error && (
+          <div className="mt-3 text-xs text-rose-400" role="alert">
+            <p>{error}</p>
+            <button type="button" disabled={loading || saving !== null} onClick={() => {
+              setLoading(true)
+              setError(null)
+              setReload(value => value + 1)
+            }} className="mt-2 underline disabled:opacity-50">Reload saved choice</button>
+          </div>
+        )}
+      </section>
+
+      <details className="mt-4 w-full max-w-2xl rounded-xl border border-white/10 bg-white/[0.02] p-5">
+        <summary className="cursor-pointer text-sm font-medium text-slate-300">
+          Data we send, when, and why
+        </summary>
         <div className="divide-y divide-white/5">
           <FlowRow
             when="Daily update check"
             what="Software version, CPU architecture, board model"
             why="Detect vulnerable builds, ship compatible binaries"
-            note="No device identifier unless you opt in below; the source IP is briefly used for rate limiting."
+            note="No device identifier unless you opt in above; the source IP is briefly used for rate limiting."
           />
           <FlowRow
             when="Once per install"
@@ -101,98 +157,26 @@ export function PrivacyStep(_props: StepProps) {
             note="Not tied to your hardware. Cleared when you unpair."
           />
         </div>
-        <p className="mt-4 text-[11px] leading-relaxed text-slate-500">
-          Full policy:{" "}
+      </details>
+      <p className="mt-4 max-w-2xl text-xs text-slate-400">
           <a
             href="https://sentry-six.com/privacy"
             target="_blank"
             rel="noopener noreferrer"
             className="text-slate-400 underline hover:text-slate-300"
           >
-            sentry-six.com/privacy
+            Privacy policy
           </a>
-          . Source code:{" "}
+          {" · "}
           <a
             href="https://github.com/Sentry-Six/Sentry-USB-Rusty"
             target="_blank"
             rel="noopener noreferrer"
             className="text-slate-400 underline hover:text-slate-300"
           >
-            github.com/Sentry-Six/Sentry-USB-Rusty
+            Source code
           </a>
-          .
-        </p>
-      </div>
-
-      {/* Opt-in — explicit affirmative action, no pre-tick */}
-      <div className="mt-6 w-full max-w-2xl rounded-xl border border-white/10 bg-white/[0.02] p-5">
-        <p className="text-sm font-semibold text-slate-200">
-          Help us count new installs?
-        </p>
-        <p className="mt-2 text-xs leading-relaxed text-slate-400">
-          If you opt in, daily update checks will include a one-way hashed
-          device ID (derived from your board's serial number) so we can tell
-          how many unique devices are running each version, without double-
-          counting reinstalls. You can change this any time in Settings →
-          System.
-        </p>
-
-        <div className="mt-4 flex flex-col gap-2 sm:flex-row">
-          <button
-            type="button"
-            disabled={saving}
-            onClick={() => persist(true)}
-            className={cn(
-              "flex flex-1 items-center justify-center gap-2 rounded-lg border px-4 py-3 text-sm font-medium transition-colors disabled:opacity-50",
-              choice === true
-                ? "border-emerald-400/60 bg-emerald-500/15 text-emerald-200"
-                : "border-white/10 bg-white/[0.02] text-slate-300 hover:border-white/20 hover:bg-white/[0.05]"
-            )}
-          >
-            {saving && choice !== true ? (
-              <ProgressActivityIcon className="h-4 w-4 animate-spin" />
-            ) : (
-              <CheckIcon className="h-4 w-4" />
-            )}
-            Yes, count me
-          </button>
-          <button
-            type="button"
-            disabled={saving}
-            onClick={() => persist(false)}
-            className={cn(
-              "flex flex-1 items-center justify-center gap-2 rounded-lg border px-4 py-3 text-sm font-medium transition-colors disabled:opacity-50",
-              choice === false
-                ? "border-slate-400/60 bg-slate-500/15 text-slate-200"
-                : "border-white/10 bg-white/[0.02] text-slate-300 hover:border-white/20 hover:bg-white/[0.05]"
-            )}
-          >
-            {saving && choice !== false ? (
-              <ProgressActivityIcon className="h-4 w-4 animate-spin" />
-            ) : (
-              <CloseIcon className="h-4 w-4" />
-            )}
-            No thanks
-          </button>
-        </div>
-
-        {choice === null && !error && (
-          <p className="mt-3 text-[11px] text-slate-500">
-            You can leave this unanswered and continue — no choice means no
-            tracking. Default is opted out.
-          </p>
-        )}
-        {choice !== null && !error && (
-          <p className="mt-3 text-[11px] text-emerald-300/70">
-            Saved. You can change this any time in Settings → System.
-          </p>
-        )}
-        {error && (
-          <p className="mt-3 text-[11px] text-rose-400">
-            {error}
-          </p>
-        )}
-      </div>
+      </p>
     </div>
   )
 }
