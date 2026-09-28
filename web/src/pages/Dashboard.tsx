@@ -1,18 +1,14 @@
-import { useEffect, useRef, useState } from "react"
+import { useEffect, useId, useRef, useState } from "react"
 import { Link } from "react-router-dom"
 import {
   AirIcon,
   BoltIcon,
   CardiologyIcon,
   ChevronRightIcon,
-  ConversionPathIcon,
   DeviceThermostatIcon,
   DownloadIcon,
   HardDriveIcon,
-  InfoIcon,
   LanIcon,
-  LocationOnIcon,
-  MovieIcon,
   PhotoCameraIcon,
   ScheduleIcon,
   TimerIcon,
@@ -21,6 +17,7 @@ import {
   WifiIcon,
   WifiOffIcon,
 } from "@/components/icons"
+import { DROPDOWN_OPTION, DROPDOWN_SURFACE, DROPDOWN_TRIGGER } from "@/components/ui/dropdownStyles"
 import { api } from "@/lib/api"
 import { CancelArchiveButton } from "@/components/dashboard/CancelArchiveButton"
 import { useKeepAwake } from "@/hooks/useKeepAwake"
@@ -59,16 +56,19 @@ function getTempColor(milliC: number): string {
   return "#f87171"
 }
 
-function getStorageHalo(usedPct: number): Halo {
-  if (usedPct > 90) return "red"
-  if (usedPct > 75) return "amber"
+function getStorageHalo(health: PiStatus["storage_health"]): Halo {
+  if (health?.state === "fail") return "red"
+  if (health?.state === "warn") return "amber"
   return "accent"
 }
 
-function formatThroughput(bps: number): string {
+function formatThroughput(bps: number, state?: string): string {
+  if (state === "sampling") return "Sampling…"
+  if (state === "unavailable" || state === "disconnected") return "Unavailable"
+  if (state === "stale") return "Waiting for sample"
   if (bps >= 1_000_000) return `${(bps / 1_000_000).toFixed(1)} Mbps`
   if (bps >= 1_000) return `${Math.round(bps / 1_000)} Kbps`
-  return bps > 0 ? "< 1 Kbps" : "—"
+  return bps > 0 ? "< 1 Kbps" : "0 Mbps"
 }
 
 function getWifiStrengthBars(strength: string): number {
@@ -101,35 +101,26 @@ function WifiBars({ bars }: { bars: number }) {
 interface ProcessProgress {
   current: number
   total: number
+  etaSeconds?: number | null
+  etaState?: string
+  sampledAt?: number
 }
-interface ProgressSample {
-  time: number
-  current: number
-}
-const RATE_WINDOW = 6
 
-function computeETA(
-  current: number,
-  total: number,
-  history: ProgressSample[]
-): string | null {
-  if (history.length < 2) return null
-  const oldest = history[0]
-  const newest = history[history.length - 1]
-  const elapsed = (newest.time - oldest.time) / 1000
-  const done = newest.current - oldest.current
-  if (done <= 0 || elapsed < 5) return null
-  const rate = done / elapsed
-  const remaining = (total - current) / rate
-  if (!isFinite(remaining) || remaining <= 0) return null
-  if (remaining < 60) return `~${Math.round(remaining)}s`
-  if (remaining < 3600) return `~${Math.round(remaining / 60)}m`
-  return `~${(remaining / 3600).toFixed(1)}h`
+function progressEstimate(progress: ProcessProgress): string {
+  if (progress.sampledAt && Date.now() / 1000 - progress.sampledAt > 45) return "Waiting for update"
+  if (progress.etaState === "stalled") return "Waiting for progress"
+  if (progress.etaState === "finalizing" || progress.etaState === "complete") return "Finishing this phase…"
+  const seconds = progress.etaSeconds
+  if (seconds == null || !Number.isFinite(seconds)) return "Estimating…"
+  if (seconds < 60) return "Less than a minute remaining"
+  if (seconds < 3600) return `About ${Math.round(seconds / 60)} min remaining`
+  return `About ${(seconds / 3600).toFixed(1)} h remaining`
 }
 
 export default function Dashboard() {
   const [status, setStatus] = useState<PiStatus | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [lastUpdated, setLastUpdated] = useState<number | null>(null)
   const [uptime, setUptime] = useState(0)
   const [driveStats, setDriveStats] = useState<DriveStats | null>(null)
   const [storageBreakdown, setStorageBreakdown] =
@@ -155,19 +146,9 @@ export default function Dashboard() {
   const [bleHealthConfigured, setBleHealthConfigured] = useState(false)
   // Live charge status for the CarStatusCard battery chip.
   const [currentCharge, setCurrentCharge] = useState<CurrentCharge | null>(null)
-  // ISO end-time of the latest drive on record — used to derive the
-  // "Parked Xh Ym" duration. One-shot fetch on mount + a refresh
-  // when a drive-process WebSocket completion comes in.
-  const [latestDriveEnd, setLatestDriveEnd] = useState<string | null>(null)
-  // Active lock-chime sound name (e.g. "Star Wars Theme") when the
-  // feature is configured. null means "no active chime", which hides
-  // the indicator entirely. Fetched once on mount + refreshed every
-  // 5 minutes (the active chime rarely changes — manual user action
-  // on the LockChime page is the only source).
+  const latestDriveEnd = driveStats?.latest_drive_end ?? null
   const [activeChimeName, setActiveChimeName] = useState<string | null>(null)
 
-  const archiveHistoryRef = useRef<ProgressSample[]>([])
-  const processHistoryRef = useRef<ProgressSample[]>([])
   const updateInfo = useUpdateAvailable()
   const wifiFirmware = useWifiFirmware()
   const [wifiFwOpen, setWifiFwOpen] = useState(false)
@@ -176,65 +157,81 @@ export default function Dashboard() {
 
   useEffect(() => {
     let mounted = true
+    const controller = new AbortController()
+    const pending = new Set<string>()
+    let processEventVersion = 0
+    async function withDeadline<T>(read: (signal: AbortSignal) => Promise<T>): Promise<T> {
+      const request = new AbortController()
+      const abort = () => request.abort()
+      controller.signal.addEventListener("abort", abort, { once: true })
+      const timeout = setTimeout(abort, 15_000)
+      try { return await read(request.signal) }
+      finally {
+        clearTimeout(timeout)
+        controller.signal.removeEventListener("abort", abort)
+      }
+    }
+    const pollFetch = (url: string) => withDeadline(signal => fetch(url, { signal }))
 
     async function fetchStatus() {
+      if (pending.has("status")) return
+      pending.add("status")
       try {
-        const data = await api.getStatus()
+        const data = await withDeadline(api.getStatus)
         if (!mounted) return
         setStatus(data)
+        setLastUpdated(Date.now())
         setUptime(parseFloat(data.uptime))
         setError(null)
       } catch {
         if (mounted) setError("Unable to connect to Sentry USB")
-      }
+      } finally { pending.delete("status") }
     }
 
     async function fetchDriveStats() {
+      if (pending.has("stats")) return
+      pending.add("stats")
+      const eventVersion = processEventVersion
       try {
-        const [stats, driveStatus] = await Promise.all([
-          api.getDriveStats(),
-          api.getDriveStatus(),
+        const [stats, progress] = await Promise.allSettled([
+          withDeadline(api.getDriveStats), withDeadline(api.getDriveStatus),
         ])
         if (!mounted) return
-        setDriveStats(stats)
+        if (stats.status === "fulfilled") setDriveStats(stats.value)
+        if (progress.status !== "fulfilled") return
+        const driveStatus = progress.value
         setArchiveCycle(driveStatus.archive_cycle ?? null)
-        setProcessing(driveStatus.running)
-        if (!driveStatus.running) {
-          setProcessProgress(null)
-        } else if (driveStatus.process_total != null && driveStatus.process_total > 0) {
-          setProcessProgress({
-            current: driveStatus.process_current ?? 0,
-            total: driveStatus.process_total,
-          })
+        if (eventVersion === processEventVersion) {
+          setProcessing(driveStatus.running)
+          setProcessProgress(driveStatus.running && (driveStatus.process_total ?? 0) > 0 ? {
+            current: driveStatus.process_current ?? 0, total: driveStatus.process_total!,
+            etaSeconds: driveStatus.process_eta_seconds, etaState: driveStatus.process_eta_state,
+            sampledAt: driveStatus.process_sampled_at,
+          } : null)
         }
-
-        if (driveStatus.phase === "archiving" && driveStatus.total != null) {
-          setArchiveProgress({
-            current: driveStatus.current ?? 0,
-            total: driveStatus.total,
-          })
-        } else {
-          setArchiveProgress(null)
-        }
-      } catch {
-        /* non-critical */
-      }
+        setArchiveProgress(driveStatus.phase === "archiving" && driveStatus.total != null ? {
+          current: driveStatus.current ?? 0, total: driveStatus.total,
+          etaSeconds: driveStatus.eta_seconds, etaState: driveStatus.eta_state, sampledAt: driveStatus.sampled_at,
+        } : null)
+      } finally { pending.delete("stats") }
     }
 
     async function fetchStorageBreakdown() {
+      if (pending.has("storage")) return
+      pending.add("storage")
       try {
-        const data = await api.getStorageBreakdown()
+        const data = await withDeadline(api.getStorageBreakdown)
         if (mounted) setStorageBreakdown(data)
       } catch {
         /* non-critical */
-      }
+      } finally { pending.delete("storage") }
     }
 
     fetchStatus()
     fetchDriveStats()
     fetchStorageBreakdown()
 
-    fetch("/api/system/rtc-status")
+    pollFetch("/api/system/rtc-status")
       .then((r) => r.json())
       .then((rtc) => {
         if (mounted && rtc.is_pi5 && !rtc.rtc_healthy && rtc.battery_warning) {
@@ -247,7 +244,7 @@ export default function Dashboard() {
     // pulls in recharts) when the response has samples. Empty
     // response = the user hasn't paired BLE telemetry; we just hide
     // the card to keep the dashboard clean.
-    fetch("/api/telemetry/tire-history?days=30")
+    pollFetch("/api/telemetry/tire-history?days=30")
       .then((r) => (r.ok ? r.json() : { points: [], days: 30 }))
       .then((d: TireHistoryResponse) => { if (mounted) setTireHistory(d) })
       .catch(() => { if (mounted) setTireHistory({ points: [], days: 30 }) })
@@ -256,10 +253,12 @@ export default function Dashboard() {
     // tire-health summary. Hide-on-error since this is purely an
     // overview tile; the user can still pair BLE from Settings.
     async function fetchCarStatusSample() {
+      if (pending.has("car")) return
+      pending.add("car")
       try {
         const [sampleRes, healthRes] = await Promise.all([
-          fetch("/api/system/ble-latest-sample"),
-          fetch("/api/system/ble-connected"),
+          pollFetch("/api/system/ble-latest-sample"),
+          pollFetch("/api/system/ble-connected"),
         ])
         if (!mounted) return
         if (healthRes.ok) {
@@ -285,45 +284,14 @@ export default function Dashboard() {
           setBleHealth(null)
           setCarStatusSample(null)
         }
-      }
+      } finally { pending.delete("car") }
     }
 
-    // Most recent drive's end-time → used by CarStatusCard to render
-    // "Parked Xh Ym". /api/drives returns the cached list in
-    // insertion order (NOT newest-first), so we have to find the
-    // entry with the latest endTime ourselves — `drives[0]` would
-    // give the oldest drive and produce a "Parked 600d 9h"-style
-    // bogus duration.
-    async function fetchLatestDrive() {
-      try {
-        const res = await fetch("/api/drives")
-        if (!res.ok) return
-        const drives = (await res.json()) as Array<{ endTime?: string }>
-        if (!mounted) return
-        if (!Array.isArray(drives) || drives.length === 0) return
-        let latest: string | null = null
-        let latestMs = -Infinity
-        for (const d of drives) {
-          if (!d.endTime) continue
-          const ms = new Date(d.endTime).getTime()
-          if (Number.isFinite(ms) && ms > latestMs) {
-            latestMs = ms
-            latest = d.endTime
-          }
-        }
-        if (latest) setLatestDriveEnd(latest)
-      } catch {
-        /* non-critical */
-      }
-    }
-
-    // Active lock-chime probe. Endpoint is /api/lockchime/list — it
-    // returns the full sound directory, but we only need
-    // active_name/active_set. The list is small (filename + size per
-    // sound) so the extra payload is negligible.
     async function fetchActiveChime() {
+      if (pending.has("chime")) return
+      pending.add("chime")
       try {
-        const res = await fetch("/api/lockchime/list")
+        const res = await pollFetch("/api/lockchime/list")
         if (!res.ok) return
         const d = (await res.json()) as {
           active_set?: boolean
@@ -333,20 +301,21 @@ export default function Dashboard() {
         setActiveChimeName(d.active_set && d.active_name ? d.active_name : null)
       } catch {
         /* non-critical */
-      }
+      } finally { pending.delete("chime") }
     }
 
     async function fetchChargeStatus() {
+      if (pending.has("charge")) return
+      pending.add("charge")
       try {
-        const c = await fetchCurrentCharge()
+        const c = await withDeadline(fetchCurrentCharge)
         if (mounted) setCurrentCharge(c)
       } catch {
-        if (mounted) setCurrentCharge(null)
-      }
+        // Keep the last observed car state through short reconnects.
+      } finally { pending.delete("charge") }
     }
 
     fetchCarStatusSample()
-    fetchLatestDrive()
     fetchActiveChime()
     fetchChargeStatus()
     // Pause every poller while the tab is hidden (phone in a pocket, a
@@ -398,17 +367,18 @@ export default function Dashboard() {
 
     const unsubscribe = wsClient.subscribe("drive_process", (data) => {
       if (!mounted) return
-      const msg = data as { status: string; current?: number; total?: number }
+      processEventVersion++
+      const msg = data as { status: string; current?: number; processed?: number; total?: number; eta_seconds?: number | null; eta_state?: string; sampled_at?: number }
       if (msg.status === "started") {
         setProcessing(true)
         setProcessProgress(null)
       } else if (
         msg.status === "progress" &&
-        msg.current !== undefined &&
+        (msg.current !== undefined || msg.processed !== undefined) &&
         msg.total !== undefined
       ) {
         setProcessing(true)
-        setProcessProgress({ current: msg.current, total: msg.total })
+        setProcessProgress({ current: msg.current ?? msg.processed ?? 0, total: msg.total, etaSeconds: msg.eta_seconds, etaState: msg.eta_state, sampledAt: msg.sampled_at })
       } else if (msg.status === "complete" || msg.status === "error" || msg.status === "cancelled") {
         setProcessing(false)
         setProcessProgress(null)
@@ -418,6 +388,7 @@ export default function Dashboard() {
 
     return () => {
       mounted = false
+      controller.abort()
       clearInterval(statusInterval)
       clearInterval(statsInterval)
       clearInterval(storageInterval)
@@ -430,27 +401,7 @@ export default function Dashboard() {
     }
   }, [])
 
-  useEffect(() => {
-    if (archiveProgress && archiveProgress.current > 0) {
-      const h = archiveHistoryRef.current
-      h.push({ time: Date.now(), current: archiveProgress.current })
-      if (h.length > RATE_WINDOW) h.shift()
-    } else {
-      archiveHistoryRef.current = []
-    }
-  }, [archiveProgress])
-
-  useEffect(() => {
-    if (processProgress && processProgress.current > 0) {
-      const h = processHistoryRef.current
-      h.push({ time: Date.now(), current: processProgress.current })
-      if (h.length > RATE_WINDOW) h.shift()
-    } else {
-      processHistoryRef.current = []
-    }
-  }, [processProgress])
-
-  if (error) {
+  if (error && !status) {
     return (
       <div className="flex flex-col items-center justify-center py-20">
         <VitalSignsIcon className="mb-4 h-12 w-12 text-slate-600" />
@@ -580,6 +531,11 @@ export default function Dashboard() {
         <p className="mt-0.5 text-sm text-slate-500">System overview and status</p>
       </div>
 
+      {error && (
+        <div role="status" className="rounded-xl border border-amber-500/20 bg-amber-500/10 px-4 py-3 text-sm text-amber-200">
+          Reconnecting · showing the last update{lastUpdated ? ` from ${new Date(lastUpdated).toLocaleTimeString()}` : ""}
+        </div>
+      )}
       <BannerStack banners={banners} />
 
       {wifiFwOpen && wifiFirmware.status && (
@@ -592,39 +548,16 @@ export default function Dashboard() {
 
       <CloudStatusBar />
 
-      <div className="tile-grid">
-        <SystemTile
-          status={status}
-          uptime={uptime}
-          useFahrenheit={systemUseFahrenheit}
-          keepAwakeIdle={keepAwakeMode == null}
-        />
+      <ActivityTile driveStats={driveStats} archiveCycle={archiveCycle} archiveProgress={archiveProgress}
+        processProgress={processProgress} processing={processing} metric={metric} status={status} />
+
+      <div className="dashboard-status-grid grid items-stretch gap-3 md:grid-cols-2 xl:grid-cols-3">
+        <SystemTile status={status} uptime={uptime} useFahrenheit={systemUseFahrenheit} keepAwakeIdle={keepAwakeMode === ""} />
         <NetworkTile status={status} />
-        <StorageTile
-          status={status}
-          breakdown={storageBreakdown}
-        />
-        <ActivityTile
-          driveStats={driveStats}
-          archiveCycle={archiveCycle}
-          archiveProgress={archiveProgress}
-          processProgress={processProgress}
-          processing={processing}
-          metric={metric}
-          // eslint-disable-next-line react-hooks/refs -- ETA history is intentionally a ref (push-only, no re-render needed) and the original Dashboard read .current the same way.
-          archiveEta={archiveProgress ? computeETA(archiveProgress.current, archiveProgress.total, archiveHistoryRef.current) : null}
-          // eslint-disable-next-line react-hooks/refs -- same as above
-          processEta={processProgress ? computeETA(processProgress.current, processProgress.total, processHistoryRef.current) : null}
-        />
+        <StorageTile status={status} breakdown={storageBreakdown} />
         {isAwayActive && <AwayModeTile />}
       </div>
 
-      {/* Car status overview — last-known battery / cabin temps / tire
-          health as chips, with the tire-pressure history chart behind an
-          expand toggle (recharts stays unloaded until expanded). Spans the
-          full content width so its flex-1 chips line up under the status
-          tiles above; the page-level max-width keeps it from over-stretching
-          on ultrawide. */}
       {(carStatusSample?.ts != null ||
         currentCharge?.soc != null ||
         (bleHealthConfigured && bleHealth != null)) && (
@@ -699,7 +632,7 @@ function SystemTile({
                 : "connected"
           const pill = {
             disconnected: { value: "Disconnected", valueColor: "#fbbf24" },
-            "no-link": { value: "No host link", valueColor: "#f87171" },
+            "no-link": { value: "Waiting for car", valueColor: "#94a3b8" },
             connected: { value: "Connected", valueColor: "oklch(0.82 0.18 150)" },
           } as const
           return pill[drivesState]
@@ -708,7 +641,7 @@ function SystemTile({
       {keepAwakeIdle && (
         <Row
           icon={<CardiologyIcon className="h-3.5 w-3.5" />}
-          label="Keep Awake"
+          label="Web app keep-awake"
           value={
             <Link
               to="/settings?tab=Device"
@@ -725,92 +658,31 @@ function SystemTile({
 
 function NetworkTile({ status }: { status: PiStatus }) {
   const haveWifi = !!status.wifi_ssid
-  const haveEth = !!status.ether_speed && status.ether_speed !== "Unknown!"
-  const halo: Halo = haveWifi || haveEth ? "accent" : "red"
-
+  const haveEth = !!status.ether_ip || (!!status.ether_speed && status.ether_speed !== "Unknown!")
+  const rates = (kind: "wifi" | "ether") => (
+    <div className="flex flex-wrap gap-x-4 gap-y-1 py-1 text-xs tabular-nums">
+      <span className="text-emerald-400">↓ {formatThroughput(status[`${kind}_rx_bps`] ?? 0, status[`${kind}_rate_state`])}</span>
+      <span className="text-sky-400">↑ {formatThroughput(status[`${kind}_tx_bps`] ?? 0, status[`${kind}_rate_state`])}</span>
+    </div>
+  )
   return (
-    <StatusTile
-      icon={haveWifi || haveEth ? <WifiIcon className="h-4 w-4" /> : <WifiOffIcon className="h-4 w-4" />}
-      halo={halo}
-      title="Network"
-    >
-      {haveWifi ? (
-        <>
-          <div className="tile-row">
-            <span className="inline-flex text-slate-500">
-              <WifiIcon className="h-3.5 w-3.5" />
-            </span>
-            <span className="text-xs font-medium text-slate-200">
-              {status.wifi_ssid}
-            </span>
-            <span className="ml-auto inline-flex items-center gap-1.5 text-[10px] text-slate-500">
-              {status.wifi_signal_dbm != null && (
-                <span className="text-slate-400">{status.wifi_signal_dbm} dBm</span>
-              )}
-              <WifiBars bars={getWifiStrengthBars(status.wifi_strength)} />
-            </span>
-          </div>
-          <div className="tile-row pl-5" style={{ minHeight: 18 }}>
-            <span className="text-[10px] text-slate-500">{status.wifi_ip || "No IP"}</span>
-            {(status.wifi_rx_bps !== undefined || status.wifi_tx_bps !== undefined) && (
-              <>
-                <span className="ml-auto text-[10px] text-emerald-400">
-                  ↓ {formatThroughput(status.wifi_rx_bps ?? 0)}
-                </span>
-                <span className="text-[10px] text-slate-500">·</span>
-                <span className="text-[10px] text-sky-400">
-                  ↑ {formatThroughput(status.wifi_tx_bps ?? 0)}
-                </span>
-              </>
-            )}
-          </div>
-        </>
-      ) : (
-        <Row
-          icon={<WifiOffIcon className="h-3.5 w-3.5" />}
-          label="WiFi"
-          sub="Not connected"
-        />
-      )}
-
-      {haveEth ? (
-        <>
-          <div className="tile-row">
-            <span className="inline-flex text-slate-500">
-              <LanIcon className="h-3.5 w-3.5" />
-            </span>
-            <span className="text-xs font-medium text-slate-200">
-              {status.ether_speed}
-            </span>
-            {status.ether_ip && (
-              <span className="ml-auto text-[10px] text-slate-500">
-                {status.ether_ip}
-              </span>
-            )}
-          </div>
-          {(status.ether_rx_bps !== undefined || status.ether_tx_bps !== undefined) && (
-            <div className="tile-row pl-5" style={{ minHeight: 18 }}>
-              <span className="text-[10px] text-emerald-400">
-                ↓ {formatThroughput(status.ether_rx_bps ?? 0)}
-              </span>
-              <span className="text-[10px] text-slate-500">·</span>
-              <span className="text-[10px] text-sky-400">
-                ↑ {formatThroughput(status.ether_tx_bps ?? 0)}
-              </span>
-            </div>
-          )}
-        </>
-      ) : (
-        // Always render an Ethernet row — keeps tile balanced when WiFi is
-        // present but ethernet isn't (or vice versa). Muted styling signals
-        // disconnected state without taking the tile's halo over.
-        <div className="tile-row">
-          <span className="inline-flex text-slate-600">
-            <LanIcon className="h-3.5 w-3.5" />
-          </span>
-          <span className="text-xs text-slate-600">Ethernet</span>
-          <span className="ml-auto text-[10px] text-slate-600">Not connected</span>
-        </div>
+    <StatusTile icon={haveWifi || haveEth ? <WifiIcon className="h-4 w-4" /> : <WifiOffIcon className="h-4 w-4" />} halo={haveWifi || haveEth ? "accent" : "amber"} title="Network">
+      <Row icon={<WifiIcon className="h-3.5 w-3.5" />} label={status.wifi_ssid || "Wi-Fi"} sub={haveWifi ? <WifiBars bars={getWifiStrengthBars(status.wifi_strength)} /> : "Not connected"} />
+      {haveWifi && rates("wifi")}
+      <Row icon={<LanIcon className="h-3.5 w-3.5" />} label="Ethernet" sub={haveEth ? "Connected" : "Not connected"} />
+      {haveEth && rates("ether")}
+      {(haveWifi || haveEth) && (
+        <details className="text-xs text-slate-400">
+          <summary className="cursor-pointer py-2">Connection details</summary>
+          {haveWifi && <>
+            <Row label="Wi-Fi address" value={status.wifi_ip || "Unavailable"} />
+            {status.wifi_signal_dbm != null && <Row label="Signal" value={`${status.wifi_signal_dbm} dBm`} />}
+          </>}
+          {haveEth && <>
+            <Row label="Ethernet address" value={status.ether_ip || "Unavailable"} />
+            <Row label="Link speed" value={status.ether_speed || "Unavailable"} />
+          </>}
+        </details>
       )}
     </StatusTile>
   )
@@ -843,7 +715,7 @@ function StorageTile({
   return (
     <StatusTile
       icon={<HardDriveIcon className="h-4 w-4" />}
-      halo={getStorageHalo(usedPct)}
+      halo={getStorageHalo(status.storage_health)}
       title="Storage"
     >
       <div className="flex items-baseline gap-1.5">
@@ -853,28 +725,11 @@ function StorageTile({
         <span className="text-[11px] text-slate-500">
           / {formatBytes(totalSpace)} · {usedPctStr} used
         </span>
-        {/* Reassurance tooltip — high storage usage triggers panic
-            for new users ("96% used!"), but Sentry USB rotates
-            snapshots automatically as space gets tight. CSS-only
-            group-hover so we don't need React state for it.
-            Anchored right-0 so the 256px tooltip extends LEFT into
-            the card body rather than overflowing off the right
-            edge on narrow grid columns. */}
-        <span className="group relative inline-flex items-center self-center">
-          <InfoIcon
-            aria-label="About storage management"
-            className="h-3 w-3 cursor-help text-slate-600 transition-colors hover:text-slate-400"
-          />
-          <span className="pointer-events-none absolute right-0 top-full z-50 mt-2 w-64 rounded-xl border border-white/10 bg-slate-900 p-3 text-[11px] leading-relaxed text-slate-400 opacity-0 shadow-xl transition-opacity group-hover:pointer-events-auto group-hover:opacity-100">
-            <span className="absolute bottom-full right-3 block border-4 border-transparent border-b-slate-900" />
-            Sentry USB automatically manages your storage. Old
-            snapshots are deleted when space is needed — you don't
-            need to manually free up space. Low remaining space is
-            normal and expected, especially with dashcam footage
-            being continuously saved.
-          </span>
-        </span>
       </div>
+      <details className="text-xs text-slate-400">
+        <summary className="cursor-pointer py-1">{status.storage_health?.message ?? "Storage managed automatically"}</summary>
+        <p className="mt-1">Older snapshots are released when recording needs space. High usage is expected.</p>
+      </details>
       {breakdown && segments.length > 0 ? (
         <>
           <div className="seg-bar">
@@ -939,146 +794,46 @@ function StorageTile({
   )
 }
 
-function ActivityTile({
-  driveStats,
-  archiveCycle,
-  archiveProgress,
-  processProgress,
-  processing,
-  metric,
-  archiveEta,
-  processEta,
-}: {
+function ActivityTile({ driveStats, archiveCycle, archiveProgress, processProgress, processing, metric, status }: {
   driveStats: DriveStats | null
   archiveCycle: ArchiveCycle | null
   archiveProgress: ProcessProgress | null
   processProgress: ProcessProgress | null
   processing: boolean
   metric: boolean
-  archiveEta: string | null
-  processEta: string | null
+  status: PiStatus
 }) {
-  // Keep-Awake is rendered as a sub-section inside the Activity card
-  // (used to be its own tile next door, but the dead space below
-  // Activity made the grid look unbalanced). The hook is only
-  // consumed here now.
-  //
-  // Mirror the old standalone card's behaviour: the inline UI only
-  // exposes start/stop affordances, not the Off/Manual/Auto picker
-  // (that lives in Settings → Device), so showing it when the user
-  // has chosen Off would be a useless dead section. `mode` from the
-  // hook is `null` while the preference is still loading and `""`
-  // when the user explicitly picked Off — collapse the section in
-  // both cases by gating on the active modes only. When mode flips
-  // to manual/auto in Settings, this re-renders and the section
-  // appears on its own.
   const keepAwake = useKeepAwake()
-  const keepAwakeVisible =
-    keepAwake.mode === "manual" || keepAwake.mode === "auto"
-
-  const phase = archiveProgress
-    ? ("archiving" as const)
-    : processing
-    ? ("processing" as const)
-    : null
-
+  const active = Boolean(archiveProgress || processing || archiveCycle)
+  const progress = archiveProgress ?? processProgress
+  const title = archiveProgress ? "Archiving footage" : processing ? "Processing clips" : archiveCycle ? "Archive in progress" : "Your library"
+  const rateState = [status.wifi_rate_state, status.ether_rate_state].includes("live") ? "live" : status.wifi_ssid ? status.wifi_rate_state : status.ether_rate_state
+  const upload = formatThroughput((status.wifi_tx_bps ?? 0) + (status.ether_tx_bps ?? 0), rateState)
   return (
-    <div className="relative flex flex-col">
-      {/* Phase notification — pinned to the card's top-right corner
-          as an absolutely-positioned pill so it doesn't crowd the
-          ⚡ ACTIVITY title or the inline FSD link. Only renders
-          during an actual archive/process run. */}
-      {phase && (
-        <div className="pointer-events-none absolute right-2 top-2 z-10">
-          <Pill kind={phase === "archiving" ? "accent" : "sky"}>
-            <LiveDot /> {phase}
-          </Pill>
+    <section aria-label="Archive and library" className="glass-card p-4 sm:p-5">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <h2 className="flex items-center gap-2 text-base font-semibold text-slate-100"><BoltIcon className="h-5 w-5 text-emerald-400" />{title}</h2>
+        {active && <Pill kind="accent"><LiveDot />{archiveProgress ? "Transfer" : processing ? "Processing" : "Working"}</Pill>}
+      </div>
+      {active && (
+        <div className="mt-4 space-y-3">
+          {progress && progress.total > 0 ? <ProgressBlock current={progress.current} total={progress.total} eta={progressEstimate(progress)} color={archiveProgress ? "emerald" : "blue"} /> : <p className="text-sm text-slate-400">Preparing the next phase…</p>}
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <span className="text-xs text-slate-400">{archiveProgress ? `Upload ${upload} · estimate for transfer` : "Estimates apply to the current phase"}</span>
+            <div className="min-w-40"><CancelArchiveButton key={archiveCycle?.id ?? "idle"} cycle={archiveCycle} /></div>
+          </div>
         </div>
       )}
-      <StatusTile
-        icon={<BoltIcon className="h-4 w-4" />}
-        halo="violet"
-        title="Activity"
-        className="flex-1"
-      >
       {driveStats ? (
-        driveStats.processed_count === 0 && driveStats.drives_count === 0 ? (
-          <p className="t-xs">
-            No drives processed yet. Plug a Sentry USB to ingest dashcam footage.
-          </p>
-        ) : (
-          <>
-            <Row
-              icon={<MovieIcon className="h-3.5 w-3.5" />}
-              label="Clips"
-              value={driveStats.processed_count.toLocaleString()}
-            />
-            <Row
-              icon={<LocationOnIcon className="h-3.5 w-3.5" />}
-              label="Drives"
-              value={driveStats.drives_count.toLocaleString()}
-            />
-            <Row
-              icon={<ConversionPathIcon className="h-3.5 w-3.5" />}
-              label="Distance"
-              value={`${
-                metric
-                  ? driveStats.total_distance_km.toFixed(0)
-                  : driveStats.total_distance_mi.toFixed(0)
-              } ${metric ? "km" : "mi"}`}
-            />
-            {driveStats.fsd_engaged_ms > 0 && (
-              <Row
-                icon={<BoltIcon className="h-3.5 w-3.5" />}
-                label="FSD"
-                value={
-                  <Link to="/fsd" className="text-emerald-400 hover:text-emerald-300">
-                    {driveStats.fsd_percent}%
-                  </Link>
-                }
-              />
-            )}
-
-            {archiveProgress && archiveProgress.total > 0 ? (
-              <ProgressBlock
-                current={archiveProgress.current}
-                total={archiveProgress.total}
-                eta={archiveEta}
-                color="emerald"
-              />
-            ) : processProgress && processProgress.total > 0 ? (
-              <ProgressBlock
-                current={processProgress.current}
-                total={processProgress.total}
-                eta={processEta}
-                color="blue"
-              />
-            ) : processing ? (
-              <div className="bar">
-                <div
-                  className="w-2/5 animate-pulse bg-gradient-to-r from-blue-500 to-blue-400"
-                />
-              </div>
-            ) : null}
-          </>
-        )
-      ) : (
-        <>
-          <div className="h-3 w-1/2 animate-pulse rounded bg-slate-800" />
-          <div className="h-1.5 w-full animate-pulse rounded-full bg-slate-800" />
-        </>
-      )}
-
-      <CancelArchiveButton key={archiveCycle?.id ?? "idle"} cycle={archiveCycle} />
-
-      {keepAwakeVisible && (
-        <>
-          <TileDivider />
-          <KeepAwakeInline keepAwake={keepAwake} />
-        </>
-      )}
-      </StatusTile>
-    </div>
+        <dl className="mt-4 grid grid-cols-2 gap-4 border-t border-white/10 pt-4 sm:grid-cols-4">
+          <div><dt className="text-xs text-slate-400">Clips</dt><dd className="mt-1 font-semibold text-slate-100">{driveStats.processed_count.toLocaleString()}</dd></div>
+          <div><dt className="text-xs text-slate-400">Drives</dt><dd className="mt-1 font-semibold text-slate-100"><Link to="/drives" className="hover:text-emerald-300">{driveStats.drives_count.toLocaleString()}</Link></dd></div>
+          <div><dt className="text-xs text-slate-400">Distance</dt><dd className="mt-1 font-semibold text-slate-100">{(metric ? driveStats.total_distance_km : driveStats.total_distance_mi).toFixed(0)} {metric ? "km" : "mi"}</dd></div>
+          <div><dt className="text-xs text-slate-400">FSD</dt><dd className="mt-1 font-semibold"><Link to="/fsd" className="text-emerald-400">{driveStats.fsd_percent}%</Link></dd></div>
+        </dl>
+      ) : <p className="mt-4 text-sm text-slate-400">Loading library totals…</p>}
+      {(keepAwake.mode === "manual" || keepAwake.mode === "auto") && <div className="mt-4 border-t border-white/10 pt-3"><KeepAwakeInline keepAwake={keepAwake} /></div>}
+    </section>
   )
 }
 
@@ -1093,14 +848,14 @@ function ProgressBlock({
   eta: string | null
   color: "emerald" | "blue"
 }) {
-  const pct = (current / total) * 100
+  const pct = Math.max(0, Math.min(100, (current / total) * 100))
   const grad =
     color === "emerald"
       ? "bg-gradient-to-r from-emerald-500 to-emerald-400"
       : "bg-gradient-to-r from-blue-500 to-blue-400"
   return (
     <>
-      <div className="flex items-center justify-between text-[10px] text-slate-500 t-num">
+      <div className="flex flex-wrap items-center justify-between gap-2 text-sm text-slate-300 t-num">
         <span>
           {current.toLocaleString()} / {total.toLocaleString()}
           {eta && (
@@ -1115,7 +870,7 @@ function ProgressBlock({
         </span>
         <span>{Math.round(pct)}%</span>
       </div>
-      <div className="bar">
+      <div className="bar" role="progressbar" aria-label="Current phase progress" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(pct)}>
         <div className={grad} style={{ width: `${pct}%` }} />
       </div>
     </>
@@ -1129,21 +884,32 @@ const KEEP_AWAKE_DURATIONS = [
   { label: "2h", value: 120 },
 ]
 
-/**
- * Keep-Awake sub-section rendered inline inside the Activity tile
- * (below the clips/drives/distance stats row and a tile divider).
- * Same visual + behavioural state machine as the old standalone
- * KeepAwakeTile: animated icon when active/pending, value reflects
- * remaining time or mode state, action button is Start (with
- * duration dropdown) when manual + idle, Stop when active/pending,
- * nothing otherwise.
- *
- * Caller (ActivityTile) gates rendering on `mode != null` so this
- * component can assume the feature is configured.
- */
 function KeepAwakeInline({ keepAwake }: { keepAwake: ReturnType<typeof useKeepAwake> }) {
-  const { status, mode, start, stop } = keepAwake
+  const { status, mode, start, stop, pending, error } = keepAwake
   const [showDurations, setShowDurations] = useState(false)
+  const durationId = useId()
+  const durationRoot = useRef<HTMLDivElement>(null)
+  const durationTrigger = useRef<HTMLButtonElement>(null)
+  const durationMenu = useRef<HTMLDivElement>(null)
+  const focusLast = useRef(false)
+  const focusAfterStart = useRef(false)
+  const actionRoot = useRef<HTMLSpanElement>(null)
+  useEffect(() => {
+    if (!showDurations) return
+    const buttons = durationMenu.current?.querySelectorAll<HTMLButtonElement>('button')
+    ;(focusLast.current ? buttons?.[buttons.length - 1] : buttons?.[0])?.focus()
+    function outside(event: PointerEvent) {
+      if (!durationRoot.current?.contains(event.target as Node)) setShowDurations(false)
+    }
+    document.addEventListener("pointerdown", outside)
+    return () => document.removeEventListener("pointerdown", outside)
+  }, [showDurations])
+  useEffect(() => {
+    if (focusAfterStart.current && !pending) {
+      actionRoot.current?.querySelector<HTMLButtonElement>("button")?.focus()
+      focusAfterStart.current = false
+    }
+  }, [pending, status.state])
 
   const isActive = status.state === "active"
   const isPending = status.state === "pending"
@@ -1173,23 +939,46 @@ function KeepAwakeInline({ keepAwake }: { keepAwake: ReturnType<typeof useKeepAw
 
   const actionBtn =
     mode === "manual" && isIdle ? (
-      <div className="relative">
-        <button
-          onClick={() => setShowDurations(!showDurations)}
-          className="rounded-lg bg-blue-500/20 px-2.5 py-1 text-[11px] font-medium text-blue-400 transition-colors hover:bg-blue-500/30"
+      <div ref={durationRoot} className="relative" onBlur={event => {
+        if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setShowDurations(false)
+      }}>
+        <button ref={durationTrigger} aria-label="Start web app keep-awake" aria-haspopup="menu" aria-expanded={showDurations}
+          aria-controls={showDurations ? durationId : undefined}
+          onKeyDown={event => {
+            if (event.key === "ArrowDown" || event.key === "ArrowUp") { event.preventDefault(); focusLast.current = event.key === "ArrowUp"; setShowDurations(true) }
+          }}
+          onClick={() => { focusLast.current = false; setShowDurations(!showDurations) }}
+          disabled={pending}
+          className={DROPDOWN_TRIGGER}
         >
           Start
         </button>
         {showDurations && (
-          <div className="absolute right-0 top-full z-10 mt-1 w-28 rounded-lg border border-white/10 bg-slate-900 p-1 shadow-xl">
+          <div ref={durationMenu} id={durationId} role="menu" aria-label="Keep-awake duration"
+            className={`${DROPDOWN_SURFACE} absolute right-0 top-full z-50 mt-2 min-w-40 p-1.5`}
+            onKeyDown={event => {
+              const buttons = [...(durationMenu.current?.querySelectorAll<HTMLButtonElement>("button") ?? [])]
+              const index = buttons.indexOf(document.activeElement as HTMLButtonElement)
+              if (["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) {
+                event.preventDefault()
+                const next = event.key === "Home" ? 0 : event.key === "End" ? buttons.length - 1 : (index + (event.key === "ArrowDown" ? 1 : -1) + buttons.length) % buttons.length
+                buttons[next]?.focus()
+              } else if (event.key === "Escape" || event.key === "Tab") {
+                if (event.key === "Escape") { event.preventDefault(); event.stopPropagation() }
+                setShowDurations(false); durationTrigger.current?.focus()
+              }
+            }}>
             {KEEP_AWAKE_DURATIONS.map((opt) => (
               <button
                 key={opt.value}
+                role="menuitem" tabIndex={-1}
+                disabled={pending}
                 onClick={() => {
-                  start(opt.value)
+                  focusAfterStart.current = true
+                  void start(opt.value)
                   setShowDurations(false)
                 }}
-                className="w-full rounded-md px-3 py-1.5 text-left text-xs text-slate-300 hover:bg-white/5"
+                className={`${DROPDOWN_OPTION} w-full`}
               >
                 {opt.label}
               </button>
@@ -1200,6 +989,7 @@ function KeepAwakeInline({ keepAwake }: { keepAwake: ReturnType<typeof useKeepAw
     ) : isActive || isPending ? (
       <button
         onClick={stop}
+        disabled={pending}
         className="rounded-lg bg-red-500/15 px-2.5 py-1 text-[11px] font-medium text-red-400 transition-colors hover:bg-red-500/25"
       >
         Stop
@@ -1219,21 +1009,24 @@ function KeepAwakeInline({ keepAwake }: { keepAwake: ReturnType<typeof useKeepAw
           )}
         </span>
         <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">
-          Keep Awake
+          Web app keep-awake
         </span>
-        {actionBtn && <span className="ml-auto">{actionBtn}</span>}
+        {actionBtn && <span ref={actionRoot} className="ml-auto">{actionBtn}</span>}
       </div>
       <div className="mt-1 flex items-baseline gap-2">
         <span className="text-base font-semibold text-slate-100">{value}</span>
       </div>
-      <p className="t-xs">{sub}</p>
+      <p className="t-xs">{pending ? "Saving…" : sub}</p>
+      {error && <p role="alert" className="mt-1 text-xs text-red-300">{error}</p>}
     </div>
   )
 }
 
 function AwayModeTile() {
   const { status } = useAwayMode()
-  const remaining = status.remaining_sec ?? 0
+  const automatic = status.mode === "auto"
+  const hasDeadline = !automatic && !!status.expires_at && status.remaining_sec !== undefined
+  const remaining = Math.max(0, status.remaining_sec ?? 0)
   const h = Math.floor(remaining / 3600)
   const m = Math.floor((remaining % 3600) / 60)
 
@@ -1259,13 +1052,14 @@ function AwayModeTile() {
     >
       <div className="flex items-baseline gap-1.5">
         <span className="text-lg font-semibold text-slate-100">
-          {h}h {m}m
+          {automatic ? "Automatic" : hasDeadline ? `${h}h ${m}m` : "Active"}
         </span>
-        <span className="t-xs">remaining</span>
+        {hasDeadline && <span className="t-xs">remaining</span>}
       </div>
-      <div className="bar">
-        <div className="bg-sky-400" style={{ width: `${pct}%` }} />
-      </div>
+      {hasDeadline && <div className="bar" role="progressbar" aria-label="Away mode duration" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(Math.max(0, Math.min(100, pct)))}>
+        <div className="bg-sky-400" style={{ width: `${Math.max(0, Math.min(100, pct))}%` }} />
+      </div>}
+      {automatic && <p className="t-xs">Active while away</p>}
       {status.ap_ssid && (
         <p className="t-xs">
           AP <span className="t-mono text-slate-300">{status.ap_ssid}</span>

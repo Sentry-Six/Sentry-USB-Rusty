@@ -154,6 +154,7 @@ fn random_hex(byte_len: usize) -> String {
 async fn auto_enable_mobile_push_in_config() {
     // Best-effort; write only active configuration values.
     tokio::task::spawn_blocking(|| {
+        let _guard = crate::notification_providers::PROVIDER_CONFIG_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let config_path = sentryusb_config::find_config_path();
         let (mut active, _) = match sentryusb_config::parse_file(config_path) {
             Ok(v) => v,

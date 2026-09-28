@@ -145,21 +145,61 @@ fn cached_json_response(body: String) -> axum::response::Response {
     ([(header::CONTENT_TYPE, "application/json")], body).into_response()
 }
 
-/// Lists cached drive summaries without decoding route BLOBs.
-pub async fn list_drives(State(state): State<AppState>) -> axum::response::Response {
+#[derive(Deserialize, Default)]
+pub struct DriveListQuery {
+    limit: Option<usize>, page: Option<usize>, from: Option<String>, to: Option<String>,
+    tag: Option<String>, min_distance: Option<f64>, sort: Option<String>,
+}
+
+fn drive_list_page(json: &str, query: &DriveListQuery) -> anyhow::Result<serde_json::Value> {
+    use std::hash::{Hash, Hasher};
+    let mut fingerprint = std::collections::hash_map::DefaultHasher::new();
+    json.hash(&mut fingerprint);
+    let revision = format!("{:016x}",fingerprint.finish());
+    let all: Vec<sentryusb_drives::types::DriveSummary> = serde_json::from_str(json)?;
+    let tags: std::collections::BTreeSet<_> = all.iter().flat_map(|drive| drive.tags.iter().cloned()).collect();
+    let mut matching: Vec<_> = all.into_iter().filter(|drive| {
+        query.from.as_ref().is_none_or(|from| &drive.start_time >= from)
+            && query.to.as_ref().is_none_or(|to| &drive.start_time < to)
+            && query.tag.as_ref().is_none_or(|tag| drive.tags.contains(tag))
+            && query.min_distance.is_none_or(|min| drive.distance_mi >= min)
+    }).collect();
+    matching.sort_by(|a,b| if query.sort.as_deref() == Some("asc") { a.start_time.cmp(&b.start_time) } else { b.start_time.cmp(&a.start_time) });
+    let mut mi=0.0; let mut km=0.0; let mut duration=0i64; let mut fsd_ms=0i64;
+    let mut fsd_mi=0.0; let mut fsd_km=0.0; let mut events=0i32; let mut ap_ms=0i64;
+    let mut sei_km=0.0; let mut ap_km=0.0; let mut imported=0usize;
+    for drive in &matching {
+        mi+=drive.distance_mi; km+=drive.distance_km; duration+=drive.duration_ms;
+        if drive.source.as_deref().is_some_and(|source| source != "sei") { imported+=1; continue }
+        if drive.summon { continue }
+        sei_km+=drive.distance_km; fsd_ms+=drive.fsd_engaged_ms; fsd_mi+=drive.fsd_distance_mi;
+        fsd_km+=drive.fsd_distance_km; events+=drive.fsd_disengagements;
+        ap_ms+=drive.autosteer_engaged_ms+drive.tacc_engaged_ms;
+        ap_km+=drive.autosteer_distance_km+drive.tacc_distance_km;
+    }
+    let total=matching.len(); let limit=query.limit.unwrap_or(10).clamp(1,100);
+    let page=query.page.unwrap_or(1).max(1).min(total.div_ceil(limit).max(1));
+    let drives: Vec<_> = matching.into_iter().skip((page-1)*limit).take(limit).collect();
+    Ok(serde_json::json!({ "drives":drives, "tags":tags, "total":total, "page":page, "limit":limit, "revision":revision, "capabilities": { "additiveTags": true },
+        "stats": { "count":total, "totalDistanceMi":mi, "totalDistanceKm":km, "totalDurationMs":duration,
+            "fsdEngagedMs":fsd_ms, "fsdDistanceMi":fsd_mi, "fsdDistanceKm":fsd_km,
+            "fsdPercent":if sei_km>0.0 { fsd_km/sei_km*100.0 } else {0.0},
+            "fsdDisengagements":events, "autopilotEngagedMs":ap_ms,
+            "autopilotPercent":if sei_km>0.0 { ap_km/sei_km*100.0 } else {0.0}, "tessieCount":imported }
+    }))
+}
+
+/// Legacy callers can still read the complete list; the history UI uses bounded pages.
+pub async fn list_drives(State(state): State<AppState>, Query(query): Query<DriveListQuery>) -> axum::response::Response {
     use axum::response::IntoResponse;
-    // A cache miss groups every route, so keep it off async workers.
     let store = state.drives.store.clone();
-    match tokio::task::spawn_blocking(move || store.get_cached_drives_json()).await {
+    match tokio::task::spawn_blocking(move || -> anyhow::Result<String> {
+        let json=store.get_cached_drives_json()?;
+        if query.limit.is_some() { Ok(serde_json::to_string(&drive_list_page(&json,&query)?)?) } else { Ok(json) }
+    }).await {
         Ok(Ok(json)) => cached_json_response(json),
-        Ok(Err(e)) => {
-            crate::json_error(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()).into_response()
-        }
-        Err(e) => crate::json_error(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            &format!("drive list task failed: {}", e),
-        )
-        .into_response(),
+        Ok(Err(error)) => crate::json_error(StatusCode::INTERNAL_SERVER_ERROR, &error.to_string()).into_response(),
+        Err(_) => crate::json_error(StatusCode::INTERNAL_SERVER_ERROR, "drive list task failed").into_response(),
     }
 }
 
@@ -265,7 +305,17 @@ fn single_drive_blocking(
             }
             (
                 StatusCode::OK,
-                Json(serde_json::to_value(drive).unwrap_or_default()),
+                Json({
+                    let mut value = serde_json::to_value(drive).unwrap_or_default();
+                    if let (Some(summary), Some(object)) = (summary.as_ref(), value.as_object_mut()) {
+                        if let Some(fields) = serde_json::to_value(summary).ok().and_then(|v| v.as_object().cloned()) {
+                            for (key, field) in fields {
+                                if !matches!(key.as_str(), "startPoint" | "endPoint") { object.insert(key, field); }
+                            }
+                        }
+                    }
+                    value
+                }),
             )
         }
         Ok((rows_fetched, None)) => crate::json_error(
@@ -291,7 +341,14 @@ pub async fn all_routes(
     let max_points = q.max_points.unwrap_or(500).clamp(2, 2000);
     // Cached; a miss runs the grouper over all routes, so keep it off the reactor.
     let store = state.drives.store.clone();
-    match tokio::task::spawn_blocking(move || store.get_cached_route_overviews_json(max_points)).await {
+    let starts = q.starts.map(|value| value.split(',').filter(|s| !s.is_empty()).map(str::to_owned).collect::<Vec<_>>());
+    if starts.as_ref().is_some_and(|items| items.len() > 20 || items.iter().any(|key| key.len() > 40)) {
+        return crate::json_error(StatusCode::BAD_REQUEST, "at most 20 valid start times are allowed").into_response();
+    }
+    match tokio::task::spawn_blocking(move || match starts {
+        Some(starts) => store.get_route_previews_json(&starts, max_points.min(100)),
+        None => store.get_cached_route_overviews_json(max_points),
+    }).await {
         Ok(Ok(json)) => cached_json_response(json),
         Ok(Err(e)) => {
             crate::json_error(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()).into_response()
@@ -306,6 +363,7 @@ pub async fn all_routes(
 
 #[derive(Deserialize, Default)]
 pub struct AllRoutesQuery {
+    pub starts: Option<String>,
     #[serde(default)]
     pub max_points: Option<usize>,
 }
@@ -333,6 +391,11 @@ pub async fn processing_status(
 
     let mut resp = serde_json::json!({
         "running":   status.running,
+        "process_eta_seconds": status.eta_seconds,
+        "process_eta_state": status.eta_state,
+        "process_job_id": status.job_id,
+        "process_started_at": status.started_at,
+        "process_sampled_at": status.sampled_at,
         "importing": importing,
         "archiving": is_archiving(),
         "archive_work_running": sentryusb_drives::archive_control::ArchiveWorkGuard::is_running(),
@@ -1036,7 +1099,7 @@ pub async fn set_drive_tags(
 ) -> (StatusCode, Json<serde_json::Value>) {
     // ID resolution groups all summaries, so keep it off the reactor.
     let store = state.drives.store.clone();
-    let response=tokio::task::spawn_blocking(move || set_drive_tags_blocking(store, id, body.tags))
+    let response=tokio::task::spawn_blocking(move || set_drive_tags_blocking(store, id, body.tags, body.add))
         .await
         .unwrap_or_else(|_| {
             crate::json_error(StatusCode::INTERNAL_SERVER_ERROR, "set tags task failed")
@@ -1049,6 +1112,7 @@ fn set_drive_tags_blocking(
     store: std::sync::Arc<sentryusb_drives::DriveStore>,
     id: String,
     tags: Vec<String>,
+    add: bool,
 ) -> (StatusCode, Json<serde_json::Value>) {
     let key = match store
         .with_route_summaries(|summaries| grouper::find_drive_start_time(summaries, &id))
@@ -1063,7 +1127,7 @@ fn set_drive_tags_blocking(
         Err(e) => return crate::json_error(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()),
     };
 
-    match store.set_drive_tags(&key, &tags) {
+    match if add { store.add_drive_tags(&key, &tags) } else { store.set_drive_tags(&key, &tags) } {
         Ok(()) => crate::json_ok(),
         Err(e) => crate::json_error(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()),
     }
@@ -1072,6 +1136,8 @@ fn set_drive_tags_blocking(
 #[derive(Deserialize)]
 pub struct SetTagsRequest {
     pub tags: Vec<String>,
+    #[serde(default)]
+    pub add: bool,
 }
 
 /// Returns interior/exterior temperatures within a drive's clip window.
@@ -1323,5 +1389,32 @@ pub async fn tire_history(
             "tire-history query failed",
         )
         .into_response(),
+    }
+}
+
+#[cfg(test)]
+mod history_tests {
+    use super::*;
+
+    #[test]
+    fn paged_list_keeps_full_filter_totals_and_inclusive_ui_boundaries() {
+        let store=DriveStore::open_memory().unwrap();
+        let points=vec![[37.0,-122.0],[37.01,-122.01]];
+        for day in ["2026-09-26","2026-09-27"] {
+            for hour in ["09","12"] {
+                store.add_route(&format!("{day}_{hour}-00-00-front.mp4"),day,&points,&[4,4],&[0,0],&[15.0,16.0],&[0.0,0.0],0,2,&[],&[]).unwrap();
+            }
+        }
+        let json=store.get_cached_drives_json().unwrap();
+        let query=DriveListQuery { limit:Some(1),page:Some(1),from:Some("2026-09-27T00:00:00".into()),to:Some("2026-09-28T00:00:00".into()),..Default::default() };
+        let first=drive_list_page(&json,&query).unwrap();
+        assert_eq!(first["total"],2);
+        assert_eq!(first["stats"]["count"],2);
+        assert_eq!(first["drives"].as_array().unwrap().len(),1);
+        assert!(first["drives"][0]["startTime"].as_str().unwrap().contains("T12:"));
+        let second=drive_list_page(&json,&DriveListQuery { page:Some(2),..query }).unwrap();
+        assert_eq!(first["stats"],second["stats"]);
+        assert_eq!(first["revision"],second["revision"]);
+        assert!(second["drives"][0]["startTime"].as_str().unwrap().contains("T09:"));
     }
 }

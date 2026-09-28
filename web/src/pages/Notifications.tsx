@@ -1,4 +1,5 @@
-import { useState, useEffect, useCallback } from "react"
+import { SelectMenu } from "@/components/ui/SelectMenu"
+import { useState, useEffect, useCallback, useRef, lazy, Suspense } from "react"
 import {
   ArchiveIcon,
   BatteryAndroidFrameFullIcon,
@@ -12,7 +13,6 @@ import {
   DownloadIcon,
   FilterAltIcon,
   HardDriveIcon,
-  InfoIcon,
   MusicNoteIcon,
   NotificationsIcon,
   NotificationsOffIcon,
@@ -21,8 +21,11 @@ import {
   ScheduleIcon,
   SettingsIcon,
 } from "@/components/icons"
+import { MobileNotificationsSection } from "@/components/settings/sections/MobileNotificationsSection"
 import { cn } from "@/lib/utils"
 import { NotificationHistoryItem, type NotificationEvent } from "@/components/notifications/NotificationHistoryItem"
+
+const ProviderConfigSection = lazy(() => import("@/components/notifications/ProviderConfigSection").then(module => ({ default: module.ProviderConfigSection })))
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -48,7 +51,7 @@ interface HistoryResponse {
   offset: number
 }
 
-type Tab = "history" | "settings"
+type Tab = "history" | "events" | "delivery"
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -123,69 +126,86 @@ function relativeTime(ts: number): string {
 // ─── Main component ───────────────────────────────────────────────────────────
 
 export default function Notifications() {
-  const [activeTab, setActiveTab] = useState<Tab>("history")
+  const [activeTab, setActiveTab] = useState<Tab>(() => {
+    const tab = new URLSearchParams(window.location.search).get("tab")
+    return tab === "delivery" ? "delivery" : tab === "events" || tab === "settings" ? "events" : "history"
+  })
+  function selectTab(tab: Tab) {
+    setActiveTab(tab)
+    const url = new URL(window.location.href)
+    url.searchParams.set("tab", tab)
+    window.history.replaceState(window.history.state, "", url)
+  }
   const [events, setEvents] = useState<NotificationEvent[]>([])
   const [total, setTotal] = useState(0)
   const [loading, setLoading] = useState(true)
   const [historyError, setHistoryError] = useState("")
   const [settings, setSettings] = useState<NotificationSettings | null>(null)
   const [savingSettings, setSavingSettings] = useState(false)
+  const [settingsError, setSettingsError] = useState("")
+  const [settingsLoading, setSettingsLoading] = useState(false)
+  const settingsSaving = useRef(false)
+  const historyRequest = useRef<AbortController | null>(null)
+  const settingsRequest = useRef<AbortController | null>(null)
   const [typeFilter, setTypeFilter] = useState<string>("")
   const [confirmClear, setConfirmClear] = useState(false)
   const [offset, setOffset] = useState(0)
   const PAGE_SIZE = 50
 
-  // Load notification history
-  const loadHistory = useCallback(async (currentOffset = 0, filter = typeFilter) => {
+  const loadHistory = useCallback(async (currentOffset = 0, filter = "") => {
+    historyRequest.current?.abort()
+    const controller = new AbortController()
+    historyRequest.current = controller
     setLoading(true)
     setHistoryError("")
     try {
       const params = new URLSearchParams({ limit: String(PAGE_SIZE), offset: String(currentOffset) })
       if (filter) params.set("type", filter)
-      const res = await fetch(`/api/notifications/history?${params}`)
+      const res = await fetch(`/api/notifications/history?${params}`, { signal: controller.signal })
       if (!res.ok) throw new Error("Failed to load history")
       const data: HistoryResponse = await res.json()
+      if (controller.signal.aborted) return
       setEvents(data.events || [])
       setTotal(data.total)
     } catch {
-      setHistoryError("Could not load notification history. Retry, or check the device logs. Clear All will permanently reset history.")
+      if (!controller.signal.aborted) setHistoryError("Could not load notification history. Retry, or check the device logs. Clear All will permanently reset history.")
     } finally {
-      setLoading(false)
-    }
-  }, [typeFilter])
-
-  // Load notification settings
-  const loadSettings = useCallback(async () => {
-    try {
-      const res = await fetch("/api/notifications/settings")
-      if (!res.ok) throw new Error("Failed to load settings")
-      const data: NotificationSettings = await res.json()
-      setSettings(data)
-    } catch {
-      setSettings({
-        archive_start: true,
-        archive_complete: true,
-        archive_error: true,
-        temperature: true,
-        keep_awake_failure: true,
-        update: true,
-        drives: true,
-        rtc_battery: true,
-        music_sync: true,
-        keep_accessory: true,
-        storage_repair: true,
-      })
+      if (!controller.signal.aborted) setLoading(false)
     }
   }, [])
 
+  const loadSettings = useCallback(async () => {
+    if (settingsSaving.current) return
+    setSettingsLoading(true)
+    settingsRequest.current?.abort()
+    const controller = new AbortController()
+    settingsRequest.current = controller
+    setSettingsError("")
+    try {
+      const res = await fetch("/api/notifications/settings", { signal: controller.signal })
+      if (!res.ok) throw new Error("Failed to load settings")
+      const data: NotificationSettings = await res.json()
+      if (!NOTIFICATION_TYPES.every(({ key }) => typeof data[key] === "boolean")) throw new Error("Invalid event settings")
+      if (!controller.signal.aborted) setSettings(data)
+    } catch {
+      if (!controller.signal.aborted) setSettingsError("Could not load event settings. Retry before making changes.")
+    } finally { if (!controller.signal.aborted) setSettingsLoading(false) }
+  }, [])
+
   useEffect(() => {
-    loadHistory(0)
-    loadSettings()
-  }, [loadHistory, loadSettings])
+    if (activeTab === "history") void loadHistory(offset, typeFilter)
+    return () => { historyRequest.current?.abort() }
+  }, [activeTab, offset, typeFilter, loadHistory])
+  useEffect(() => {
+    if (activeTab === "events") void loadSettings()
+    return () => { settingsRequest.current?.abort() }
+  }, [activeTab, loadSettings])
 
   // Save settings
   async function handleToggle(key: keyof NotificationSettings) {
-    if (!settings) return
+    if (!settings || settingsSaving.current || settingsLoading || settingsError) return
+    settingsSaving.current = true
+    settingsRequest.current?.abort()
     const updated = { ...settings, [key]: !settings[key] }
     setSettings(updated)
     setSavingSettings(true)
@@ -196,12 +216,14 @@ export default function Notifications() {
         body: JSON.stringify(updated),
       })
       if (!res.ok) {
-        // Rollback
         setSettings(settings)
+        setSettingsError("Could not save event settings. Retry to reload the saved values.")
       }
     } catch {
       setSettings(settings)
+      setSettingsError("Could not save event settings. Retry to reload the saved values.")
     } finally {
+      settingsSaving.current = false
       setSavingSettings(false)
     }
   }
@@ -216,6 +238,8 @@ export default function Notifications() {
     try {
       const response = await fetch("/api/notifications/history", { method: "DELETE" })
       if (!response.ok) throw new Error("Clear failed")
+      historyRequest.current?.abort()
+      setLoading(false)
       setEvents([])
       setTotal(0)
       setOffset(0)
@@ -232,7 +256,7 @@ export default function Notifications() {
       const response = await fetch(`/api/notifications/history/${id}`, { method: "DELETE" })
       if (!response.ok) throw new Error("Dismiss failed")
       setEvents(prev => prev.filter(e => e.id !== id))
-      setTotal(prev => prev - 1)
+      setTotal(prev => Math.max(0, prev - 1))
     } catch {
       setHistoryError("Could not dismiss this notification. Retry or check the device logs.")
     }
@@ -242,19 +266,18 @@ export default function Notifications() {
   function handleFilterChange(filter: string) {
     setTypeFilter(filter)
     setOffset(0)
-    loadHistory(0, filter)
   }
 
   // Pagination
   function handlePage(direction: "next" | "prev") {
     const newOffset = direction === "next" ? offset + PAGE_SIZE : Math.max(0, offset - PAGE_SIZE)
     setOffset(newOffset)
-    loadHistory(newOffset)
   }
 
   const TABS = [
     { id: "history" as const, label: "History", icon: ScheduleIcon },
-    { id: "settings" as const, label: "Settings", icon: SettingsIcon },
+    { id: "events" as const, label: "Events", icon: SettingsIcon },
+    { id: "delivery" as const, label: "Delivery", icon: NotificationsIcon },
   ]
 
   return (
@@ -263,7 +286,7 @@ export default function Notifications() {
       <div>
         <h1 className="text-2xl font-bold text-slate-100">Notifications</h1>
         <p className="mt-1 text-sm text-slate-500">
-          View notification history and configure which events trigger alerts
+          History, alert types and delivery settings
         </p>
       </div>
 
@@ -272,7 +295,8 @@ export default function Notifications() {
         {TABS.map((tab) => (
           <button
             key={tab.id}
-            onClick={() => setActiveTab(tab.id)}
+            onClick={() => selectTab(tab.id)}
+            aria-pressed={activeTab === tab.id}
             className={cn("tab-item flex items-center justify-center gap-2", activeTab === tab.id && "active")}
           >
             <tab.icon className="h-3.5 w-3.5 hidden sm:block" />
@@ -289,18 +313,10 @@ export default function Notifications() {
             {/* Filter */}
             <div className="flex items-center gap-2">
               <FilterAltIcon className="h-4 w-4 text-slate-500" />
-              <select
-                value={typeFilter}
-                onChange={e => handleFilterChange(e.target.value)}
-                className="rounded-lg border border-white/10 bg-white/5 px-3 py-1.5 text-sm text-slate-300 outline-none transition-colors focus:border-blue-500/50"
-              >
-                <option value="">All types</option>
-                {NOTIFICATION_TYPES.map(t => (
-                  <option key={t.key} value={t.key}>{t.label}</option>
-                ))}
-              </select>
+              <SelectMenu label="Notification type" value={typeFilter} onChange={handleFilterChange} options={[{ value: "", label: "All types" }, ...NOTIFICATION_TYPES.map(t => ({ value: t.key, label: t.label }))]} />
               {typeFilter && (
                 <button
+                  aria-label="Clear notification filter"
                   onClick={() => handleFilterChange("")}
                   className="rounded-md p-1 text-slate-500 transition-colors hover:bg-white/5 hover:text-slate-300"
                 >
@@ -327,14 +343,14 @@ export default function Notifications() {
           </div>
 
           {/* Events list */}
-          {loading ? (
+          {loading && events.length === 0 ? (
             <div className="flex items-center justify-center py-16">
               <ProgressActivityIcon className="h-6 w-6 animate-spin text-blue-400" />
             </div>
           ) : historyError ? (
             <div role="alert" className="glass-card space-y-3 p-5 text-sm text-amber-300">
               <p>{historyError}</p>
-              <button onClick={() => loadHistory(offset)} className="rounded-lg border border-white/10 px-3 py-1.5 text-slate-200">Retry</button>
+              <button onClick={() => loadHistory(offset, typeFilter)} className="rounded-lg border border-white/10 px-3 py-1.5 text-slate-200">Retry</button>
             </div>
           ) : events.length === 0 ? (
             <div className="glass-card flex flex-col items-center justify-center py-16 text-center">
@@ -389,26 +405,18 @@ export default function Notifications() {
         </div>
       )}
 
-      {/* ── Settings Tab ─────────────────────────────────────────────── */}
-      {activeTab === "settings" && settings && (
+      {activeTab === "delivery" && <div className="space-y-4">
+        <MobileNotificationsSection />
+        <Suspense fallback={<p role="status" className="text-sm text-slate-400">Loading providers…</p>}><ProviderConfigSection /></Suspense>
+      </div>}
+      {activeTab === "events" && settingsError && <div role="alert" className="glass-card p-4 text-sm text-rose-300">
+        <p>{settingsError}</p>
+        <button type="button" className="mt-2 text-blue-400" disabled={savingSettings} onClick={() => void loadSettings()}>Retry</button>
+      </div>}
+      {activeTab === "events" && !settings && !settingsError && <p role="status" className="text-sm text-slate-400">Loading event settings…</p>}
+      {activeTab === "events" && settings && (
         <div className="space-y-4">
-          <div className="glass-card overflow-hidden p-5">
-            <div className="flex items-start gap-3">
-              <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-blue-500/15">
-                <InfoIcon className="h-5 w-5 text-blue-400" />
-              </div>
-              <div>
-                <p className="text-sm text-slate-300">
-                  Toggle which events trigger notifications. Disabling a type will prevent it
-                  from being sent to <em>all</em> providers (Pushover, Discord, mobile, etc.).
-                </p>
-                <p className="mt-1 text-xs text-slate-600">
-                  To configure notification providers, use the Setup Wizard in Settings.
-                </p>
-              </div>
-            </div>
-          </div>
-
+          <p className="text-sm text-slate-400">Choose which events send alerts to your configured providers.</p>
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             {NOTIFICATION_TYPES.map((nt) => {
               const Icon = nt.icon
@@ -432,7 +440,10 @@ export default function Notifications() {
                   </div>
                   <button
                     onClick={() => handleToggle(nt.key as keyof NotificationSettings)}
-                    disabled={savingSettings}
+                    disabled={savingSettings || settingsLoading || !!settingsError}
+                    role="switch"
+                    aria-checked={enabled}
+                    aria-label={nt.label}
                     className={cn(
                       "relative h-6 w-11 shrink-0 rounded-full transition-colors",
                       enabled ? "bg-blue-500" : "bg-white/10"

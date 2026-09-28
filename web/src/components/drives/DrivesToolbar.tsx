@@ -12,6 +12,7 @@ import { SelectModeBar } from "./SelectModeBar"
 
 interface DrivesToolbarProps {
   drives: DriveSummary[]
+  tags?: string[]
   range: DateRange
   filters: DrivesFilters
   onRangeChange: (r: DateRange) => void
@@ -21,6 +22,8 @@ interface DrivesToolbarProps {
   selectedCount: number
   totalCount: number
   onSelectAll: () => void
+  onSelectPage: () => void
+  busy: boolean
   onTagSelected: () => void
   onExportSelected: () => void
   onDeleteSelected: () => void
@@ -36,6 +39,7 @@ export function DrivesToolbar(props: DrivesToolbarProps) {
       <DatePopover range={props.range} onChange={props.onRangeChange} />
       <FilterPopover
         drives={props.drives}
+        tags={props.tags}
         filters={props.filters}
         onChange={props.onFiltersChange}
         metric={props.metric}
@@ -56,6 +60,8 @@ export function DrivesToolbar(props: DrivesToolbarProps) {
             selectedCount={props.selectedCount}
             totalCount={props.totalCount}
             onSelectAll={props.onSelectAll}
+            onSelectPage={props.onSelectPage}
+            busy={props.busy}
             onTag={props.onTagSelected}
             onExport={props.onExportSelected}
             onDelete={props.onDeleteSelected}

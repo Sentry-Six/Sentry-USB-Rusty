@@ -330,26 +330,15 @@ pub async fn delete_snapshot(
 pub async fn get_free_space(
     State(_s): State<AppState>,
 ) -> (StatusCode, Json<serde_json::Value>) {
-    let df = sentryusb_shell::run(
-        "df", &["--output=size,used,avail", "--block-size=1", "/backingfiles/"],
-    ).await;
-
-    let (total, used, avail) = match df {
-        Ok(out) => {
-            let line = out.lines().last().unwrap_or("");
-            let mut it = line.split_whitespace();
-            let total: u64 = it.next().and_then(|s| s.parse().ok()).unwrap_or(0);
-            let used: u64 = it.next().and_then(|s| s.parse().ok()).unwrap_or(0);
-            let avail: u64 = it.next().and_then(|s| s.parse().ok()).unwrap_or(0);
-            (total, used, avail)
-        }
-        Err(_) => (0, 0, 0),
-    };
-
-    (StatusCode::OK, Json(serde_json::json!({
-        "total_bytes": total,
-        "used_bytes": used,
-        "available_bytes": avail,
-        "mounted": total > 0,
-    })))
+    let health = tokio::task::spawn_blocking(crate::status::managed_storage_health).await;
+    match health {
+        Ok(health) => (StatusCode::OK, Json(serde_json::json!({
+            "total_bytes": health.total_bytes,
+            "used_bytes": health.total_bytes.saturating_sub(health.free_bytes),
+            "available_bytes": health.free_bytes,
+            "mounted": health.total_bytes > 0,
+            "storage_health": health,
+        }))),
+        Err(_) => crate::json_error(StatusCode::INTERNAL_SERVER_ERROR, "Storage status unavailable"),
+    }
 }

@@ -146,12 +146,13 @@ fn list_files_blocking(params: ListParams) -> (StatusCode, Json<serde_json::Valu
             .filter_map(|e| e.ok())
             .map(|e| (e.file_name().to_string_lossy().to_string(), e.path().is_dir()))
             .collect(),
-        Err(_) => {
-            return (StatusCode::OK, Json(serde_json::to_value(FileListResponse {
-                path: req_path.to_string(),
-                entries: Vec::new(),
-                total: None,
-            }).unwrap_or_default()));
+        Err(error) => {
+            let (status, message) = match error.kind() {
+                std::io::ErrorKind::NotFound => (StatusCode::NOT_FOUND, "Folder unavailable. Check that its drive is mounted."),
+                std::io::ErrorKind::PermissionDenied => (StatusCode::FORBIDDEN, "This folder cannot be read with the current permissions."),
+                _ => (StatusCode::SERVICE_UNAVAILABLE, "Could not read this folder. Check the drive and retry."),
+            };
+            return crate::json_error(status, message);
         }
     };
 
@@ -299,137 +300,124 @@ pub async fn delete_file(State(_s): State<AppState>, Query(params): Query<Delete
     }
 }
 
-/// POST /api/files/upload
-///
-/// Multipart form: `file` (required, the file payload) and `path` (required,
-/// destination directory). Filename is taken from the upload part's
-/// Content-Disposition `filename=`. Streams directly to disk — no in-memory
-/// buffering, so files of any size can be uploaded on low-RAM devices.
+/// A folder upload must remain below its selected destination.
+fn upload_relative_path(value: &str) -> Result<PathBuf, &'static str> {
+    if value.is_empty() || value.contains('\\') || value.contains('\0')
+        || value.split('/').any(|part| part.is_empty() || part == "." || part == "..")
+        || Path::new(value).is_absolute() {
+        return Err("Invalid relative upload path");
+    }
+    Ok(PathBuf::from(value))
+}
+
+struct UploadTemp(PathBuf);
+impl Drop for UploadTemp {
+    fn drop(&mut self) { let _ = std::fs::remove_file(&self.0); }
+}
+
+fn upload_temp_path(parent: &Path) -> PathBuf {
+    static SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let seq = SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let nanos = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos();
+    parent.join(format!(".sentryusb-upload-{}-{seq}-{nanos}", std::process::id()))
+}
+
+async fn publish_upload(source: &Path, destination: &Path, overwrite: bool) -> std::io::Result<()> {
+    let parent = destination.parent().ok_or_else(|| std::io::Error::other("Missing destination"))?;
+    tokio::fs::create_dir_all(parent).await?;
+    let staged = UploadTemp(upload_temp_path(parent));
+    tokio::fs::copy(source, &staged.0).await?;
+    if overwrite {
+        return tokio::fs::rename(&staged.0, destination).await;
+    }
+    match tokio::fs::hard_link(&staged.0, destination).await {
+        Ok(()) => return Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => return Err(e),
+        Err(_) => {}
+    }
+    // FAT media lacks hard links. create_new still guarantees no replacement.
+    let mut target = tokio::fs::OpenOptions::new().write(true).create_new(true).open(destination).await?;
+    let result = async {
+        let mut input = tokio::fs::File::open(&staged.0).await?;
+        tokio::io::copy(&mut input, &mut target).await?;
+        target.sync_all().await
+    }.await;
+    if result.is_err() { let _ = tokio::fs::remove_file(destination).await; }
+    result
+}
+
+/// Multipart upload with optional `relative_path` and explicit `overwrite=true`.
+/// An existing destination is preserved by default, including concurrent uploads.
 pub async fn upload_file(
     State(_s): State<AppState>,
     mut multipart: axum::extract::Multipart,
 ) -> (StatusCode, Json<serde_json::Value>) {
-    let mut dest_dir: Option<String> = None;
-    let mut filename: Option<String> = None;
-    let mut written: u64 = 0;
-    let mut file_written = false;
-
-    // Multipart fields may arrive in either order, so stream the file to a
-    // temporary path before validating its destination.
-    let mut temp_path: Option<PathBuf> = None;
-
-    while let Ok(Some(mut field)) = multipart.next_field().await {
-        let name = field.name().unwrap_or("").to_string();
-        match name.as_str() {
-            "path" => {
-                if let Ok(v) = field.text().await {
-                    dest_dir = Some(v);
-                }
-            }
+    use tokio::io::AsyncWriteExt;
+    let mut dest_dir = None;
+    let mut relative_path = None;
+    let mut overwrite = false;
+    let mut upload: Option<(UploadTemp, String, u64)> = None;
+    loop {
+        let field = match multipart.next_field().await {
+            Ok(Some(field)) => field,
+            Ok(None) => break,
+            Err(_) => return crate::json_error(StatusCode::BAD_REQUEST, "Incomplete upload"),
+        };
+        let mut field = field;
+        match field.name().unwrap_or("") {
+            "path" => dest_dir = field.text().await.ok(),
+            "relative_path" => relative_path = field.text().await.ok(),
+            "overwrite" => overwrite = field.text().await.is_ok_and(|v| v == "true"),
             "file" => {
-                let fname = field
-                    .file_name()
-                    .unwrap_or("upload.bin")
-                    .to_string();
-                filename = Some(fname);
-
-                // Include process, time, and sequence values so concurrent
-                // streaming uploads cannot share a temporary file.
-                static UPLOAD_SEQ: std::sync::atomic::AtomicU64 =
-                    std::sync::atomic::AtomicU64::new(0);
-                let seq = UPLOAD_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                let nanos = SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .map(|d| d.as_nanos())
-                    .unwrap_or(0);
-                let tmp = std::env::temp_dir().join(format!(
-                    "sentryusb-upload-{}-{}-{}",
-                    std::process::id(),
-                    seq,
-                    nanos
-                ));
-                let mut file = match tokio::fs::File::create(&tmp).await {
-                    Ok(f) => f,
-                    Err(e) => {
-                        return crate::json_error(
-                            StatusCode::INTERNAL_SERVER_ERROR,
-                            &format!("Failed to create temp file: {}", e),
-                        );
-                    }
-                };
-
-                while let Ok(Some(chunk)) = field.chunk().await {
-                    use tokio::io::AsyncWriteExt;
-                    if let Err(e) = file.write_all(&chunk).await {
-                        let _ = tokio::fs::remove_file(&tmp).await;
-                        return crate::json_error(
-                            StatusCode::INTERNAL_SERVER_ERROR,
-                            &format!("Failed to write chunk: {}", e),
-                        );
-                    }
-                    written += chunk.len() as u64;
+                if upload.is_some() {
+                    return crate::json_error(StatusCode::BAD_REQUEST, "Send one file per upload");
                 }
-
-                use tokio::io::AsyncWriteExt;
-                let _ = file.flush().await;
-                temp_path = Some(tmp);
-                file_written = true;
+                let filename = field.file_name().unwrap_or("upload.bin").to_owned();
+                let temp = UploadTemp(upload_temp_path(&std::env::temp_dir()));
+                let mut file = match tokio::fs::OpenOptions::new().write(true).create_new(true).open(&temp.0).await {
+                    Ok(file) => file,
+                    Err(e) => return crate::json_error(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()),
+                };
+                let mut written = 0_u64;
+                loop {
+                    match field.chunk().await {
+                        Ok(Some(chunk)) => {
+                            if let Err(e) = file.write_all(&chunk).await {
+                                return crate::json_error(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string());
+                            }
+                            written += chunk.len() as u64;
+                        }
+                        Ok(None) => break,
+                        Err(_) => return crate::json_error(StatusCode::BAD_REQUEST, "Incomplete file payload"),
+                    }
+                }
+                if let Err(e) = file.flush().await {
+                    return crate::json_error(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string());
+                }
+                upload = Some((temp, filename, written));
             }
             _ => {}
         }
     }
-
-    if !file_written {
+    let Some((temp, filename, written)) = upload else {
         return crate::json_error(StatusCode::BAD_REQUEST, "Missing file in upload");
-    }
-    let filename = filename.unwrap_or_else(|| "upload.bin".to_string());
-    let dest_dir = match dest_dir {
-        Some(d) if !d.is_empty() => d,
-        _ => {
-            if let Some(tmp) = &temp_path { let _ = tokio::fs::remove_file(tmp).await; }
-            return crate::json_error(StatusCode::BAD_REQUEST, "Missing path parameter");
-        }
     };
-
-    let dest_path = format!("{}/{}", dest_dir.trim_end_matches('/'), filename);
-    let (clean, allowed) = is_path_allowed(&dest_path);
-    if !allowed {
-        if let Some(tmp) = &temp_path { let _ = tokio::fs::remove_file(tmp).await; }
-        return crate::json_error(StatusCode::FORBIDDEN, "Access denied");
+    let Some(dest_dir) = dest_dir.filter(|p: &String| !p.is_empty()) else {
+        return crate::json_error(StatusCode::BAD_REQUEST, "Missing path parameter");
+    };
+    let relative = match upload_relative_path(relative_path.as_deref().unwrap_or(&filename)) {
+        Ok(path) => path,
+        Err(message) => return crate::json_error(StatusCode::BAD_REQUEST, message),
+    };
+    let (base, allowed) = is_path_allowed(&dest_dir);
+    if !allowed { return crate::json_error(StatusCode::FORBIDDEN, "Access denied"); }
+    let destination = base.join(relative);
+    if let Err(e) = publish_upload(&temp.0, &destination, overwrite).await {
+        let status = if e.kind() == std::io::ErrorKind::AlreadyExists { StatusCode::CONFLICT } else { StatusCode::INTERNAL_SERVER_ERROR };
+        let message = if status == StatusCode::CONFLICT { "A file with this name already exists. Choose Replace to overwrite it.".to_owned() } else { e.to_string() };
+        return crate::json_error(status, &message);
     }
-
-    if let Some(parent) = clean.parent() {
-        if let Err(e) = tokio::fs::create_dir_all(parent).await {
-            if let Some(tmp) = &temp_path { let _ = tokio::fs::remove_file(tmp).await; }
-            return crate::json_error(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                &format!("Failed to create directory: {}", e),
-            );
-        }
-    }
-
-    if let Some(tmp) = temp_path {
-        if let Err(_) = tokio::fs::rename(&tmp, &clean).await {
-            // Cross-filesystem renames require copy and delete.
-            if let Err(e) = tokio::fs::copy(&tmp, &clean).await {
-                let _ = tokio::fs::remove_file(&tmp).await;
-                return crate::json_error(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    &format!("Failed to write file: {}", e),
-                );
-            }
-            let _ = tokio::fs::remove_file(&tmp).await;
-        }
-    }
-
-    (
-        StatusCode::OK,
-        Json(serde_json::json!({
-            "name": filename,
-            "path": dest_path,
-            "size": written.to_string(),
-        })),
-    )
+    (StatusCode::OK, Json(serde_json::json!({ "name": filename, "path": destination, "size": written.to_string() })))
 }
 
 /// GET /api/files/download
@@ -1028,5 +1016,35 @@ mod tests {
         let mut t = String::new();
         archive.by_name("c.txt").unwrap().read_to_string(&mut t).unwrap();
         assert_eq!(t, "tail");
+    }
+}
+
+#[cfg(test)]
+mod upload_tests {
+    use super::*;
+
+    #[test]
+    fn rejects_traversal_and_preserves_folder_hierarchy() {
+        for path in ["../x", "/x", "a/../../x", "a/./x", "a//x", "a\\x", ""] {
+            assert!(upload_relative_path(path).is_err(), "{path}");
+        }
+        assert_eq!(upload_relative_path("Album A/cover.jpg").unwrap(), PathBuf::from("Album A/cover.jpg"));
+    }
+
+    #[tokio::test]
+    async fn uploads_keep_same_names_in_different_folders_and_reject_collisions() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("source");
+        tokio::fs::write(&source, b"new bytes").await.unwrap();
+        let first = dir.path().join("Album A/cover.jpg");
+        let second = dir.path().join("Album B/cover.jpg");
+        publish_upload(&source, &first, false).await.unwrap();
+        publish_upload(&source, &second, false).await.unwrap();
+        tokio::fs::write(&first, b"existing").await.unwrap();
+        assert_eq!(publish_upload(&source, &first, false).await.unwrap_err().kind(), std::io::ErrorKind::AlreadyExists);
+        assert_eq!(tokio::fs::read(&first).await.unwrap(), b"existing");
+        publish_upload(&source, &first, true).await.unwrap();
+        assert_eq!(tokio::fs::read(&first).await.unwrap(), b"new bytes");
+        assert_eq!(tokio::fs::read(&second).await.unwrap(), b"new bytes");
     }
 }

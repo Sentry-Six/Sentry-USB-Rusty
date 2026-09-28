@@ -1,6 +1,9 @@
 import { useCallback, useEffect, useMemo, useState } from "react"
 import { DeleteIcon, ProgressActivityIcon } from "@/components/icons"
 import { bulkDeleteDrives, setDriveTags } from "@/api/drives"
+import { Modal } from "@/components/ui/Modal"
+import type { DriveSummary } from "@/types/drives"
+import { drivesCsv } from "@/lib/drive-export"
 import { cn } from "@/lib/utils"
 import { DriveRow } from "@/components/drives/DriveRow"
 import { DrivesActionsBar } from "@/components/drives/DrivesActionsBar"
@@ -37,20 +40,20 @@ export default function Drives() {
     }
   }, [])
   const [selectMode, setSelectMode] = useState(false)
-  const [selected, setSelected] = useState<Set<number>>(new Set())
+  const [selected, setSelected] = useState<Map<string, DriveSummary>>(new Map())
   // Confirmation dialog state for bulk-delete. Snapshot the selected
   // ids and how many drives the click captured so the modal text and
   // the eventual API call are immune to the user changing selection
   // mid-confirmation.
   const [confirmingBulkDelete, setConfirmingBulkDelete] = useState<{
-    ids: number[]
+    ids: string[]
   } | null>(null)
   const [deletingBulk, setDeletingBulk] = useState(false)
   const [bulkDeleteError, setBulkDeleteError] = useState<string | null>(null)
 
   const toggleSelectMode = () => {
     setSelectMode((s) => {
-      if (s) setSelected(new Set())
+      if (s) setSelected(new Map())
       return !s
     })
   }
@@ -58,7 +61,7 @@ export default function Drives() {
   const onDeleteSelected = useCallback(() => {
     if (selected.size === 0) return
     setBulkDeleteError(null)
-    setConfirmingBulkDelete({ ids: Array.from(selected) })
+    setConfirmingBulkDelete({ ids: Array.from(selected.keys()) })
   }, [selected])
 
   const confirmBulkDelete = useCallback(async () => {
@@ -66,9 +69,15 @@ export default function Drives() {
     setDeletingBulk(true)
     setBulkDeleteError(null)
     try {
-      await bulkDeleteDrives(confirmingBulkDelete.ids)
+      const result = await bulkDeleteDrives(confirmingBulkDelete.ids)
+      if (result.not_found.length) {
+        setBulkDeleteError(`${result.drives} deleted; ${result.not_found.length} could not be found. Refresh and review the remaining selection.`)
+        setConfirmingBulkDelete({ ids: result.not_found })
+        await list.refresh()
+        return
+      }
       setConfirmingBulkDelete(null)
-      setSelected(new Set())
+      setSelected(new Map())
       setSelectMode(false)
       list.refresh()
     } catch (e) {
@@ -78,18 +87,49 @@ export default function Drives() {
     }
   }, [confirmingBulkDelete, list])
 
+  const [bulkBusy, setBulkBusy] = useState(false)
+  const [bulkMessage, setBulkMessage] = useState<string | null>(null)
+  const [tagging, setTagging] = useState(false)
+  const [tagDraft, setTagDraft] = useState("")
+  const [tagTargets, setTagTargets] = useState<DriveSummary[]>([])
   const onToggleSelected = useCallback((id: number) => {
-    setSelected((prev) => {
-      const next = new Set(prev)
-      if (next.has(id)) next.delete(id)
-      else next.add(id)
+    const drive = list.drives.find((drive) => drive.id === id)
+    if (!drive) return
+    setSelected((previous) => {
+      const next = new Map(previous)
+      if (next.has(drive.startTime)) next.delete(drive.startTime)
+      else next.set(drive.startTime, drive)
       return next
     })
-  }, [])
-
-  const onSelectAll = useCallback(() => {
-    setSelected(new Set(list.visible.map((d) => d.id)))
-  }, [list.visible])
+  }, [list.drives])
+  const onSelectPage = () => setSelected((previous) => new Map([...previous, ...list.visible.map((drive) => [drive.startTime, drive] as const)]))
+  const onSelectAll = async () => {
+    setBulkBusy(true); setBulkMessage(null)
+    try { setSelected(new Map((await list.fetchMatching()).map((drive) => [drive.startTime, drive]))) }
+    catch (error) { setBulkMessage(error instanceof Error ? error.message : String(error)) }
+    finally { setBulkBusy(false) }
+  }
+  const exportSelected = () => {
+    const url = URL.createObjectURL(new Blob(["\ufeff", drivesCsv([...selected.values()])], { type: "text/csv;charset=utf-8" }))
+    const link = document.createElement("a"); link.href = url; link.download = "sentry-drives.csv"; link.click()
+    setTimeout(() => URL.revokeObjectURL(url), 1000)
+  }
+  const tagSelected = async () => {
+    const tag = tagDraft.trim()
+    if (!tag || bulkBusy) return
+    setBulkBusy(true); setBulkMessage(null)
+    const failed: DriveSummary[] = []
+    for (const drive of tagTargets) {
+      try { await setDriveTags(drive.startTime, [tag], true) }
+      catch { failed.push(drive) }
+    }
+    setBulkBusy(false)
+    setSelected(new Map(failed.map((drive) => [drive.startTime, drive])))
+    setTagTargets(failed)
+    setBulkMessage(failed.length ? `${tagTargets.length - failed.length} tagged; ${failed.length} failed. Retry applies only to the remaining drives.` : `${tagTargets.length} drives tagged.`)
+    if (!failed.length) { setTagging(false); setTagDraft("") }
+    await list.refresh()
+  }
 
   const onTagsChange = useCallback(
     async (id: number, tags: string[]) => {
@@ -98,10 +138,13 @@ export default function Drives() {
       // /api/drives refetch on every tag click. The backend invalidates
       // the drive-list cache on set_drive_tags, so the next natural fetch
       // (page revisit, manual refresh) rebuilds authoritatively.
-      const prev = list.drives.find((d) => d.id === id)?.tags ?? []
+      const drive = list.drives.find((d) => d.id === id)
+      if (!drive) return
+      const prev = drive.tags ?? []
       list.patchDriveTags(id, tags)
       try {
-        await setDriveTags(id, tags)
+        await setDriveTags(drive.startTime, tags)
+        await list.refresh()
       } catch (e) {
         list.patchDriveTags(id, prev)
         throw e
@@ -144,23 +187,27 @@ export default function Drives() {
 
       <DrivesToolbar
         drives={list.drives}
+        tags={list.tags}
         range={list.range}
         filters={list.filters}
-        onRangeChange={list.setRange}
-        onFiltersChange={list.setFilters}
+        onRangeChange={(range) => { setSelected(new Map()); list.setRange(range) }}
+        onFiltersChange={(filters) => { setSelected(new Map()); list.setFilters(filters) }}
         selectMode={selectMode}
         onToggleSelectMode={toggleSelectMode}
         selectedCount={selected.size}
         totalCount={list.total}
         onSelectAll={onSelectAll}
-        onTagSelected={() => alert("Bulk tag is not implemented yet.")}
-        onExportSelected={() => alert("Bulk export is not implemented yet.")}
+        onSelectPage={onSelectPage}
+        busy={bulkBusy}
+        onTagSelected={() => { setTagTargets([...selected.values()]); setTagging(true); setBulkMessage(null) }}
+        onExportSelected={exportSelected}
         onDeleteSelected={onDeleteSelected}
         metric={metric}
         filteredStats={list.filteredStats}
         loading={list.loading}
       />
 
+      {bulkMessage && <p role="status" className="mt-3 text-sm text-slate-300">{bulkMessage}</p>}
       <div className="mt-4 flex items-center justify-between text-sm text-slate-400">
         {pagination}
         <button
@@ -202,12 +249,12 @@ export default function Drives() {
         {!list.loading &&
           list.visible.map((d) => (
             <DriveRow
-              key={d.id}
+              key={d.startTime}
               drive={d}
               routePoints={list.routesByStartTime.get(d.startTime) ?? []}
               metric={metric}
               selectMode={selectMode}
-              selected={selected.has(d.id)}
+              selected={selected.has(d.startTime)}
               onToggleSelected={onToggleSelected}
               onTagsChange={onTagsChange}
             />
@@ -218,6 +265,12 @@ export default function Drives() {
         <div className="mt-4 flex justify-end">{pagination}</div>
       )}
 
+      {tagging && <Modal title={`Tag ${tagTargets.length} drives`} onClose={() => setTagging(false)} dismissable={!bulkBusy} size="sm">
+        <label className="block text-sm text-slate-300">Add tag<input value={tagDraft} onChange={(event) => setTagDraft(event.target.value)} disabled={bulkBusy} maxLength={80} className="mt-2 block w-full rounded-xl border border-white/10 bg-slate-950 px-3 py-2" /></label>
+        <p className="mt-2 text-xs text-slate-400">Existing tags are kept.</p>
+        {bulkMessage && <p role="status" className="mt-2 text-sm text-amber-200">{bulkMessage}</p>}
+        <button type="button" disabled={bulkBusy || !tagDraft.trim()} onClick={() => void tagSelected()} className="mt-4 rounded-full bg-emerald-500 px-4 py-2 text-sm text-slate-950 disabled:opacity-50">{bulkBusy ? "Saving…" : "Add tag"}</button>
+      </Modal>}
       {confirmingBulkDelete && (
         <div className="fixed inset-0 z-[2000] flex items-center justify-center bg-black/60 backdrop-blur-sm">
           <div className="w-full max-w-sm rounded-2xl border border-white/10 bg-slate-950 p-6 shadow-2xl">

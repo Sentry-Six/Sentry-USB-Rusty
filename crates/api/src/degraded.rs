@@ -52,6 +52,7 @@ async fn unavailable(State(s): State<DegradedState>) -> (StatusCode, Json<serde_
 
 pub fn build_degraded_router(state: DegradedState) -> Router {
     Router::new()
+        .route("/api/health", get(degraded_status))
         .route("/api/status", get(degraded_status))
         // Initial routing needs setup state before rendering the banner.
         .route("/api/setup/status", get(crate::setup::get_setup_status))
@@ -64,6 +65,7 @@ pub fn build_degraded_router(state: DegradedState) -> Router {
         .route("/api/system/shutdown", post(crate::system::shutdown))
         .route("/api/logs/{name}", get(crate::logs::get_log_tail))
         .route("/api/logs/{name}/page", get(crate::logs::get_log_page))
+        .route("/api/logs/{name}/tail", get(crate::logs::get_log_delta))
         .route("/api/storage/health", get(crate::storage_repair::storage_health))
         .route("/api/storage/repair", post(crate::storage_repair::storage_repair))
         .route("/api/ws", get(crate::router::ws_handler))

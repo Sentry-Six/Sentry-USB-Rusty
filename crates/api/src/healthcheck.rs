@@ -11,7 +11,7 @@ use crate::router::AppState;
 #[derive(Serialize)]
 struct HealthItem {
     name: String,
-    /// "pass" | "warn" | "fail"
+    /// pass / warn / fail / unknown / recovering / not_applicable
     status: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
     detail: Option<String>,
@@ -122,25 +122,11 @@ pub async fn health_check(State(_s): State<AppState>) -> (StatusCode, Json<serde
 
     // Storage
     let mut st = Vec::new();
-    let mut disk_free_pct: Option<f64> = None;
-    if let Ok(out) = sentryusb_shell::run(
-        "stat", &["--file-system", "--format=%f %b", "/backingfiles/."],
-    ).await {
-        let parts: Vec<&str> = out.trim().split_whitespace().collect();
-        if parts.len() >= 2 {
-            if let (Ok(free), Ok(total)) = (parts[0].parse::<f64>(), parts[1].parse::<f64>()) {
-                if total > 0.0 {
-                    disk_free_pct = Some((free / total) * 100.0);
-                }
-            }
-        }
-    }
-    match disk_free_pct {
-        Some(p) if p < 5.0 => st.push(item("Backingfiles free space", "fail", Some(format!("{:.1}% free", p)))),
-        Some(p) if p < 15.0 => st.push(item("Backingfiles free space", "warn", Some(format!("{:.1}% free", p)))),
-        Some(p) => st.push(item("Backingfiles free space", "pass", Some(format!("{:.1}% free", p)))),
-        None => st.push(item("Backingfiles free space", "warn", Some("partition not mounted".to_string()))),
-    }
+    let storage = crate::status::managed_storage_health();
+    let storage_status = match storage.state {
+        "healthy" => "pass", "recovering" => "recovering", "fail" => "fail", "warn" => "warn", _ => "unknown",
+    };
+    st.push(item("Recording storage", storage_status, Some(storage.message.clone())));
     // Clip-index inode headroom on /mutable. The 2026-08-19 field
     // failure was inode exhaustion here: every clip symlink and state
     // write ENOSPC'd for a day while byte space looked fine, so drive
@@ -228,27 +214,15 @@ pub async fn health_check(State(_s): State<AppState>) -> (StatusCode, Json<serde
             }
         }
     }
-    // Automatic storage cleanup state. The stall latch means eviction
-    // ran and gave up: releasing snapshots stopped freeing clip-index
-    // inodes, so something other than clip links is eating the table.
-    // That is the "tried automatically, needs a human" state — same
-    // contract as storage auto-repair.
-    if std::path::Path::new("/run/sentryusb_inode_stall").exists() {
-        let latched = std::fs::read_to_string("/run/sentryusb_inode_stall")
-            .ok()
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty())
-            .map(|v| format!(" (latched at {} free)", v))
-            .unwrap_or_default();
-        st.push(item("Automatic storage cleanup", "fail", Some(format!(
-            "stalled: releasing snapshots no longer frees clip-index inodes{} — \
-             manual intervention needed: find what is consuming /mutable inodes, \
-             then delete /run/sentryusb_inode_stall (or reboot) to re-arm cleanup",
-            latched
-        ))));
-    } else {
-        st.push(item("Automatic storage cleanup", "pass", None));
-    }
+    let cleanup_status = match storage.cleanup_state.as_str() {
+        "healthy" | "recovered" => "pass", "recovering" => "recovering", "failed" => "warn", _ => "unknown",
+    };
+    st.push(item("Automatic storage cleanup", cleanup_status, Some(match cleanup_status {
+        "warn" => "Cleanup needs attention. Check storage logs for the failed operation.",
+        "unknown" => "No recent cleanup heartbeat. Check that the archive service is running.",
+        "recovering" => "Releasing old snapshots to restore headroom.",
+        _ => "Recording headroom is monitored automatically.",
+    }.into())));
     // Check optional disk images only when configured.
     let user_wants = |size_key: &str| -> bool {
         // Empty or a zero numeric prefix disables the image.
@@ -398,10 +372,9 @@ pub async fn health_check(State(_s): State<AppState>) -> (StatusCode, Json<serde
             "" => {}
             other => gad.push(item(
                 "Host link (UDC state)",
-                "warn",
+                "not_applicable",
                 Some(format!(
-                    "gadget is bound but the host link reads '{other}' — normal while the car \
-                     sleeps or suspends the bus, a problem if the car is awake and recording"
+                    "Host link is '{other}'. Expected while the car is asleep or unplugged."
                 )),
             )),
         }
@@ -496,8 +469,8 @@ pub async fn health_check(State(_s): State<AppState>) -> (StatusCode, Json<serde
         ("sentryusb-archive", true),
         ("avahi-daemon", false),
         ("bluetooth", false),
-        ("sentryusb-ble", false),
     ] {
+        if *svc == "bluetooth" && !ble_enabled { continue; }
         let active = sentryusb_shell::run(
             "systemctl", &["is-active", "--quiet", svc],
         ).await.is_ok();
@@ -537,24 +510,20 @@ pub async fn health_check(State(_s): State<AppState>) -> (StatusCode, Json<serde
             sys.push(item("Uptime", "pass", Some(format!("{}h {}m", h, m))));
         }
     }
-    let setup_ok = std::path::Path::new("/sentryusb/SENTRYUSB_SETUP_FINISHED").exists()
-        || std::path::Path::new("/boot/firmware/SENTRYUSB_SETUP_FINISHED").exists()
-        || std::path::Path::new("/boot/SENTRYUSB_SETUP_FINISHED").exists();
-    sys.push(item(
-        "Setup completed",
-        if setup_ok { "pass" } else { "warn" },
-        if setup_ok { None } else { Some("setup has not finished".to_string()) },
-    ));
     categories.push(HealthCategory { name: "System".to_string(), items: sys });
 
     // Summary
     let mut fails = 0;
     let mut warns = 0;
+    let mut unknown = 0;
+    let mut recovering = 0;
     for c in &categories {
         for i in &c.items {
             match i.status {
                 "fail" => fails += 1,
                 "warn" => warns += 1,
+                "unknown" => unknown += 1,
+                "recovering" => recovering += 1,
                 _ => {}
             }
         }
@@ -563,6 +532,10 @@ pub async fn health_check(State(_s): State<AppState>) -> (StatusCode, Json<serde
         format!("{} problem{} found", fails, if fails == 1 { "" } else { "s" })
     } else if warns > 0 {
         format!("{} warning{}", warns, if warns == 1 { "" } else { "s" })
+    } else if recovering > 0 {
+        "Automatic recovery in progress".to_string()
+    } else if unknown > 0 {
+        format!("No problems found · {} check{} unavailable", unknown, if unknown == 1 { "" } else { "s" })
     } else {
         "All systems operational".to_string()
     };

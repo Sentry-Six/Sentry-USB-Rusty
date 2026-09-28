@@ -6,7 +6,7 @@
 //! remain NULL and endpoints return empty results without scanning.
 
 use axum::Json;
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
@@ -63,7 +63,7 @@ struct ChargeSessionDetail {
 /// One time-of-use price window for a tag, scoped by time-of-day, days of
 /// the week, and a month range — the device equivalent of a Tessie "rate
 /// schedule". All bounds are in local time.
-#[derive(PartialEq)]
+#[derive(PartialEq, Serialize)]
 struct RateSchedule {
     rate: f64,
     /// Local minutes-of-day. `start_min > end_min` wraps past midnight
@@ -116,7 +116,7 @@ impl RateSchedule {
 /// Pricing for one tag: an optional flat fallback rate plus any number of
 /// time-of-use schedules. A charging interval is priced at the first
 /// schedule that covers it, else `flat`, else the global default rate.
-#[derive(PartialEq)]
+#[derive(PartialEq, Serialize)]
 struct TagRate {
     flat: Option<f64>,
     schedules: Vec<RateSchedule>,
@@ -150,6 +150,7 @@ fn parse_minute_of_day(v: &serde_json::Value) -> Option<i32> {
 
 /// Electricity-rate preferences: currency, default per-kWh rate, and tag
 /// plans. Rates accept JSON numbers or numeric strings from web inputs.
+#[derive(Serialize)]
 struct RateConfig {
     currency: String,
     default_rate: Option<f64>,
@@ -581,58 +582,102 @@ const CHARGE_STALE_SECS: i64 = 86_400;
 
 
 
+fn build_charging_list(store: &sentryusb_drives::DriveStore) -> anyhow::Result<String> {
+    let rates = RateConfig::load(store)?;
+    let home = checked_home_geofence()?.map(|home| home.tuple());
+    build_charging_list_with_context(store, &rates, home, &charging_timezone_revision())
+}
+
+fn charging_timezone_revision() -> String {
+    use std::hash::{Hash, Hasher};
+    let timezone = std::env::var("TZ").unwrap_or_default();
+    let mut hash = std::collections::hash_map::DefaultHasher::new();
+    timezone.hash(&mut hash);
+    let zone = timezone.trim_start_matches(':');
+    let path = if zone.is_empty() { std::path::PathBuf::from("/etc/localtime") }
+        else if zone.starts_with('/') { std::path::PathBuf::from(zone) }
+        else { std::path::Path::new("/usr/share/zoneinfo").join(zone) };
+    std::fs::read(path).ok().hash(&mut hash);
+    format!("{:016x}", hash.finish())
+}
+
+fn resume_charging_projection(mut sessions: Vec<ChargeSessionSummary>, latest_ts: i64) -> (i64, Vec<ChargeSessionSummary>) {
+    if sessions.first().is_none_or(|session| session.end_ms / 1000 + sentryusb_drives::charging::SESSION_GAP_SECS < latest_ts) {
+        // Later append-only rows cannot join a session beyond the grouping gap.
+        (latest_ts.saturating_add(1), sessions)
+    } else {
+        let from = sessions.remove(0).id;
+        (from, sessions)
+    }
+}
+
+fn build_charging_list_with_context(store: &sentryusb_drives::DriveStore, rates: &RateConfig, home: Option<(f64,f64,f64)>, timezone: &str) -> anyhow::Result<String> {
+    use rusqlite::OptionalExtension;
+    let tag_map = store.get_all_charge_tags()?;
+    let cost_map = store.get_all_charge_costs()?;
+    let context = serde_json::json!({ "rates": rates, "home": home, "tags": tag_map, "costs": cost_map, "timezone": timezone }).to_string();
+    let (revision, rewrite, latest_ts, sessions, changed) = store.with_read_conn(|conn| -> anyhow::Result<_> {
+        let tx = conn.unchecked_transaction()?;
+        let (revision, rewrite, latest_ts): (i64, i64, i64) = tx.query_row(
+            "SELECT revision,rewrite_revision,latest_ts FROM charge_projection_clock WHERE id=1", [], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?)))?;
+        let cached: Option<(i64,i64,String,String,i64)> = tx.query_row(
+            "SELECT revision,rewrite_revision,context,body,latest_ts FROM charge_list_projection WHERE id=1 AND version=1",
+            [], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?))).optional()?;
+        let mut kept = Vec::<ChargeSessionSummary>::new();
+        let mut from = 0;
+        if let Some((old_revision,old_rewrite,old_context,body,old_latest)) = cached {
+            if old_context == context && old_rewrite == rewrite {
+                if let Ok(old) = serde_json::from_str::<Vec<ChargeSessionSummary>>(&body) {
+                    if old_revision == revision { return Ok((revision,rewrite,latest_ts,old,false)); }
+                    (from, kept) = resume_charging_projection(old, old_latest);
+                }
+            }
+        }
+        let rows = load_charge_rows(&tx, from, None)?;
+        let mut sessions: Vec<ChargeSessionSummary> = group_sessions(rows).iter().map(|rows| {
+            let mut summary = summarize(rows);
+            let stored = tag_map.get(&summary.id).cloned().unwrap_or_default();
+            let at_home = is_home_charge(summary.location_lat, summary.location_lon, home);
+            let override_cost = cost_map.get(&summary.id).cloned();
+            apply_rates(&mut summary, rows, stored, at_home, rates);
+            apply_cost_override(&mut summary, override_cost);
+            summary
+        }).collect();
+        sessions.extend(kept);
+        sessions.sort_by(|a,b| b.id.cmp(&a.id));
+        Ok((revision,rewrite,latest_ts,sessions,true))
+    })?;
+    let body = serde_json::to_string(&sessions)?;
+    if !changed { return Ok(format!("{{\"sessions\":{body}}}")); }
+    let saved: anyhow::Result<()> = store.with_locked_conn(|conn| {
+        // A concurrent writer may finish while we serialize. Never attach an old
+        // projection to its newer revision.
+        conn.execute("INSERT OR REPLACE INTO charge_list_projection(id,version,revision,rewrite_revision,context,body,latest_ts)
+            SELECT 1,1,?1,?2,?3,?4,?5 WHERE (SELECT revision FROM charge_projection_clock WHERE id=1)=?1",
+            rusqlite::params![revision,rewrite,context,body,latest_ts])?;
+        Ok(())
+    });
+    if let Err(error) = saved { tracing::debug!(%error, "charging projection persistence skipped"); }
+    Ok(format!("{{\"sessions\":{body}}}"))
+}
+
+#[derive(Deserialize, Default)]
+pub struct ChargingListQuery { #[serde(default)] fresh: bool }
+
 /// GET /api/charging: charge sessions newest-first.
-pub async fn list_charging(State(state): State<AppState>) -> axum::response::Response {
+pub async fn list_charging(State(state): State<AppState>, Query(query): Query<ChargingListQuery>) -> axum::response::Response {
     use axum::response::IntoResponse;
-
-    // Keep the full scan, grouping, and preference reads off async workers.
     let store = state.drives.store.clone();
-    let body = CHARGING_LIST_CACHE
-        .get((), move || {
-            let build = || -> anyhow::Result<Vec<ChargeSessionSummary>> {
-                let rows = store.with_read_conn(|conn| load_charge_rows(conn, 0, None))?;
-                let rates = RateConfig::load(&store)?;
-                // Parse the geofence once per cache miss; the rendered JSON cache
-                // applies home changes on its next refresh.
-                let home = checked_home_geofence()?.map(|home|home.tuple());
-                let tag_map = store.get_all_charge_tags()?;
-                let cost_map = store.get_all_charge_costs()?;
-                let mut sessions: Vec<ChargeSessionSummary> = group_sessions(rows)
-                    .iter()
-                    .map(|s| {
-                        let mut summary = summarize(s);
-                        let stored = tag_map.get(&summary.id).cloned().unwrap_or_default();
-                        let at_home =
-                            is_home_charge(summary.location_lat, summary.location_lon, home);
-                        let override_cost = cost_map.get(&summary.id).cloned();
-                        apply_rates(&mut summary, s, stored, at_home, &rates);
-                        apply_cost_override(&mut summary, override_cost);
-                        summary
-                    })
-                    .collect();
-                sessions.sort_by(|a, b| b.id.cmp(&a.id));
-                Ok(sessions)
-            };
-            // Preserve the prior list when a refresh races storage activity.
-            let sessions = build().ok()?;
-            Some(std::sync::Arc::new(
-                serde_json::json!({ "sessions": sessions }).to_string(),
-            ))
-        })
-        .await;
-
+    if query.fresh { CHARGING_LIST_CACHE.clear(); }
+    let body = CHARGING_LIST_CACHE.get((), move || {
+        match build_charging_list(&store) {
+            Ok(body) => Some(std::sync::Arc::new(body)),
+            Err(error) => { tracing::warn!(%error, "charging list unavailable"); None }
+        }
+    }).await;
     match body {
-        Some(json) => (
-            StatusCode::OK,
-            [(axum::http::header::CONTENT_TYPE, "application/json")],
-            json.as_str().to_owned(),
-        )
-            .into_response(),
-        None => crate::json_error(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "charging list query failed",
-        )
-        .into_response(),
+        Some(json) => (StatusCode::OK, [(axum::http::header::CONTENT_TYPE, "application/json")], json.as_str().to_owned()).into_response(),
+        None => crate::json_error(StatusCode::INTERNAL_SERVER_ERROR, "charging list query failed").into_response(),
     }
 }
 
@@ -1230,6 +1275,79 @@ mod tests {
             lon: None,
             charging_state: None,
         }
+    }
+
+    #[test]
+    fn projection_refreshes_append_rewrite_delete_and_pricing() {
+        let store = sentryusb_drives::DriveStore::open_memory().unwrap();
+        let insert = |ts: i64, energy: f64| store.with_locked_conn(|conn| conn.execute(
+            "INSERT INTO telemetry_samples(ts,source,charger_power_kw,charge_energy_added_kwh,charging_state,latitude,longitude) VALUES(?1,'ble',10,?2,'charging',50,10)",
+            rusqlite::params![ts,energy]).unwrap());
+        insert(1000,1.0); insert(1060,2.0); insert(4000,5.0); insert(4060,6.0);
+        let rates = rates(Some(0.2), &[("Home",0.5)]);
+        let list = |rate: &RateConfig, home| -> serde_json::Value {
+            serde_json::from_str(&build_charging_list_with_context(&store, rate, home, "test-zone-v1").unwrap()).unwrap()
+        };
+        let original = list(&rates,None);
+        assert_eq!(original["sessions"].as_array().unwrap().len(),2);
+        assert_eq!(original["sessions"][0]["energyAddedKwh"],1.0);
+        assert_eq!(list(&rates,None), original, "unchanged projection is reusable");
+        // A saved total priced under earlier timezone rules cannot survive a change.
+        let mut old_zone = original["sessions"].clone();
+        old_zone[0]["cost"] = serde_json::json!(999.0);
+        store.with_locked_conn(|conn| conn.execute("UPDATE charge_list_projection SET body=?1",[old_zone.to_string()]).unwrap());
+        let new_zone: serde_json::Value=serde_json::from_str(&build_charging_list_with_context(&store,&rates,None,"test-zone-v2").unwrap()).unwrap();
+        assert_ne!(new_zone["sessions"][0]["cost"],999.0);
+
+        insert(4120,7.5);
+        let appended = list(&rates,None);
+        assert_eq!(appended["sessions"][0]["energyAddedKwh"],2.5);
+        assert_eq!(appended["sessions"][1],original["sessions"][1]);
+        store.with_locked_conn(|conn| conn.execute("UPDATE telemetry_samples SET charge_energy_added_kwh=4 WHERE ts=1060",[]).unwrap());
+        assert_eq!(list(&rates,None)["sessions"][1]["energyAddedKwh"],3.0);
+        let at_home = list(&rates,Some((50.0,10.0,120.0)));
+        assert_eq!(at_home["sessions"][0]["atHome"],true);
+        assert!(at_home["sessions"][0]["cost"].as_f64().unwrap() > appended["sessions"][0]["cost"].as_f64().unwrap());
+        store.set_charge_tags(4000, &["Work".to_string()]).unwrap();
+        assert_eq!(list(&rates,None)["sessions"][0]["tags"][0],"Work");
+        store.with_locked_conn(|conn| conn.execute("DELETE FROM telemetry_samples WHERE ts>=4000",[]).unwrap());
+        let deleted = list(&rates,None);
+        assert_eq!(deleted["sessions"].as_array().unwrap().len(),1);
+        assert_eq!(deleted["sessions"][0]["id"],1000);
+    }
+
+    #[test]
+    fn closed_projection_tail_resumes_after_telemetry_watermark() {
+        let session=summarize(&[row(1000,Some(7),None,Some(1.0)),row(1060,Some(7),None,Some(2.0))]);
+        let (from,kept)=resume_charging_projection(vec![session.clone()],3000);
+        assert_eq!(from,3001);assert_eq!(kept.len(),1);
+        let (from,kept)=resume_charging_projection(vec![session],1100);
+        assert_eq!(from,1000);assert!(kept.is_empty());
+    }
+
+    #[test]
+    fn counter_resets_are_unknown_without_rewriting_session_identity() {
+        let rows=vec![row(1000,Some(10),None,Some(8.0)),row(1100,Some(10),None,Some(9.0)),row(1200,Some(10),None,Some(1.0))];
+        let sessions=group_sessions(rows);
+        assert_eq!(sessions.len(),1,"this fix must not rekey historical sessions");
+        let summary=summarize(&sessions[0]);
+        assert_eq!(summary.id,1000);
+        assert_eq!(summary.energy_added_kwh,None);
+        assert_eq!(summary.efficiency_pct,None);
+    }
+
+    #[test]
+    fn flat_energy_with_soc_gain_is_unavailable_but_real_zero_is_kept() {
+        let mut rows=vec![row(1000,Some(10),None,Some(2.0)),row(1100,Some(10),None,Some(2.0))];
+        assert_eq!(summarize(&rows).energy_added_kwh,Some(0.0));
+        rows[0].battery_pct=Some(40.0);rows[1].battery_pct=Some(70.0);
+        assert_eq!(summarize(&rows).energy_added_kwh,None);
+        rows.insert(0,row(900,Some(10),None,Some(2.0)));
+        rows.push(row(1200,Some(10),None,Some(2.0)));
+        let summary=summarize(&rows);
+        assert_eq!(summary.start_soc,Some(40.0));
+        assert_eq!(summary.end_soc,Some(70.0));
+        assert_eq!(summary.energy_added_kwh,None,"missing SOC at raw boundaries must use displayed endpoints");
     }
 
     #[test]

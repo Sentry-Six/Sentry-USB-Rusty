@@ -1173,36 +1173,59 @@ function clear_archive_status () {
   rm -f /tmp/archive_status.json /tmp/archive_status.json.tmp
 }
 
+# RATE_MILLI and ETA_SECONDS belong to one monitor/job, never to a UI session.
+function archive_eta_sample () {
+  local completed="$1" total="$2" elapsed="$3" recent_done="$4" recent_elapsed="$5" idle="$6"
+  ETA_SECONDS=null
+  ETA_STATE=estimating
+  if [ "$completed" -ge "$total" ]; then ETA_SECONDS=0; ETA_STATE=complete; return; fi
+  if [ "$idle" -ge 60 ]; then ETA_STATE=stalled; return; fi
+  if [ "$elapsed" -lt 30 ] || [ "$completed" -lt 3 ] || [ "$recent_elapsed" -le 0 ]; then return; fi
+  local recent_rate=$((recent_done * 1000 / recent_elapsed))
+  local overall_rate=$((completed * 1000 / elapsed))
+  local measured=$(((recent_rate * 3 + overall_rate) / 4))
+  if [ "$measured" -gt 0 ]; then
+    if [ "${RATE_MILLI:-0}" -gt 0 ]; then RATE_MILLI=$(((RATE_MILLI * 3 + measured) / 4)); else RATE_MILLI=$measured; fi
+    ETA_SECONDS=$(((total - completed) * 1000 / RATE_MILLI))
+    ETA_STATE=ready
+  fi
+}
+
 function archive_progress_monitor () {
-  local total="$1"
-  local listfile="$2"
-  local overlay="$3"
-  local push_counter=0
-  local start_time
+  local total="$1" listfile="$2" overlay="$3" push_counter=0
+  local start_time sampled_at start_tick now_tick done=0 last_done=0 last_change=0
+  local RATE_MILLI=0 ETA_SECONDS=null ETA_STATE=estimating
+  local -a pending remaining sample_times=(0) sample_counts=(0)
+  mapfile -t pending < "$listfile"
   start_time=$(date +%s)
+  read -r start_tick _ < /proc/uptime
+  start_tick=${start_tick%.*}
 
   while true; do
     sleep 5
-    local done=0
-    while IFS= read -r line; do
-      [ -L "$overlay/$line" ] || done=$((done + 1))
-    done < "$listfile"
-    write_archive_status "{\"phase\":\"archiving\",\"current\":$done,\"total\":$total}"
+    remaining=()
+    for line in "${pending[@]}"; do
+      if [ -L "$overlay/$line" ]; then remaining+=("$line"); else done=$((done + 1)); fi
+    done
+    pending=("${remaining[@]}")
+    sampled_at=$(date +%s)
+    read -r now_tick _ < /proc/uptime
+    now_tick=$((${now_tick%.*} - start_tick))
+    if [ "$done" -gt "$last_done" ]; then last_change=$now_tick; last_done=$done; fi
+    sample_times+=("$now_tick")
+    sample_counts+=("$done")
+    while [ "${#sample_times[@]}" -gt 2 ] && [ "$((now_tick - sample_times[1]))" -ge 120 ]; do
+      sample_times=("${sample_times[@]:1}")
+      sample_counts=("${sample_counts[@]:1}")
+    done
+    archive_eta_sample "$done" "$total" "$now_tick" "$((done - sample_counts[0]))" "$((now_tick - sample_times[0]))" "$((now_tick - last_change))"
+    local progress="{\"phase\":\"archiving\",\"job_id\":\"${ARCHIVE_CYCLE_ID:-$start_time}\",\"current\":$done,\"total\":$total,\"started_at\":$start_time,\"sampled_at\":$sampled_at,\"eta_seconds\":$ETA_SECONDS,\"eta_state\":\"$ETA_STATE\"}"
+    write_archive_status "$progress"
+    echo "$progress" > /mutable/archive_in_progress.json.tmp && mv /mutable/archive_in_progress.json.tmp /mutable/archive_in_progress.json
 
-    # Mirror progress to /mutable so a mid-batch reboot leaves a record the next
-    # archiveloop run can surface in its start notification. Atomic write.
-    echo "{\"phase\":\"archiving\",\"current\":$done,\"total\":$total}" > /mutable/archive_in_progress.json.tmp \
-      && mv /mutable/archive_in_progress.json.tmp /mutable/archive_in_progress.json
-
-    # Send APNs Live Activity update every ~30s (6 × 5s)
     push_counter=$((push_counter + 1))
     if [ $((push_counter % 6)) -eq 0 ]; then
-      local eta=0
-      local elapsed=$(( $(date +%s) - start_time ))
-      if [ $done -gt 0 ] && [ $elapsed -gt 5 ]; then
-        eta=$(( (total - done) * elapsed / done ))
-      fi
-      /root/bin/send-live-activity update archiving "$done" "$total" "$eta" || true
+      /root/bin/send-live-activity update archiving "$done" "$total" "${ETA_SECONDS/null/0}" || true
     fi
   done
 }
@@ -2326,6 +2349,11 @@ function kmsgmirror {
   done
 }
 
+function write_storage_cleanup_status () {
+  printf '{"sampled_at":%s,"state":"%s"}\n' "$(date +%s)" "$1" > /run/sentryusb_storage_cleanup.json.tmp &&
+    mv /run/sentryusb_storage_cleanup.json.tmp /run/sentryusb_storage_cleanup.json || true
+}
+
 function freespacemanager {
   echo -n freespacemanager > /proc/self/comm
   # 10G
@@ -2411,6 +2439,7 @@ function freespacemanager {
     if [ -n "$pressure" ] || [ "$inode_stalled" = "true" ]
     then
       local relieved=true
+      write_storage_cleanup_status recovering
       if [ -n "$pressure" ]
       then
         /root/bin/manage_free_space.sh "$reserve" || relieved=false
@@ -2437,10 +2466,17 @@ function freespacemanager {
             warning storage_pressure "Storage is nearly full. Recording or archiving may stop — check the dashboard." 2>/dev/null || true
         fi
       fi
+      if [ "$relieved" = "false" ] || [ -e /run/sentryusb_inode_stall ]; then
+        write_storage_cleanup_status failed
+      else
+        write_storage_cleanup_status recovered
+      fi
       if [ "$relieved" = "false" ]
       then
         sleep 30
       fi
+    else
+      write_storage_cleanup_status healthy
     fi
     sleep 30
   done
@@ -2466,37 +2502,162 @@ function logrotator {
   done
 }
 
+# Six transport messages in ten seconds identify a burst, not a slow transfer.
+function wifi_watchdog_init {
+  WIFI_TRANSPORT_TIMES= WIFI_SUPPLICANT_TIMES=
+  WIFI_LAST_FAULT=-1 WIFI_STORM_LATCHED=false WIFI_LAST_ATTEMPT=-600
+  WIFI_WATCHDOG_REASON=
+}
+
+function wifi_watchdog_observe {
+  local line=$1 now=$2 kind= timestamps= recent= sample count=0 threshold
+  case "$line" in
+    *brcmfmac*CMD53*failed*|*brcmfmac*brcmf_sdio_txfail*|*brcmfmac*RXHEADER\ FAILED*|*brcmfmac*max\ tx\ seq\ number\ error*) kind=transport ;;
+    *failed\ to\ enable\ fw\ supplicant*) kind=supplicant ;;
+    *) return 1 ;;
+  esac
+  if [ "$WIFI_LAST_FAULT" -lt 0 ] || [ $((now - WIFI_LAST_FAULT)) -ge 60 ]; then
+    WIFI_STORM_LATCHED=false
+    WIFI_TRANSPORT_TIMES= WIFI_SUPPLICANT_TIMES=
+  fi
+  WIFI_LAST_FAULT=$now
+  [ "$WIFI_STORM_LATCHED" = false ] || return 1
+  if [ "$kind" = transport ]; then
+    timestamps=$WIFI_TRANSPORT_TIMES threshold=6
+  else
+    timestamps=$WIFI_SUPPLICANT_TIMES threshold=2
+  fi
+  for sample in $timestamps; do
+    if [ $((now - sample)) -le 10 ]; then
+      recent="$recent $sample"
+      count=$((count + 1))
+    fi
+  done
+  recent="$recent $now"
+  count=$((count + 1))
+  if [ "$kind" = transport ]; then WIFI_TRANSPORT_TIMES=$recent; else WIFI_SUPPLICANT_TIMES=$recent; fi
+  [ "$count" -ge "$threshold" ] || return 1
+  WIFI_STORM_LATCHED=true
+  [ $((now - WIFI_LAST_ATTEMPT)) -ge 600 ] || return 1
+  WIFI_LAST_ATTEMPT=$now
+  WIFI_WATCHDOG_REASON=$kind
+  return 0
+}
+
+function wifi_watchdog_uptime {
+  local seconds rest
+  read -r seconds rest < /proc/uptime
+  printf '%s\n' "${seconds%%.*}"
+}
+
+function wifi_watchdog_sanitize {
+  sed -E '/[Ss][Ss][Ii][Dd]:/d; s/([[:xdigit:]]{2}:){5}[[:xdigit:]]{2}/[MAC]/g; s/([0-9]{1,3}\.){3}[0-9]{1,3}/[IP]/g; s/([[:xdigit:]]{1,4}:){3,}[[:xdigit:]:%]+/[IP]/g; s/server [^ ]+ not responding/server [host] not responding/g'
+}
+
+function wifi_watchdog_capture {
+  local destination=${WIFI_WATCHDOG_DIAGNOSTICS:-/mutable/wifi-health-latest.txt}
+  (
+    umask 077
+    {
+      printf 'Wi-Fi watchdog pre-recovery: %s\nReason: %s\n' "$(date -Is)" "$WIFI_WATCHDOG_REASON"
+      printf '\nKernel transport events\n'
+      timeout -k 1 3 dmesg 2>/dev/null | grep -E 'brcmfmac|mmc1|nfs: server|under-voltage|throttl' | tail -n 80 || true
+      printf '\nWi-Fi link\n'
+      timeout -k 1 3 iw dev wlan0 link || true
+      timeout -k 1 3 iw dev wlan0 station dump || true
+      timeout -k 1 2 iw dev wlan0 get power_save || true
+      printf '\nInterface counters\n'
+      timeout -k 1 2 ip -s link show dev wlan0 || true
+      printf '\nNetworkManager state\n'
+      timeout -k 1 2 nmcli -f GENERAL.STATE,GENERAL.REASON device show wlan0 || true
+      printf '\nLoad and power\n'
+      cat /proc/loadavg /proc/pressure/io 2>/dev/null || true
+      timeout -k 1 2 vcgencmd get_throttled || true
+    } 2>&1 | wifi_watchdog_sanitize | head -c 32768 > "${destination}.tmp" &&
+      mv -f "${destination}.tmp" "$destination"
+  ) || log 'Wi-Fi watchdog: could not save pre-recovery diagnostics'
+}
+
+function wifi_watchdog_reload {
+  local unload_result=0 load_result=0
+  # Leave shared cfg80211/brcmutil dependencies and other adapters alone.
+  timeout -k 2 8 modprobe -r brcmfmac >/dev/null 2>&1 || unload_result=$?
+  timeout -k 2 8 modprobe brcmfmac >/dev/null 2>&1 || load_result=$?
+  if [ "$unload_result" -ne 0 ] || [ "$load_result" -ne 0 ]; then
+    log "Wi-Fi watchdog: recovery failed (unload=$unload_result, load=$load_result); no further attempt for this storm"
+    return 1
+  fi
+}
+
+function wifi_watchdog_verify_link {
+  local deadline now gateway
+  deadline=$(( $(wifi_watchdog_uptime) + 30 ))
+  while true; do
+    now=$(wifi_watchdog_uptime)
+    [ "$now" -lt "$deadline" ] || return 1
+    if timeout -k 1 2 iw dev wlan0 link 2>/dev/null | grep -q 'Connected to'; then
+      gateway=$(timeout -k 1 2 ip -4 route show default dev wlan0 2>/dev/null | awk '$1 == "default" && $2 == "via" {print $3; exit}') || true
+      if [ -n "$gateway" ] && timeout -k 1 2 ping -I wlan0 -c 1 -W 1 "$gateway" >/dev/null 2>&1; then
+        return 0
+      fi
+    fi
+    sleep 2
+  done
+}
+
+function wifi_watchdog_recover {
+  wifi_watchdog_capture
+  log "Wi-Fi watchdog: attempting driver reload after $WIFI_WATCHDOG_REASON error burst"
+  if ! wifi_watchdog_reload; then return 1; fi
+  if wifi_watchdog_verify_link; then
+    log 'Wi-Fi watchdog: reload completed, associated and gateway reachable; throughput and archive recovery unverified'
+  else
+    log 'Wi-Fi watchdog: reload completed but connection could not be verified; check diagnostics; no further attempt for this storm'
+    return 1
+  fi
+}
+
+function wifi_watchdog_attempt {
+  local runtime=${WIFI_WATCHDOG_RUNTIME_DIR:-/run}
+  (
+    umask 077
+    flock -n 9 || { log 'Wi-Fi watchdog: another recovery is in progress'; exit 0; }
+    local now last=-600 updated
+    now=$(wifi_watchdog_uptime)
+    if [ -r "$runtime/sentryusb_wifi_watchdog.attempt" ]; then
+      read -r last < "$runtime/sentryusb_wifi_watchdog.attempt" || true
+      [[ $last =~ ^[0-9]+$ ]] || last=-600
+    fi
+    [ $((now - last)) -ge 600 ] || exit 0
+    if grep -q '"state"[[:space:]]*:[[:space:]]*"running"' /mutable/wifi-firmware/state.json 2>/dev/null; then
+      updated=$(stat -c %Y /mutable/wifi-firmware/state.json 2>/dev/null) || updated=0
+      if [ $(( $(date +%s) - updated )) -lt 900 ]; then
+        log 'Wi-Fi watchdog: recovery skipped during firmware operation'
+        exit 0
+      fi
+    fi
+    printf '%s\n' "$now" > "$runtime/sentryusb_wifi_watchdog.attempt" || { log 'Wi-Fi watchdog: could not record cooldown; recovery skipped'; exit 1; }
+    wifi_watchdog_recover
+  ) 9>"$runtime/sentryusb_wifi_watchdog.lock"
+}
+
 function wifichecker {
   echo -n wifichecker > /proc/self/comm
-  dmesg -w | {
-    while TMOUT=1 read -r line
-    do
-      true
+  wifi_watchdog_init
+  # Only new kernel messages: a service restart must not replay an old storm.
+  dmesg -W | {
+    local line event_time
+    while read -r line; do
+      if [[ $line =~ ^\[[[:space:]]*([0-9]+)\. ]]; then
+        event_time=${BASH_REMATCH[1]}
+      else
+        event_time=$(wifi_watchdog_uptime)
+      fi
+      if wifi_watchdog_observe "$line" "$event_time"; then
+        wifi_watchdog_attempt || true
+      fi
     done
-    wifi=working
-    while read -r line
-    do
-      case $line in
-        *"failed to enable fw supplicant")
-          if [ "$wifi" = "working" ]
-          then
-            wifi="notworking"
-          else
-            log "restarting wifi because of: $line"
-            modprobe -r brcmfmac cfg80211 brcmutil || true
-            modprobe brcmfmac || true
-            while TMOUT=1 read -r line
-            do
-              true
-            done
-            wifi="working"
-          fi
-          ;;
-        *)
-          wifi=working
-          ;;
-      esac
-    done
+    log 'Wi-Fi watchdog: kernel event stream ended; monitoring stopped'
   }
 }
 

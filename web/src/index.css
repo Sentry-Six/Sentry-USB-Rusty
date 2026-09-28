@@ -764,3 +764,24 @@ code, pre, .font-mono {
 /* The Setup Wizard sits over the busy dashboard, so its glass uses a more
    opaque fill (≈ level 5) than the global level-2 — less see-through. */
 .setup-wizard-glass { --lg-glass: 0.05; }
+
+/* Content dialogs need a stable surface, independent of decorative card glass. */
+.modal-card, .setup-wizard-glass,
+html[data-style="liquid"] .modal-card,
+html[data-style="liquid"] .setup-wizard-glass {
+  background: linear-gradient(155deg, rgba(23, 30, 40, .98), rgba(10, 15, 22, .98));
+  border: 1px solid rgba(180, 195, 215, .22);
+  box-shadow: 0 24px 80px rgba(0, 0, 0, .65);
+}
+.modal-shell { background: rgba(0, 0, 0, .68); overscroll-behavior: contain; }
+.modal-close { width: 36px; height: 36px; }
+.settings-grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 16px; align-items: start; }
+@media (min-width: 1100px) { .settings-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+.settings-details > summary { cursor: pointer; padding: 8px 0; color: #cbd5e1; font-size: 13px; }
+.settings-details > summary:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 3px; border-radius: 4px; }
+.setup-stepper { gap: 4px; overflow-x: auto; padding: 4px 0 8px; }
+.setup-step { flex: 1 0 auto; min-width: 68px; display: flex; flex-direction: column; justify-content: flex-start; gap: 6px; padding: 4px; }
+.setup-step > span { white-space: nowrap; font-size: 11px; line-height: 16px; }
+@media (prefers-reduced-transparency: reduce) {
+  .modal-card, .setup-wizard-glass, html[data-style="liquid"] .modal-card, html[data-style="liquid"] .setup-wizard-glass { background: #101720; backdrop-filter: none; }
+}

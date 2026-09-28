@@ -1,6 +1,7 @@
 import { useState } from "react"
 import { PowerIcon, PowerSettingsNewIcon } from "@/components/icons"
 import { PrefCard } from "@/components/settings/PrefCard"
+import { InfoButton } from "@/components/ui/InfoButton"
 import { KeepAccessoryConfig } from "@/components/settings/KeepAccessoryConfig"
 import { useKeepAccessory } from "@/hooks/useKeepAccessory"
 
@@ -37,11 +38,12 @@ export function KeepAccessorySection({ onOpenWizard }: Props = {}) {
       icon={<PowerIcon className="h-3.5 w-3.5" />}
       halo="amber"
       title="Keep Accessory"
+      help={<InfoButton title="Keep accessory power"><p>Controls accessory power for a Pi powered from the car’s 12V supply. Configure its home/away behavior in the Setup Wizard.</p></InfoButton>}
       disabled={
         showDisabled
           ? {
               reason:
-                "Enable 'Keep Accessory' in the Setup Wizard. This feature is only useful for 12V-powered Pis.",
+                "Not configured. For Pis powered by the car’s 12V outlet.",
               cta: onOpenWizard
                 ? { label: "Open Setup Wizard", onClick: onOpenWizard }
                 : undefined,

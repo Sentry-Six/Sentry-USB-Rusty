@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react"
+import { SelectMenu } from "@/components/ui/SelectMenu"
 import { WarningIcon } from "@/components/icons"
 import type { StepProps } from "./SetupWizard"
 
@@ -75,12 +76,8 @@ export function SizeInput({
       : "—"
 
   const inputCls = disabled
-    ? "flex-1 cursor-not-allowed rounded-lg border border-white/5 bg-white/[0.02] px-3 py-2 text-sm text-slate-500 outline-none"
-    : "flex-1 rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm text-slate-100 placeholder-slate-600 outline-none transition focus:border-blue-500/50 focus:ring-1 focus:ring-blue-500/25"
-
-  const selectCls = disabled
-    ? "cursor-not-allowed rounded-lg border border-white/5 bg-white/[0.02] px-2 py-2 text-sm text-slate-500 outline-none"
-    : "rounded-lg border border-white/10 bg-slate-900 px-2 py-2 text-sm text-slate-100 outline-none transition focus:border-blue-500/50 focus:ring-1 focus:ring-blue-500/25 [&>option]:bg-slate-900 [&>option]:text-slate-100"
+    ? "min-w-0 flex-1 cursor-not-allowed rounded-lg border border-white/5 bg-white/[0.02] px-3 py-2 text-sm text-slate-500 outline-none"
+    : "min-w-0 flex-1 rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm text-slate-100 placeholder-slate-600 outline-none transition focus:border-blue-500/50 focus:ring-1 focus:ring-blue-500/25"
 
   return (
     <div className={`rounded-lg border border-white/5 bg-white/[0.02] p-4 ${disabled ? "opacity-70" : ""}`}>
@@ -92,6 +89,7 @@ export function SizeInput({
         <input
           type="text"
           inputMode="numeric"
+          aria-label={label}
           value={focused ? localVal : numericVal}
           onChange={(e) => handleChange(e.target.value)}
           onFocus={handleFocus}
@@ -101,16 +99,8 @@ export function SizeInput({
           title={disabled ? "Locked after first setup" : undefined}
           className={inputCls}
         />
-        <select
-          value={unit}
-          onChange={(e) => handleUnitChange(e.target.value as Unit)}
-          disabled={disabled}
-          title={disabled ? "Locked after first setup" : undefined}
-          className={selectCls}
-        >
-          <option value="G">GB</option>
-          <option value="M">MB</option>
-        </select>
+        <SelectMenu label={`${label} units`} value={unit} onChange={value => handleUnitChange(value as Unit)}
+          disabled={disabled} options={[{ value: "G", label: "GB" }, { value: "M", label: "MB" }]} />
       </div>
       <p className="mt-1 text-xs text-slate-600">{hint}</p>
       {!disabled && warning && numericVal && unit === "G" && (

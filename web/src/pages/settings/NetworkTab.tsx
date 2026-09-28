@@ -24,12 +24,6 @@ export function NetworkTab({ status, onOpenWizard, openTravelMode, onTravelModeC
     !!status?.ether_speed && status.ether_speed !== "Unknown!"
 
   return (
-    // One unified 2-column grid for the whole tab so every card aligns to the
-    // same two columns. The old layout stacked three separate containers — a
-    // 50/50 grid (WiFi/Ethernet), a masonry PrefGrid (BLE), and another grid
-    // with a different breakpoint (Away/Cloud) — so column edges never lined
-    // up row-to-row. Cards now pair up in order and collapse to one column
-    // below lg (where two ~360px cards would get cramped).
     <div className="grid grid-cols-1 gap-2.5 lg:grid-cols-2">
       {/* Network interfaces */}
       <PrefCard

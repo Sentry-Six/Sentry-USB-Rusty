@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react"
 import { FilterAltIcon } from "@/components/icons"
+import { DROPDOWN_SURFACE } from "@/components/ui/dropdownStyles"
+import { SelectMenu } from "@/components/ui/SelectMenu"
 import { cn } from "@/lib/utils"
 import type { DrivesFilters } from "@/hooks/useDrivesList"
 import type { DriveSummary } from "@/types/drives"
@@ -10,13 +12,14 @@ const kmToMi = (km: number): number => km / KM_PER_MI
 
 interface FilterPopoverProps {
   drives: DriveSummary[]
+  tags?: string[]
   filters: DrivesFilters
   onChange: (f: DrivesFilters) => void
   // Filters store miles and convert only at the input boundary.
   metric: boolean
 }
 
-export function FilterPopover({ drives, filters, onChange, metric }: FilterPopoverProps) {
+export function FilterPopover({ drives, tags: allTags, filters, onChange, metric }: FilterPopoverProps) {
   const [open, setOpen] = useState(false)
   const wrapRef = useRef<HTMLDivElement>(null)
   const [draft, setDraft] = useState<DrivesFilters>(filters)
@@ -26,14 +29,17 @@ export function FilterPopover({ drives, filters, onChange, metric }: FilterPopov
 
   useEffect(() => {
     if (!open) return
-    const onDoc = (e: MouseEvent) => {
-      if (!wrapRef.current?.contains(e.target as Node)) setOpen(false)
+    const onDoc = (event: MouseEvent) => {
+      const popup = (event.target as HTMLElement | null)?.closest?.("[data-select-menu-popup]")
+      const owner = popup?.getAttribute("data-select-owner")
+      if (owner && wrapRef.current?.contains(document.getElementById(owner))) return
+      if (!wrapRef.current?.contains(event.target as Node)) setOpen(false)
     }
     document.addEventListener("mousedown", onDoc)
     return () => document.removeEventListener("mousedown", onDoc)
   }, [open])
 
-  const tags = useMemo(() => collectTags(drives), [drives])
+  const tags = useMemo(() => allTags ?? collectTags(drives), [drives, allTags])
 
   const apply = () => {
     onChange(draft)
@@ -85,7 +91,7 @@ export function FilterPopover({ drives, filters, onChange, metric }: FilterPopov
         )}
       </button>
       {open && (
-        <div className="absolute left-0 top-full z-50 mt-2 w-72 rounded-xl border border-white/10 bg-slate-900/95 p-3 shadow-2xl backdrop-blur">
+        <div className={cn(DROPDOWN_SURFACE, "absolute left-0 top-full z-50 mt-2 w-72 max-w-[calc(100vw-2rem)] p-3")}>
           <Select
             label="Tag"
             value={draft.tag ?? ""}
@@ -132,18 +138,8 @@ function Select({ label, value, options, onChange }: SelectProps) {
       <span className="mb-1 block text-[10px] font-semibold uppercase tracking-wider text-slate-500">
         {label}
       </span>
-      <select
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        className="w-full rounded-md border border-white/10 bg-slate-950/60 px-2 py-1.5 text-sm text-slate-100 focus:border-emerald-400/40 focus:outline-none"
-      >
-        <option value="">Anywhere</option>
-        {options.map((o) => (
-          <option key={o} value={o}>
-            {o}
-          </option>
-        ))}
-      </select>
+      <SelectMenu label={label} value={value} onChange={onChange} fullWidth searchable searchPlaceholder="Find a tag"
+        options={[{ value: "", label: "Anywhere" }, ...options.map((value) => ({ value, label: value }))]} />
     </label>
   )
 }

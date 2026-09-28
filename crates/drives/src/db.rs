@@ -237,7 +237,7 @@ const ARCHIVE_SYNC_EXPORT_DATE_KEY: &str = "archive_sync_export_date";
 // hour-weighted late-night miles. Stale v10 caches hold v1-formula
 // scores computed from absolute rates.
 // v13: real parent spans for Park thresholds/segment clocks and millisecond IDs.
-const DRIVE_LIST_CACHE_ALGO_VERSION: &str = "13";
+const DRIVE_LIST_CACHE_ALGO_VERSION: &str = "14";
 
 /// Version tag for the per-clip aggregate FORMULA (compute_route_aggregates).
 /// Distinct from the cache algo version above: this gates a one-shot
@@ -1233,14 +1233,14 @@ impl DriveStore {
     /// Replace the tags for `drive_key`. Empty/zero-length `tags` drops
     /// the entry entirely. Queues the change for cloud sync.
     pub fn set_drive_tags(&self, drive_key: &str, tags: &[String]) -> Result<()> {
-        self.set_drive_tags_inner(drive_key, tags, true)
+        self.set_drive_tags_inner(drive_key, tags, true, false)
     }
 
     /// Same as `set_drive_tags` but does NOT queue the change for cloud
     /// sync — used when APPLYING a change pulled from the cloud, so the
     /// write doesn't echo straight back up.
     pub fn set_drive_tags_from_sync(&self, drive_key: &str, tags: &[String]) -> Result<()> {
-        self.set_drive_tags_inner(drive_key, tags, false)
+        self.set_drive_tags_inner(drive_key, tags, false, false)
     }
 
     /// Apply complete per-drive projections from authenticated member states.
@@ -1274,11 +1274,18 @@ impl DriveStore {
         Ok(())
     }
 
-    fn set_drive_tags_inner(&self, drive_key: &str, tags: &[String], mark_dirty: bool) -> Result<()> {
+    pub fn add_drive_tags(&self, drive_key: &str, tags: &[String]) -> Result<()> {
+        self.set_drive_tags_inner(drive_key, tags, true, true)
+    }
+
+    fn set_drive_tags_inner(&self, drive_key: &str, tags: &[String], mark_dirty: bool, add_only: bool) -> Result<()> {
         let write=|conn:&mut Connection| -> Result<()> {
         let tx = conn.transaction()?;
         let before = tx.prepare_cached("SELECT tag FROM drive_tags WHERE drive_key=?1 ORDER BY tag")?
             .query_map(params![drive_key], |row| row.get::<_,String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
+        let mut combined = before.clone();
+        if add_only { for tag in tags { if !combined.contains(tag) { combined.push(tag.clone()); } } }
+        let tags = if add_only { combined.as_slice() } else { tags };
         let was_queued = mutable_intent::queued(&tx, "drive", drive_key)?;
         let scope = if mark_dirty {
             let captured = read_drive_edit_scope(&tx, drive_key)?;
@@ -3121,6 +3128,70 @@ impl DriveStore {
         Ok(json)
     }
 
+    /// Only decode points belonging to the requested visible drives. The durable
+    /// route clock prevents previews surviving an import, edit or deletion.
+    pub fn get_route_previews_json(&self, starts: &[String], max_points: usize) -> Result<String> {
+        anyhow::ensure!(starts.len() <= 20, "at most 20 drive previews per request");
+        let _build = self.overview_rebuild_lock.lock().unwrap();
+        let read = |conn: &Connection| -> Result<(i64, Vec<serde_json::Value>, Vec<(String, String)>)> {
+            let tx = conn.unchecked_transaction()?;
+            let revision: i64 = tx.query_row("SELECT revision FROM mutable_route_source_clock WHERE id=1", [], |r| r.get(0))?;
+            let mut out = Vec::new();
+            let mut missing = std::collections::HashSet::new();
+            for start in starts {
+                let cached: Option<String> = tx.query_row(
+                    "SELECT body FROM drive_preview_cache WHERE start_time=?1 AND max_points=?2 AND revision=?3 AND version=1",
+                    rusqlite::params![start, max_points as i64, revision], |r| r.get(0)).optional()?;
+                match cached.and_then(|body| serde_json::from_str(&body).ok()) {
+                    Some(value) => out.push(value),
+                    None => { missing.insert(start.as_str()); }
+                }
+            }
+            let mut built = Vec::new();
+            if !missing.is_empty() {
+                let metas = select_overview_metas(&tx)?;
+                let plans = crate::grouper::plan_overviews(&metas);
+                for (index, plan) in plans.iter().enumerate() {
+                    let Some(first) = plan.fragments.first() else { continue };
+                    let start = first.timestamp.format("%Y-%m-%dT%H:%M:%S%.3f").to_string();
+                    if !missing.contains(start.as_str()) { continue }
+                    let files: std::collections::BTreeSet<&str> = plan.fragments.iter()
+                        .map(|f| metas[f.meta_idx].file.as_str()).collect();
+                    let points = select_points_by_files(&tx, &files.into_iter().collect::<Vec<_>>())?;
+                    let overview = crate::grouper::overview_from_fragments(index as i32, plan, &metas,
+                        &mut |idx| Ok(points.get(&metas[idx].file).cloned().unwrap_or_default()), max_points)?;
+                    let value = serde_json::to_value(overview)?;
+                    built.push((start, serde_json::to_string(&value)?));
+                    out.push(value);
+                }
+            }
+            Ok((revision, out, built))
+        };
+        let (revision, out, built) = if self.path == ":memory:" {
+            self.with_locked_conn(read)?
+        } else {
+            read(&open_readonly_connection(&self.path)?)?
+        };
+        if !built.is_empty() {
+            // Cache persistence is optional; a busy/full cache must not hide a valid preview.
+            let saved: Result<()> = self.with_locked_conn(|conn| {
+                let tx = conn.unchecked_transaction()?;
+                let current: i64 = tx.query_row("SELECT revision FROM mutable_route_source_clock WHERE id=1", [], |r| r.get(0))?;
+                if current == revision {
+                    for (start, body) in built {
+                        tx.execute("INSERT OR REPLACE INTO drive_preview_cache(start_time,max_points,revision,body,used_at,version) VALUES(?1,?2,?3,?4,?5,1)",
+                            rusqlite::params![start, max_points as i64, revision, body, now_unix()])?;
+                    }
+                    tx.execute("DELETE FROM drive_preview_cache WHERE rowid NOT IN (SELECT rowid FROM drive_preview_cache ORDER BY used_at DESC,rowid DESC LIMIT 200)", [])?;
+                }
+                tx.commit()?;
+                Ok(())
+            });
+            if let Err(error) = saved { tracing::debug!(%error, "preview cache persistence skipped"); }
+        }
+        Ok(serde_json::to_string(&out)?)
+    }
+
     /// Streaming overview build: plan every drive from metadata, then
     /// decode point BLOBs in bounded batches of consecutive drives.
     /// Peak heap is one batch (~budgeted) plus the response, instead of
@@ -3620,6 +3691,7 @@ fn artifacts_from_drives(
         0.0
     };
     let stats_json = serde_json::to_string(&serde_json::json!({
+        "latest_drive_end":      visible.iter().map(|d| d.end_time.as_str()).max(),
         "drives_count":          drives_count,
         "routes_count":          route_count,
         "processed_count":       0,
@@ -5159,6 +5231,35 @@ mod tests {
         let cached2 = store.get_cached_route_overviews_json(20).unwrap();
         assert_ne!(cached2, cached1, "cache must refresh after a new route");
         assert_eq!(cached2, live2, "refreshed cache must equal live output");
+    }
+
+    #[test]
+    fn add_drive_tags_keeps_existing_tags_and_deduplicates() {
+        let store=DriveStore::open_memory().unwrap();
+        let key="2026-09-27T12:00:00.000";
+        store.set_drive_tags(key,&["Existing".to_string()]).unwrap();
+        store.add_drive_tags(key,&["Work".to_string(),"Existing".to_string()]).unwrap();
+        assert_eq!(store.get_drive_tags(key).unwrap(),vec!["Existing".to_string(),"Work".to_string()]);
+    }
+
+    #[test]
+    fn visible_previews_skip_off_page_point_blobs_and_invalidate_on_rewrite() {
+        let store=DriveStore::open_memory().unwrap();
+        let points=vec![[37.7749,-122.4194],[37.7760,-122.4180]];
+        for name in ["2025-02-02_09-00-00-front.mp4","2025-02-02_12-00-00-front.mp4"] {
+            store.add_route(name,"2025-02-02",&points,&[4,4],&[0,0],&[15.0,16.0],&[0.0,0.0],0,2,&[],&[]).unwrap();
+        }
+        let all: Vec<serde_json::Value> = serde_json::from_str(&store.get_cached_route_overviews_json(20).unwrap()).unwrap();
+        let selected=all[0]["startTime"].as_str().unwrap().to_string();
+        // An invalid point payload on another page must not be read at all.
+        store.with_locked_conn(|conn| conn.execute("UPDATE routes SET points_blob=x'01' WHERE file LIKE '%12-00-00%'",[]).unwrap());
+        let first=store.get_route_previews_json(&[selected.clone()],20).unwrap();
+        let value: Vec<serde_json::Value> = serde_json::from_str(&first).unwrap();
+        assert_eq!(value,vec![all[0].clone()]);
+        assert_eq!(store.get_route_previews_json(&[selected.clone()],20).unwrap(),first);
+        store.add_route("2025-02-02_09-00-00-front.mp4","2025-02-02",&[[38.0,-122.0],[38.1,-122.1]],&[4,4],&[0,0],&[15.0,16.0],&[0.0,0.0],0,2,&[],&[]).unwrap();
+        assert_ne!(store.get_route_previews_json(&[selected],20).unwrap(),first);
+        assert!(store.get_route_previews_json(&vec!["invalid".to_string();21],20).is_err());
     }
 
     #[test]

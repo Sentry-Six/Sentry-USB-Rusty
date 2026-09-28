@@ -46,7 +46,7 @@ case "$ACTION" in
     CURRENT="${3:-0}"
     TOTAL="${4:-0}"
     ETA="${5:-0}"
-    curl -sf --connect-timeout 10 --max-time 30 -X POST \
+    curl -sf --connect-timeout 2 --max-time 3 -X POST \
       -H "Content-Type: application/json" \
       -H "X-Device-Secret: $MOBILE_PUSH_SECRET" \
       -d "{

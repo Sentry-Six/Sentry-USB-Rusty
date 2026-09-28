@@ -229,6 +229,11 @@ function process_clips_dir() {
     fi
 
     RUNNING=$(echo "$STATUS" | grep -o '"running":true' || true)
+    if [ $((elapsed % 30)) -eq 0 ]; then
+      local activity_current activity_total activity_eta
+      read -r activity_current activity_total activity_eta < <(printf '%s' "$STATUS" | python3 -c 'import json,sys; s=json.load(sys.stdin); print(s.get("process_current",0),s.get("process_total",0),s.get("process_eta_seconds") or 0)')
+      /root/bin/send-live-activity update processing "${activity_current:-0}" "${activity_total:-0}" "${activity_eta:-0}" || true
+    fi
     if echo "$STATUS" | python3 -c 'import json,sys; s=json.load(sys.stdin); sys.exit(0 if s.get("running") is False and s.get("archive_work_running") is False and not s.get("error") else 1)'; then
       ROUTES=$(echo "$STATUS" | grep -o '"routes_count":[0-9]*' | cut -d: -f2)
       PROCESSED=$(echo "$STATUS" | grep -o '"processed_count":[0-9]*' | cut -d: -f2)

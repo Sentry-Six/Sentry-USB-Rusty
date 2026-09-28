@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react"
 import { CachedIcon, HardDriveIcon } from "@/components/icons"
 import type { StepProps } from "../SetupWizard"
+import { SelectMenu } from "@/components/ui/SelectMenu"
 import { SizeInput } from "../SizeInput"
 
 interface BlockDevice {
@@ -112,16 +113,12 @@ export function StorageStep({ data, onChange }: StepProps) {
           External Data Drive
         </label>
         <div className="flex gap-2">
-          <select
-            value={data.DATA_DRIVE ?? ""}
-            onChange={(e) => onChange("DATA_DRIVE", e.target.value)}
-            className="flex-1 rounded-lg border border-white/10 bg-slate-900 px-3 py-2 text-sm text-slate-100 outline-none transition focus:border-blue-500/50 focus:ring-1 focus:ring-blue-500/25 [&>option]:bg-slate-900 [&>option]:text-slate-100"
-          >
-            <option value="">None (use SD card)</option>
-            {devices.map((d) => (
-              <option key={d.path} value={d.path}>{d.name}</option>
-            ))}
-          </select>
+          <SelectMenu label="External data drive" fullWidth value={data.DATA_DRIVE ?? ""} onChange={value => onChange("DATA_DRIVE", value)}
+            options={[
+              { value: "", label: "None (use SD card)" },
+              ...(data.DATA_DRIVE && !devices.some(device => device.path === data.DATA_DRIVE) ? [{ value: data.DATA_DRIVE, label: `${data.DATA_DRIVE} (configured)` }] : []),
+              ...devices.map(device => ({ value: device.path, label: device.name })),
+            ]} />
           <button
             type="button"
             onClick={fetchDevices}

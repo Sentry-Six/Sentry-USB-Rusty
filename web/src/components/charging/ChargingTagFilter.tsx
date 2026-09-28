@@ -1,3 +1,4 @@
+import { DROPDOWN_SURFACE, DROPDOWN_TRIGGER, DROPDOWN_OPTION } from "@/components/ui/dropdownStyles"
 import { useEffect, useRef, useState } from "react"
 import { CheckIcon, SellIcon } from "@/components/icons"
 import { cn } from "@/lib/utils"
@@ -34,12 +35,13 @@ export function ChargingTagFilter({
   const count = selected.length
 
   return (
-    <div ref={wrapRef} className="relative">
+    <div ref={wrapRef} className="relative" onKeyDown={event => { if (event.key === "Escape" && open) { event.stopPropagation(); setOpen(false); event.currentTarget.querySelector("button")?.focus() } }}>
       <button
         type="button"
+        aria-expanded={open}
         onClick={() => setOpen((o) => !o)}
         className={cn(
-          "inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs font-medium transition-colors",
+          DROPDOWN_TRIGGER,
           count > 0
             ? "border-emerald-400/30 bg-emerald-400/10 text-emerald-200 hover:bg-emerald-400/15"
             : "border-white/10 bg-white/[0.03] text-slate-300 hover:bg-white/[0.06]",
@@ -54,7 +56,7 @@ export function ChargingTagFilter({
         )}
       </button>
       {open && (
-        <div className="absolute left-0 top-full z-50 mt-2 w-56 rounded-xl border border-white/10 bg-slate-900/95 p-2 shadow-2xl backdrop-blur">
+        <div className={`absolute left-0 top-full z-50 mt-2 w-56 p-2 ${DROPDOWN_SURFACE}`}>
           {tags.length === 0 ? (
             <p className="px-2 py-1.5 text-xs text-slate-500">
               No tags yet. Tag a charge to filter by it.
@@ -68,7 +70,8 @@ export function ChargingTagFilter({
                     key={t}
                     type="button"
                     onClick={() => toggle(t)}
-                    className="flex items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm text-slate-200 hover:bg-white/5"
+                    aria-pressed={on}
+                    className={cn(DROPDOWN_OPTION, on && "bg-white/10 text-emerald-300")}
                   >
                     <span
                       className={cn(

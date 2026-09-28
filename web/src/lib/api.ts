@@ -14,6 +14,16 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
   return res.json() as Promise<T>
 }
 
+export interface ManagedStorageHealth {
+  state: "healthy" | "recovering" | "warn" | "fail" | "unknown"
+  message: string
+  reserve_bytes: number
+  free_bytes: number
+  total_bytes: number
+  cleanup_state: string
+  cleanup_sampled_at?: number | null
+}
+
 export interface PiStatus {
   cpu_temp: string
   num_snapshots: string
@@ -40,9 +50,16 @@ export interface PiStatus {
   wifi_tx_bps?: number
   ether_rx_bps?: number
   ether_tx_bps?: number
+  wifi_rate_state?: string
+  ether_rate_state?: string
+  wifi_sample_age_ms?: number | null
+  ether_sample_age_ms?: number | null
+  sampled_at?: number
+  storage_health?: ManagedStorageHealth
 }
 
 export interface DriveStats {
+  latest_drive_end?: string | null
   drives_count: number
   routes_count: number
   processed_count: number
@@ -80,6 +97,16 @@ export interface DriveStatus {
   process_current?: number
   process_total?: number
   archive_cycle?: ArchiveCycle | null
+  job_id?: string
+  started_at?: number
+  sampled_at?: number
+  eta_seconds?: number | null
+  eta_state?: string
+  process_eta_seconds?: number | null
+  process_eta_state?: string
+  process_job_id?: string
+  process_started_at?: number
+  process_sampled_at?: number
 }
 
 export interface EventMeta {
@@ -112,6 +139,7 @@ export interface StorageBreakdown {
   snapshots_size: number
   total_space: number
   free_space: number
+  storage_health?: ManagedStorageHealth
 }
 
 interface FSDDayStats {
@@ -278,10 +306,10 @@ export const api = {
         ...(fastRetry === undefined ? {} : { fast_retry: fastRetry }),
       }),
     }),
-  getStatus: () => request<PiStatus>("/status"),
-  getStorageBreakdown: () => request<StorageBreakdown>("/status/storage"),
-  getDriveStats: () => request<DriveStats>("/drives/stats"),
-  getDriveStatus: () => request<DriveStatus>("/drives/status"),
+  getStatus: (signal?: AbortSignal) => request<PiStatus>("/status", { signal }),
+  getStorageBreakdown: (signal?: AbortSignal) => request<StorageBreakdown>("/status/storage", { signal }),
+  getDriveStats: (signal?: AbortSignal) => request<DriveStats>("/drives/stats", { signal }),
+  getDriveStatus: (signal?: AbortSignal) => request<DriveStatus>("/drives/status", { signal }),
   getFSDAnalytics: (period: string = "week") =>
     request<FSDAnalytics>(`/drives/fsd-analytics?period=${period}`),
   getSafetyAnalytics: (period: string = "month") =>

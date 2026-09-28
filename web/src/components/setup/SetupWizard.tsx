@@ -8,6 +8,8 @@ import {
   WarningIcon,
 } from "@/components/icons"
 import { cn } from "@/lib/utils"
+import { SelectMenu } from "@/components/ui/SelectMenu"
+import { DialogLayer } from "@/components/ui/Modal"
 import { SetupProgress } from "./SetupProgress"
 import { WelcomeStep } from "./steps/WelcomeStep"
 import { PrivacyStep } from "./steps/PrivacyStep"
@@ -747,11 +749,19 @@ export function SetupWizard({ initialData, initialStepId, onClose }: SetupWizard
 
   const isLast = currentStep === steps.length - 1
   const isFirst = currentStep === 0
+  function selectStep(index: number) {
+    if (index > currentStep) {
+      for (let step = 0; step < index; step++) {
+        if (getStepError(step, formData) !== null) { setCurrentStep(step); return }
+      }
+    }
+    setCurrentStep(index)
+  }
 
   // ── Destructive change warning dialog ──
   if (destructiveWarning) {
     return (
-      <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
+      <DialogLayer label="Confirm drive changes" onClose={() => setDestructiveWarning(null)}>
         <div className="glass-card setup-wizard-glass flex w-full max-w-lg flex-col gap-5 p-8">
           <div className="flex items-start gap-4">
             <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-full bg-amber-500/20">
@@ -801,7 +811,7 @@ export function SetupWizard({ initialData, initialStepId, onClose }: SetupWizard
             </button>
           </div>
         </div>
-      </div>
+      </DialogLayer>
     )
   }
 
@@ -809,7 +819,7 @@ export function SetupWizard({ initialData, initialStepId, onClose }: SetupWizard
   if (phase !== "wizard") {
     const isInProgress = phase === "applying" || phase === "running" || phase === "rebooting" || phase === "finalizing"
     return (
-      <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
+      <DialogLayer label="Setup progress" onClose={onClose} dismissable={!isInProgress}>
         <div className="glass-card setup-wizard-glass flex w-full max-w-2xl flex-col gap-6 p-8 lg:max-w-5xl">
           {isInProgress ? (
             <>
@@ -886,14 +896,14 @@ export function SetupWizard({ initialData, initialStepId, onClose }: SetupWizard
             </>
           )}
         </div>
-      </div>
+      </DialogLayer>
     )
   }
 
   // ── Wizard steps ──
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
-      <div className="glass-card setup-wizard-glass relative flex h-[90vh] w-full max-w-3xl flex-col overflow-hidden">
+    <DialogLayer label="Setup Wizard" onClose={onClose}>
+      <div className="glass-card setup-wizard-glass relative flex h-[min(90vh,900px)] w-full max-w-5xl flex-col overflow-hidden">
         {/* Header with step indicator */}
         <div className="shrink-0 border-b border-white/5 px-6 py-4">
           <div className="mb-3 flex items-center justify-between">
@@ -909,27 +919,23 @@ export function SetupWizard({ initialData, initialStepId, onClose }: SetupWizard
           </div>
 
           {/* Step progress bar */}
-          <div className="flex gap-1">
+          <p className="mb-2 text-sm text-slate-300" aria-live="polite">Step {currentStep + 1} of {steps.length} · {steps[currentStep].title}</p>
+          <div className="mb-2 sm:hidden"><SelectMenu label="Go to setup step" fullWidth value={String(currentStep)}
+            onChange={value => selectStep(Number(value))}
+            options={steps.map((step, index) => ({ value: String(index), label: `${index + 1}. ${step.title}` }))} /></div>
+          <div className="setup-stepper hidden sm:flex" aria-label="Setup steps">
             {steps.map((step, i) => (
               <button
                 key={step.id}
-                onClick={() => {
-                  if (i > currentStep) {
-                    for (let s = 0; s < i; s++) {
-                      if (getStepError(s, formData) !== null) {
-                        setCurrentStep(s)
-                        return
-                      }
-                    }
-                  }
-                  setCurrentStep(i)
-                }}
-                className="group flex-1"
+                onClick={() => selectStep(i)}
+                className="setup-step group"
+                aria-current={i === currentStep ? "step" : undefined}
+                aria-label={`Step ${i + 1}: ${step.title}`}
                 title={step.title}
               >
                 <div
                   className={cn(
-                    "h-1 rounded-full transition-all",
+                    "h-1 w-full rounded-full transition-all",
                     i === currentStep
                       ? "bg-blue-400"
                       : i < currentStep && getStepError(i, formData) !== null
@@ -939,14 +945,14 @@ export function SetupWizard({ initialData, initialStepId, onClose }: SetupWizard
                           : "bg-slate-800"
                   )}
                 />
-                <p
+                <span
                   className={cn(
-                    "mt-1 hidden text-[10px] font-medium sm:block",
+                    "font-medium",
                     i === currentStep ? "text-slate-200" : i < currentStep ? "text-slate-400" : "text-slate-500"
                   )}
                 >
                   {step.title}
-                </p>
+                </span>
               </button>
             ))}
           </div>
@@ -1053,6 +1059,6 @@ export function SetupWizard({ initialData, initialStepId, onClose }: SetupWizard
           </div>
         </div>
       </div>
-    </div>
+    </DialogLayer>
   )
 }

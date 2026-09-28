@@ -1,3 +1,4 @@
+import { SelectMenu } from "@/components/ui/SelectMenu"
 import { useState, useEffect, useRef, useCallback, useMemo, type ReactNode } from "react"
 import { useSearchParams } from "react-router-dom"
 import {
@@ -7,6 +8,7 @@ import {
   ProgressActivityIcon,
   ReceiptLongIcon,
 } from "@/components/icons"
+import { boundLogWindow, type LogWindow } from "@/components/logs/logBuffer"
 import { cn } from "@/lib/utils"
 
 const logTabs = [
@@ -288,12 +290,40 @@ export default function Logs() {
   const [content, setContent] = useState<string>("Loading...")
   const [loading, setLoading] = useState(false)
   const [showScrollBtn, setShowScrollBtn] = useState(false)
+  const [live, setLive] = useState(true)
+  const [search, setSearch] = useState("")
+  const [level, setLevel] = useState("all")
+  const [error, setError] = useState<string | null>(null)
+  const [before, setBefore] = useState<number | null>(null)
+  const [loadingOlder, setLoadingOlder] = useState(false)
+  const cursorRef = useRef<string | null>(null)
+  const generation = useRef(0)
+  const legacy = useRef(false)
+  const buffer = useRef<LogWindow>({ content: "", start: 0 })
+  const loaded = useRef(false)
+  const pollRequest = useRef<AbortController | null>(null)
+  const olderRequest = useRef<AbortController | null>(null)
+  const applyWindow = useCallback((value: string, start: number, keep: "newest" | "oldest" = "newest", pageable = true) => {
+    const next = boundLogWindow(value, start, keep)
+    buffer.current = next
+    setContent(next.content)
+    setBefore(pageable && next.start > 0 ? next.start : null)
+  }, [])
   const preRef = useRef<HTMLPreElement>(null)
   const followRef = useRef(true)
 
   const activeLog = logTabs.find((t) => t.id === activeTab)!
 
   function setActiveTab(tab: string) {
+    if (tab === activeTab) return
+    generation.current++
+    pollRequest.current?.abort()
+    olderRequest.current?.abort()
+    loaded.current = false
+    buffer.current = { content: "", start: 0 }
+    cursorRef.current = null
+    legacy.current = false
+    setBefore(null); setContent(""); setError(null)
     setActiveTabState(tab)
     const next = new URLSearchParams(searchParams)
     next.set("tab", tab)
@@ -328,44 +358,103 @@ export default function Logs() {
   }, [activeTab])
 
   useEffect(() => {
-    let mounted = true
+    if (!live && loaded.current) return
+    const id = ++generation.current
+    const abort = new AbortController()
+    pollRequest.current = abort
+    let timer: ReturnType<typeof setTimeout> | undefined
+    let inFlight = false
     setLoading(true)
-    setContent("")
-
     async function fetchLog() {
+      if (inFlight || abort.signal.aborted) return
+      if (document.hidden) { timer = setTimeout(fetchLog, 2000); return }
+      inFlight = true
+      let more = false
       try {
-        const url =
-          activeTab === "diagnostics"
-            ? "/api/diagnostics?" + Math.random()
-            : activeLog.url + "?" + Math.random()
-        const res = await fetch(url)
-        const text = await res.text()
-        if (mounted) {
-          if (!res.ok && activeTab !== "diagnostics") {
-            setContent("Log file not available. It may not exist yet.")
-          } else {
-            setContent(text || "(empty)")
+        const regularFile = activeTab !== "diagnostics" && activeTab !== "bluetooth"
+        if (regularFile && !legacy.current) {
+          const params = new URLSearchParams()
+          if (cursorRef.current) params.set("cursor", cursorRef.current)
+          const response = await fetch(`${activeLog.url}/tail?${params}`, { signal: abort.signal, cache: "no-store" })
+          const htmlFallback = response.ok && response.headers.get("content-type")?.toLowerCase().includes("text/html")
+          if (response.status === 404 || htmlFallback) legacy.current = true
+          else {
+            if (!response.ok) throw new Error("Could not read log")
+            const data = await response.json().catch(() => { throw new Error("Could not read the log response. Please retry.") })
+            if (typeof data?.content !== "string" || typeof data?.cursor !== "string" ||
+                typeof data?.before !== "number" || typeof data?.reset !== "boolean") {
+              throw new Error("Could not read the log response. Please retry.")
+            }
+            if (id !== generation.current) return
+            cursorRef.current = data.cursor || null
+            if (data.reset) applyWindow(data.content, data.before)
+            else if (data.content) applyWindow(buffer.current.content + data.content, buffer.current.start)
+            more = data.has_more === true
           }
-          setLoading(false)
         }
-      } catch {
-        if (mounted) {
-          setContent("Unable to connect to Sentry USB. Is the device online?")
+        if (!regularFile || legacy.current) {
+          const response = await fetch(activeTab === "diagnostics" ? "/api/diagnostics" : activeLog.url, { signal: abort.signal, cache: "no-store" })
+          if (!response.ok) throw new Error("Log unavailable. Retry when the device is connected.")
+          const text = await response.text()
+          if (id !== generation.current) return
+          applyWindow(text, 0, "newest", false)
+        }
+        loaded.current = true
+        setError(null)
+      } catch (e) {
+        if (!abort.signal.aborted && id === generation.current) setError(e instanceof Error ? e.message : "Could not read log")
+      } finally {
+        inFlight = false
+        if (!abort.signal.aborted && id === generation.current) {
           setLoading(false)
+          if (live && activeTab !== "diagnostics") timer = setTimeout(fetchLog, more ? 100 : activeTab === "bluetooth" ? 5000 : 2000)
         }
       }
     }
+    void fetchLog()
+    return () => { abort.abort(); if (timer) clearTimeout(timer) }
+  }, [activeLog.url, activeTab, live, applyWindow])
 
-    fetchLog()
-
-    const interval =
-      activeTab !== "diagnostics" ? setInterval(fetchLog, 2000) : undefined
-
-    return () => {
-      mounted = false
-      if (interval) clearInterval(interval)
-    }
-  }, [activeLog.url, activeTab])
+  function pauseLive() {
+    loaded.current = true
+    generation.current++
+    pollRequest.current?.abort()
+    setLive(false)
+    setLoading(false)
+  }
+  function resumeLive() {
+    generation.current++
+    olderRequest.current?.abort()
+    cursorRef.current = null
+    loaded.current = false
+    setBefore(null)
+    setLive(true)
+  }
+  async function loadOlder() {
+    if (before === null || loadingOlder) return
+    pauseLive()
+    const id = generation.current
+    const current = buffer.current
+    const controller = new AbortController()
+    olderRequest.current = controller
+    setLoadingOlder(true)
+    try {
+      const params = new URLSearchParams({ lines: "500", before: String(current.start) })
+      if (cursorRef.current) params.set("cursor", cursorRef.current)
+      const response = await fetch(`${activeLog.url}/page?${params}`, { signal: controller.signal, cache: "no-store" })
+      if (!response.ok) throw new Error(response.status === 409 ? "Log rotated. Resume Live to load its newest entries." : "Could not load older entries")
+      const data = await response.json()
+      if (controller.signal.aborted || generation.current !== id) return
+      applyWindow(data.content + current.content, data.before ?? 0, "oldest")
+      setError(null)
+    } catch (e) { if (!controller.signal.aborted && generation.current === id) setError(e instanceof Error ? e.message : "Could not load older entries") }
+    finally { if (olderRequest.current === controller) setLoadingOlder(false) }
+  }
+  useEffect(() => () => { olderRequest.current?.abort() }, [])
+  const visibleContent = useMemo(() => content.split("\n").filter(line =>
+    (!search || line.toLowerCase().includes(search.toLowerCase())) &&
+    (level === "all" || parseLine(line).level === level),
+  ).join("\n"), [content, search, level])
 
   async function handleDownload() {
     // Bluetooth tab gets a richer, bundled-on-the-server download —
@@ -398,28 +487,28 @@ export default function Logs() {
         // fall through to the generic path below
       }
     }
-    const blob = new Blob([content], { type: "text/plain" })
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement("a")
-    a.href = url
-    a.download = `${activeTab}.log`
-    a.click()
-    URL.revokeObjectURL(url)
+    try {
+      const response = await fetch(activeTab === "diagnostics" ? "/api/diagnostics" : activeLog.url, { cache: "no-store" })
+      if (!response.ok) throw new Error("Could not download log")
+      const blob = await response.blob()
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement("a")
+      a.href = url; a.download = `${activeTab}.log`; a.click(); URL.revokeObjectURL(url)
+    } catch (e) { setError(e instanceof Error ? e.message : "Could not download log") }
   }
 
   async function handleRefreshDiagnostics() {
-    setLoading(true)
-    setContent("Generating diagnostics...")
+    setLoading(true); setError(null)
+    const id = generation.current
     try {
-      await fetch("/api/diagnostics/refresh", { method: "POST" })
-      await new Promise((r) => setTimeout(r, 3000))
-      const res = await fetch("/api/logs/diagnostics?" + Math.random())
-      const text = await res.text()
-      setContent(text || "(empty)")
-    } catch {
-      setContent("Failed to generate diagnostics")
-    }
-    setLoading(false)
+      const refresh = await fetch("/api/diagnostics/refresh", { method: "POST" })
+      if (!refresh.ok) throw new Error("Failed to generate diagnostics")
+      const response = await fetch("/api/diagnostics", { cache: "no-store" })
+      if (!response.ok) throw new Error("Could not read diagnostics")
+      const text = await response.text()
+      if (generation.current === id) applyWindow(text, 0, "newest", false)
+    } catch (e) { if (generation.current === id) setError(e instanceof Error ? e.message : "Failed to generate diagnostics") }
+    finally { if (generation.current === id) setLoading(false) }
   }
 
   return (
@@ -460,10 +549,12 @@ export default function Logs() {
       </div>
 
       {/* Tab bar */}
-      <div className="flex gap-1">
+      <div className="flex flex-wrap gap-1" role="tablist" aria-label="Log source">
         {logTabs.map((tab) => (
           <button
             key={tab.id}
+            role="tab"
+            aria-selected={activeTab === tab.id}
             onClick={() => setActiveTab(tab.id)}
             className={cn(
               "rounded-lg px-3 py-1.5 text-sm font-medium transition-colors",
@@ -477,6 +568,14 @@ export default function Logs() {
         ))}
       </div>
 
+      <div className="flex flex-wrap items-center gap-2">
+        {activeTab !== "diagnostics" && <button className="rounded-lg border border-white/10 px-3 py-2 text-sm text-slate-200" aria-pressed={live} onClick={() => { if (live) pauseLive(); else resumeLive() }}>{live ? "Pause live" : "Resume live"}</button>}
+        <input aria-label="Search log entries" placeholder="Search loaded entries" value={search} onChange={e => setSearch(e.target.value)} className="min-w-40 flex-1 rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm text-slate-200" />
+        <SelectMenu label="Log level" value={level} onChange={setLevel} align="end" options={[{ value: "all", label: "All levels" }, { value: "error", label: "Errors" }, { value: "warning", label: "Warnings" }, { value: "success", label: "Success" }, { value: "info", label: "Info" }]} />
+        {before !== null && <button disabled={loadingOlder} onClick={() => void loadOlder()} className="rounded-lg border border-white/10 px-3 py-2 text-sm text-slate-200 disabled:opacity-50">{loadingOlder ? "Loading…" : "Load older"}</button>}
+      </div>
+      {error && <p role="alert" className="text-sm text-amber-300">{error}</p>}
+      <p className="text-xs text-slate-400">{live && activeTab !== "diagnostics" ? "Live" : "Paused"} · Up to 2,000 loaded lines · Download includes the unfiltered log tail</p>
       {/* Log output */}
       <div className="glass-card relative flex-1 overflow-hidden">
         <pre
@@ -490,11 +589,11 @@ export default function Logs() {
                 <ProgressActivityIcon className="h-3.5 w-3.5 animate-spin" />
                 Loading...
               </span>
-            ) : content ? (
+            ) : visibleContent ? (
               shouldFormat ? (
-                <FormattedLog content={content} />
+                <FormattedLog content={visibleContent} />
               ) : (
-                content
+                visibleContent
               )
             ) : (
               <span className="flex items-center gap-2 text-slate-600">

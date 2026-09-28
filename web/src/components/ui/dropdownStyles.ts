@@ -1,0 +1,3 @@
+export const DROPDOWN_SURFACE = "rounded-2xl border border-white/15 bg-[#11191e] shadow-2xl"
+export const DROPDOWN_TRIGGER = "inline-flex min-h-10 items-center justify-between gap-3 rounded-full border border-white/10 bg-white/[.04] px-4 py-2 text-sm text-slate-200 transition hover:border-white/20 hover:bg-white/[.08] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-400 disabled:opacity-50"
+export const DROPDOWN_OPTION = "flex min-h-10 items-center gap-3 rounded-xl px-3 py-2 text-left text-sm text-slate-200 transition-colors hover:bg-white/10 focus-visible:bg-white/10 focus-visible:outline-none disabled:opacity-50"

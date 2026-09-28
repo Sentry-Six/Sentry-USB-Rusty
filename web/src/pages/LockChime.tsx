@@ -24,6 +24,7 @@ import {
   WarningIcon,
 } from "@/components/icons"
 import MultiFileUploader, { type FileEntry } from "../components/upload/MultiFileUploader"
+import { SelectMenu } from "@/components/ui/SelectMenu"
 import { useObjectUrl } from "@/hooks/useObjectUrl"
 
 const API_BASE = "/api"
@@ -31,6 +32,11 @@ const MAX_DURATION_SECONDS = 5
 const MAX_FILE_BYTES = 1 * 1024 * 1024 // 1 MB
 const COMMUNITY_PAGE_SIZE = 18
 const LIBRARY_PAGE_SIZE = 15
+
+const HOUR_OPTIONS = Array.from({ length: 24 }, (_, hour) => ({
+  value: String(hour),
+  label: hour === 0 ? "12 AM" : hour < 12 ? `${hour} AM` : hour === 12 ? "12 PM" : `${hour - 12} PM`,
+}))
 
 interface SoundEntry {
   name: string
@@ -1182,21 +1188,9 @@ function MyLibraryTab({ volume }: { volume: number }) {
                   {(randomCfg.interval === "daily" || randomCfg.interval === "weekly") && (
                     <div className="flex items-center gap-2">
                       <span className="text-xs text-slate-400">At:</span>
-                      <select
-                        value={randomCfg.hour}
-                        onChange={(e) => handleSaveRandomConfig({ ...randomCfg, hour: Number(e.target.value) })}
-                        disabled={savingRandom}
-                        className="rounded-md border border-white/10 bg-white/[0.03] px-2 py-1 text-xs text-slate-300 focus:border-violet-500/50 focus:outline-none"
-                      >
-                        {Array.from({ length: 24 }, (_, h) => {
-                          const ampm = h === 0 ? "12 AM" : h < 12 ? `${h} AM` : h === 12 ? "12 PM" : `${h - 12} PM`
-                          return (
-                            <option key={h} value={h}>
-                              {ampm}
-                            </option>
-                          )
-                        })}
-                      </select>
+                      <SelectMenu label="Scheduled chime hour" value={String(randomCfg.hour)}
+                        onChange={(value) => handleSaveRandomConfig({ ...randomCfg, hour: Number(value) })}
+                        disabled={savingRandom} options={HOUR_OPTIONS} />
                     </div>
                   )}
                 </div>
@@ -1246,17 +1240,9 @@ function MyLibraryTab({ volume }: { volume: number }) {
                   {(randomCfg.interval === "daily" || randomCfg.interval === "weekly") && (
                     <div className="flex items-center gap-2">
                       <span className="text-xs text-slate-400">At:</span>
-                      <select
-                        value={randomCfg.hour}
-                        onChange={(e) => handleSaveRandomConfig({ ...randomCfg, hour: Number(e.target.value) })}
-                        disabled={savingRandom}
-                        className="rounded-md border border-white/10 bg-white/[0.03] px-2 py-1 text-xs text-slate-300 focus:border-violet-500/50 focus:outline-none"
-                      >
-                        {Array.from({ length: 24 }, (_, h) => {
-                          const ampm = h === 0 ? "12 AM" : h < 12 ? `${h} AM` : h === 12 ? "12 PM" : `${h - 12} PM`
-                          return <option key={h} value={h}>{ampm}</option>
-                        })}
-                      </select>
+                      <SelectMenu label="Smart chime hour" value={String(randomCfg.hour)}
+                        onChange={(value) => handleSaveRandomConfig({ ...randomCfg, hour: Number(value) })}
+                        disabled={savingRandom} options={HOUR_OPTIONS} />
                     </div>
                   )}
                 </div>
@@ -1649,16 +1635,9 @@ function CommunityBrowse({ adminPasscode, volume }: { adminPasscode: string | nu
             className="w-full rounded-lg border border-white/10 bg-white/[0.03] py-2 pl-10 pr-3 text-sm text-slate-200 placeholder:text-slate-600 focus:border-violet-500/50 focus:outline-none"
           />
         </div>
-        <select
-          value={sort}
-          onChange={(e) => { setSort(e.target.value as SortOption); setPage(1) }}
-          className="rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2 text-sm text-slate-300 focus:border-violet-500/50 focus:outline-none"
-        >
-          <option value="newest">Newest</option>
-          <option value="oldest">Oldest</option>
-          <option value="popular">Most Downloaded</option>
-          <option value="name">Name A–Z</option>
-        </select>
+        <SelectMenu label="Sort community sounds" value={sort} align="end"
+          onChange={(value) => { setSort(value as SortOption); setPage(1) }}
+          options={[{ value: "newest", label: "Newest" }, { value: "oldest", label: "Oldest" }, { value: "popular", label: "Most Downloaded" }, { value: "name", label: "Name A–Z" }]} />
       </div>
 
       {/* Grid */}

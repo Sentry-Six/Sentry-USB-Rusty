@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react"
+import { useState, useEffect, useRef } from "react"
 import { CheckCircleIcon, DownloadIcon, ErrorIcon, ProgressActivityIcon } from "@/components/icons"
 import { cn } from "@/lib/utils"
 import { wsClient } from "@/lib/ws"
@@ -7,6 +7,7 @@ import { PrefCard } from "@/components/settings/PrefCard"
 import { Pill } from "@/components/ui/Pill"
 import { Toggle } from "@/components/ui/Toggle"
 import { Modal } from "@/components/ui/Modal"
+import { InfoButton } from "@/components/ui/InfoButton"
 import { AutoUpdateToggle } from "./AutoUpdateToggle"
 
 type UpdateStatus =
@@ -42,8 +43,11 @@ export function UpdateSection({ onInstallStart }: Props) {
   const [stableUpdate, setStableUpdate] = useState<ReleaseInfo | null>(null)
   const [prereleaseUpdate, setPrereleaseUpdate] = useState<ReleaseInfo | null>(null)
   const [revertStable, setRevertStable] = useState<ReleaseInfo | null>(null)
-  const [autoUpdateEnabled, setAutoUpdateEnabled] = useState(true)
-  const [includePrerelease, setIncludePrerelease] = useState(false)
+  const [autoUpdateEnabled, setAutoUpdateEnabled] = useState<boolean | null>(null)
+  const [includePrerelease, setIncludePrerelease] = useState<boolean | null>(null)
+  const [preferenceError, setPreferenceError] = useState<string | null>(null)
+  const [preferencePending, setPreferencePending] = useState(false)
+  const preferenceBusy = useRef(false)
   const [showUpdateModal, setShowUpdateModal] = useState(false)
   const [downloadPercent, setDownloadPercent] = useState<number | null>(null)
 
@@ -92,15 +96,40 @@ export function UpdateSection({ onInstallStart }: Props) {
         }
       })
       .catch(() => {})
-    fetch("/api/config/preference?key=auto_update_check")
-      .then((r) => r.json())
-      .then((data) => setAutoUpdateEnabled(data.value !== "disabled"))
-      .catch(() => {})
-    fetch("/api/config/preference?key=update_channel")
-      .then((r) => r.json())
-      .then((data) => setIncludePrerelease(data.value === "prerelease"))
-      .catch(() => {})
   }, [])
+
+  useEffect(() => {
+    const controller = new AbortController()
+    for (const [key, apply] of [
+      ["auto_update_check", (value: unknown) => setAutoUpdateEnabled(value !== "disabled")],
+      ["update_channel", (value: unknown) => setIncludePrerelease(value === "prerelease")],
+    ] as const) {
+      fetch(`/api/config/preference?key=${key}`, { signal: controller.signal })
+        .then(async response => {
+          if (!response.ok) throw new Error("Could not load update preferences. Reload to try again.")
+          const data = await response.json()
+          if (!("value" in data)) throw new Error("Could not read update preferences.")
+          if (!controller.signal.aborted) apply(data.value)
+        })
+        .catch(error => { if (!controller.signal.aborted) setPreferenceError(error instanceof Error ? error.message : "Could not load update preferences.") })
+    }
+    return () => controller.abort()
+  }, [])
+
+  async function savePreference(key: string, value: string, apply: () => void) {
+    if (preferenceBusy.current) return
+    preferenceBusy.current = true
+    setPreferencePending(true)
+    setPreferenceError(null)
+    try {
+      const response = await fetch("/api/config/preference", {
+        method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ key, value }),
+      })
+      if (!response.ok) throw new Error("Could not save update preferences. Try again.")
+      apply()
+    } catch (error) { setPreferenceError(error instanceof Error ? error.message : "Could not save update preferences.") }
+    finally { preferenceBusy.current = false; setPreferencePending(false) }
+  }
 
   async function handleCheckForUpdate(oneTimePrerelease = false) {
     setIsCheckingUpdate(true)
@@ -501,37 +530,22 @@ export function UpdateSection({ onInstallStart }: Props) {
       >
         <AutoUpdateToggle />
         <Toggle
-          checked={autoUpdateEnabled}
-          onChange={async (next) => {
-            setAutoUpdateEnabled(next)
-            await fetch("/api/config/preference", {
-              method: "PUT",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({
-                key: "auto_update_check",
-                value: next ? "enabled" : "disabled",
-              }),
-            }).catch(() => {})
-          }}
-          label="Auto-check after each archive"
-          sub="Polls GitHub releases on every archive cycle"
+          checked={autoUpdateEnabled ?? false}
+          disabled={autoUpdateEnabled === null || includePrerelease === null || preferencePending}
+          onChange={next => savePreference("auto_update_check", next ? "enabled" : "disabled", () => setAutoUpdateEnabled(next))}
+          label="Check after archiving"
+          help={<InfoButton title="Update checks"><p>Checks GitHub releases after each archive cycle. This only checks availability; automatic installation is controlled separately.</p></InfoButton>}
         />
         <Toggle
-          checked={includePrerelease}
-          onChange={async (next) => {
-            setIncludePrerelease(next)
-            await fetch("/api/config/preference", {
-              method: "PUT",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({
-                key: "update_channel",
-                value: next ? "prerelease" : "stable",
-              }),
-            }).catch(() => {})
-          }}
+          checked={includePrerelease ?? false}
+          disabled={autoUpdateEnabled === null || includePrerelease === null || preferencePending}
+          onChange={next => savePreference("update_channel", next ? "prerelease" : "stable", () => setIncludePrerelease(next))}
           label="Include pre-releases"
-          sub="Test builds may contain bugs"
+          help={<InfoButton title="Pre-release updates"><p>Includes test builds when checking for updates. These builds may contain bugs. Automatic installation still uses stable releases only.</p></InfoButton>}
         />
+        {(autoUpdateEnabled === null || includePrerelease === null) && !preferenceError && <p role="status" className="t-xs">Loading preferences…</p>}
+        {preferencePending && <p role="status" className="t-xs">Saving…</p>}
+        {preferenceError && <p role="alert" className="text-xs text-red-400">{preferenceError}</p>}
       </PrefCard>
 
       {showUpdateModal && (

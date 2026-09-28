@@ -1,5 +1,8 @@
 import { createContext, useContext, useEffect, useRef, useState } from "react"
 import { wsClient } from "@/lib/ws"
+import { createLivenessProbe } from "@/lib/liveness"
+
+const probeConnection = createLivenessProbe()
 
 export type ConnectionState = "connected" | "reconnecting" | "disconnected"
 
@@ -52,18 +55,17 @@ export function ConnectionProvider({ children }: { children: React.ReactNode }) 
     let mounted = true
     // Prevent overlapping polls from double-counting one slow response.
     let inFlight = false
+    let activeController: AbortController | null = null
 
     async function poll() {
-      if (inFlight) return
+      if (inFlight || document.hidden) return
       inFlight = true
+      const controller = new AbortController()
+      activeController = controller
+      const timeout = setTimeout(() => controller.abort(), 15000)
       try {
-        const controller = new AbortController()
         // Match the BLE proxy timeout and allow for browser connection queues.
-        const timeout = setTimeout(() => controller.abort(), 15000)
-        const res = await fetch("/api/status", {
-          signal: controller.signal,
-        } as RequestInit)
-        clearTimeout(timeout)
+        const res = await probeConnection(controller.signal)
         if (mounted) {
           httpOk.current = res.ok
           if (res.ok) {
@@ -85,19 +87,27 @@ export function ConnectionProvider({ children }: { children: React.ReactNode }) 
           evaluate()
         }
       } finally {
+        clearTimeout(timeout)
+        activeController = null
         inFlight = false
       }
     }
 
     poll()
     const iv = setInterval(poll, 8000)
-    return () => { mounted = false; clearInterval(iv) }
+    document.addEventListener("visibilitychange", poll)
+    return () => {
+      mounted = false
+      clearInterval(iv)
+      activeController?.abort()
+      document.removeEventListener("visibilitychange", poll)
+    }
   }, [])
 
   function retry() {
     wsClient.reconnect()
     setState("reconnecting")
-    fetch("/api/status")
+    probeConnection(AbortSignal.timeout(15000))
       .then((res) => {
         httpOk.current = res.ok
         if (res.ok) httpFailCount.current = 0

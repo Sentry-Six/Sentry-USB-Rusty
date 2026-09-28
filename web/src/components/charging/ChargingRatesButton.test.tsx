@@ -49,3 +49,43 @@ test('failed save stays open with an error; reopening reloads the rate snapshot'
     testWindow.close()
   }
 })
+
+test('currency dropdown preserves custom symbols and saves selected presets', async () => {
+  const win = new Window({ url: 'http://localhost/charging' })
+  const saved = ['window', 'document', 'navigator', 'IS_REACT_ACT_ENVIRONMENT'].map(key => [key, Object.getOwnPropertyDescriptor(globalThis, key)] as const)
+  for (const [key, value] of Object.entries({ window: win, document: win.document, navigator: win.navigator, IS_REACT_ACT_ENVIRONMENT: true })) Object.defineProperty(globalThis, key, { configurable: true, value })
+  const originalFetch = globalThis.fetch
+  let document: Record<string, unknown> = { charging_currency: 'BTC', charging_default_rate: 0.2 }
+  globalThis.fetch = async (_url, options) => {
+    if (options?.method === 'PUT') document = JSON.parse(String(options.body)).document
+    return Response.json({ document })
+  }
+  const { createRoot } = await import('react-dom/client')
+  const container = win.document.createElement('div'); win.document.body.append(container)
+  const root = createRoot(container)
+  const button = (text: string) => {
+    const found = [...container.querySelectorAll('button')].find(button => button.textContent?.trim() === text)
+    assert.ok(found, `missing ${text}`)
+    return found
+  }
+  try {
+    await act(async () => root.render(createElement(ChargingRatesButton, { tags: [] })))
+    await act(async () => button('Rates').click())
+    assert.equal(container.querySelector<HTMLInputElement>('[aria-label="Custom currency symbol"]')?.value, 'BTC')
+    await act(async () => button('Save rates').click())
+    assert.equal(document.charging_currency, 'BTC')
+    await act(async () => button('Rates').click())
+    await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Charging currency"]')!.click())
+    assert.ok(win.document.querySelector('[aria-label="Search charging currency"]'))
+    const option = win.document.querySelector<HTMLElement>('[role="option"][data-value="CAD"]')!
+    assert.ok(option)
+    await act(async () => option.click())
+    assert.equal(container.querySelector('[aria-label="Custom currency symbol"]'), null)
+    await act(async () => button('Save rates').click())
+    assert.equal(document.charging_currency, 'CAD')
+  } finally {
+    await act(async () => root.unmount()); globalThis.fetch = originalFetch
+    for (const [key, descriptor] of saved) { if (descriptor) Object.defineProperty(globalThis, key, descriptor); else Reflect.deleteProperty(globalThis, key) }
+    win.close()
+  }
+})

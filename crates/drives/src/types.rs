@@ -666,6 +666,16 @@ pub struct ProcessingStatus {
     pub total_files: usize,
     pub processed_files: usize,
     pub current_file: Option<String>,
+    #[serde(default)]
+    pub job_id: String,
+    #[serde(default)]
+    pub started_at: u64,
+    #[serde(default)]
+    pub sampled_at: u64,
+    #[serde(default)]
+    pub eta_seconds: Option<u64>,
+    #[serde(default)]
+    pub eta_state: String,
 }
 
 /// Result of the targeted summon evidence re-read (see

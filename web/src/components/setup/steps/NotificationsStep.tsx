@@ -1,7 +1,8 @@
 import { ExpandLessIcon, ExpandMoreIcon, NotificationsIcon } from "@/components/icons"
-import { useState } from "react"
+import { useId, useState } from "react"
 import type { StepProps } from "../SetupWizard"
 import { SecretInput } from "../SecretInput"
+import { requiredByProvider } from "../notificationFields"
 import { cn } from "@/lib/utils"
 
 interface NotificationProvider {
@@ -11,19 +12,6 @@ interface NotificationProvider {
   fields: { key: string; label: string; type?: string; placeholder?: string; hint?: string; secret?: boolean }[]
 }
 
-const requiredByProvider: Record<string, string[]> = {
-  PUSHOVER_ENABLED: ["PUSHOVER_USER_KEY", "PUSHOVER_APP_KEY"],
-  GOTIFY_ENABLED: ["GOTIFY_DOMAIN", "GOTIFY_APP_TOKEN"],
-  DISCORD_ENABLED: ["DISCORD_WEBHOOK_URL"],
-  TELEGRAM_ENABLED: ["TELEGRAM_CHAT_ID", "TELEGRAM_BOT_TOKEN"],
-  IFTTT_ENABLED: ["IFTTT_EVENT_NAME", "IFTTT_KEY"],
-  SLACK_ENABLED: ["SLACK_WEBHOOK_URL"],
-  SIGNAL_ENABLED: ["SIGNAL_URL", "SIGNAL_FROM_NUM", "SIGNAL_TO_NUM"],
-  MATRIX_ENABLED: ["MATRIX_SERVER_URL", "MATRIX_USERNAME", "MATRIX_PASSWORD", "MATRIX_ROOM"],
-  SNS_ENABLED: ["AWS_REGION", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SNS_TOPIC_ARN"],
-  WEBHOOK_ENABLED: ["WEBHOOK_URL"],
-  NTFY_ENABLED: ["NTFY_URL"],
-}
 
 const providers: NotificationProvider[] = [
   {
@@ -120,7 +108,8 @@ function isProviderEnabled(provider: NotificationProvider, data: StepProps["data
   return required.length > 0 && required.some((k) => (data[k] ?? "").trim() !== "")
 }
 
-function ProviderCard({ provider, data, onChange, errorFields }: { provider: NotificationProvider; errorFields: Set<string> } & Pick<StepProps, "data" | "onChange">) {
+function ProviderCard({ provider, data, onChange, errorFields, readOnly }: { provider: NotificationProvider; errorFields: Set<string>; readOnly?: boolean } & Pick<StepProps, "data" | "onChange">) {
+  const id = useId()
   const enabled = isProviderEnabled(provider, data)
   // Default expand on enabled providers, but let the user toggle freely.
   const [expanded, setExpanded] = useState(enabled)
@@ -129,6 +118,9 @@ function ProviderCard({ provider, data, onChange, errorFields }: { provider: Not
   return (
     <div className={cn("rounded-lg border transition-colors", enabled ? "border-blue-500/30 bg-blue-500/5" : "border-white/5 bg-white/[0.02]")}>
       <button
+        type="button"
+        aria-expanded={expanded}
+        aria-controls={id}
         onClick={() => setExpanded(!expanded)}
         className="flex w-full items-center justify-between px-4 py-3"
       >
@@ -139,24 +131,25 @@ function ProviderCard({ provider, data, onChange, errorFields }: { provider: Not
       </button>
 
       {expanded && isMobile && (
-        <div className="border-t border-white/5 px-4 py-3">
+        <div id={id} className="border-t border-white/5 px-4 py-3">
           <label className="flex cursor-pointer items-center gap-2">
             <input
               type="checkbox"
               checked={enabled}
+              disabled={readOnly}
               onChange={(e) => onChange(provider.enableField, e.target.checked ? "true" : "false")}
               className="h-4 w-4 rounded border-white/20 bg-white/5 accent-blue-500"
             />
             <span className="text-sm text-slate-300">Enable mobile push notifications</span>
           </label>
           <p className="mt-2 text-xs text-slate-400">
-            After setup, open the Sentry USB mobile app and go to Settings → Pair for Notifications to link your phone. You can also generate a pairing code from this web UI under Settings → Mobile Notifications.
+            Pair your phone in Notifications → Delivery, then enter the code in the mobile app.
           </p>
         </div>
       )}
 
       {expanded && !isMobile && provider.fields.length > 0 && (
-        <div className="grid gap-3 border-t border-white/5 px-4 py-3 sm:grid-cols-2">
+        <div id={id} className="grid gap-3 border-t border-white/5 px-4 py-3 sm:grid-cols-2">
           {provider.fields.map((f) => {
             const hasError = enabled && errorFields.has(f.key)
             const inputCls = cn(
@@ -167,9 +160,11 @@ function ProviderCard({ provider, data, onChange, errorFields }: { provider: Not
             )
             return (
               <div key={f.key}>
-                <label className="mb-1 block text-xs font-medium text-slate-400">{f.label}</label>
+                <label htmlFor={`${id}-${f.key}`} className="mb-1 block text-xs font-medium text-slate-400">{f.label}</label>
                 {f.secret || f.type === "password" ? (
                   <SecretInput
+                    id={`${id}-${f.key}`}
+                    readOnly={readOnly}
                     value={data[f.key] ?? ""}
                     onChange={(v) => onChange(f.key, v)}
                     placeholder={f.placeholder}
@@ -177,6 +172,8 @@ function ProviderCard({ provider, data, onChange, errorFields }: { provider: Not
                   />
                 ) : (
                   <input
+                    id={`${id}-${f.key}`}
+                    readOnly={readOnly}
                     type={f.type ?? "text"}
                     value={data[f.key] ?? ""}
                     onChange={(e) => onChange(f.key, e.target.value)}
@@ -194,7 +191,8 @@ function ProviderCard({ provider, data, onChange, errorFields }: { provider: Not
   )
 }
 
-export function NotificationsStep({ data, onChange }: StepProps) {
+export function NotificationsStep({ data, onChange, readOnly }: StepProps & { readOnly?: boolean }) {
+  const titleId = useId()
   const missingFields = new Set<string>()
   for (const p of providers) {
     if (isProviderEnabled(p, data)) {
@@ -214,13 +212,14 @@ export function NotificationsStep({ data, onChange }: StepProps) {
       </div>
 
       <p className="text-xs text-slate-500">
-        Get notified when archiving completes or errors occur. Fill in the
-        fields for any provider to enable it — clearing them disables it.
+        {readOnly ? "Provider configuration from this device." : "Fill in a provider’s fields to enable it. Clear them to disable it."}
       </p>
 
       <div className="mb-3">
-        <label className="mb-1 block text-sm font-medium text-slate-300">Notification Title</label>
+        <label htmlFor={titleId} className="mb-1 block text-sm font-medium text-slate-300">Notification Title</label>
         <input
+          id={titleId}
+          readOnly={readOnly}
           type="text"
           value={data.NOTIFICATION_TITLE ?? ""}
           onChange={(e) => onChange("NOTIFICATION_TITLE", e.target.value)}
@@ -231,17 +230,11 @@ export function NotificationsStep({ data, onChange }: StepProps) {
 
       <div className="space-y-2">
         {providers.map((p) => (
-          <ProviderCard key={p.id} provider={p} data={data} onChange={onChange} errorFields={missingFields} />
+          <ProviderCard key={p.id} provider={p} data={data} onChange={onChange} errorFields={missingFields} readOnly={readOnly} />
         ))}
       </div>
 
-      <div className="rounded-lg border border-blue-500/20 bg-blue-500/5 px-4 py-3">
-        <p className="text-xs text-blue-300/80">
-          <strong>Tip:</strong> After setup, you can fine-tune which notification types
-          are sent (archive, temperature, updates, etc.) from the{" "}
-          <strong>Notifications</strong> page in the sidebar.
-        </p>
-      </div>
+      <p className="text-xs text-slate-400">Choose alert types in Notifications → Events.</p>
     </div>
   )
 }

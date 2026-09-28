@@ -1,3 +1,4 @@
+import { DROPDOWN_SURFACE } from "@/components/ui/dropdownStyles"
 import { useEffect, useRef, useState } from "react"
 import { AddIcon, CloseIcon, SellIcon } from "@/components/icons"
 import { cn } from "@/lib/utils"
@@ -12,6 +13,7 @@ export function TagPopover({ tags, onChange }: TagPopoverProps) {
   const [open, setOpen] = useState(false)
   const [draft, setDraft] = useState("")
   const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
   const [suggestions, setSuggestions] = useState<string[]>([])
   const wrapRef = useRef<HTMLDivElement>(null)
 
@@ -46,9 +48,12 @@ export function TagPopover({ tags, onChange }: TagPopoverProps) {
       return
     }
     setBusy(true)
+    setError(null)
     try {
       await onChange([...tags, t])
       setDraft("")
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Tags could not be saved. Try again.")
     } finally {
       setBusy(false)
     }
@@ -57,9 +62,12 @@ export function TagPopover({ tags, onChange }: TagPopoverProps) {
   const selectSuggestion = async (tag: string) => {
     if (tags.includes(tag)) return
     setBusy(true)
+    setError(null)
     try {
       await onChange([...tags, tag])
       setDraft("")
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Tags could not be saved. Try again.")
     } finally {
       setBusy(false)
     }
@@ -67,8 +75,11 @@ export function TagPopover({ tags, onChange }: TagPopoverProps) {
 
   const removeTag = async (tag: string) => {
     setBusy(true)
+    setError(null)
     try {
       await onChange(tags.filter((t) => t !== tag))
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Tags could not be saved. Try again.")
     } finally {
       setBusy(false)
     }
@@ -77,8 +88,11 @@ export function TagPopover({ tags, onChange }: TagPopoverProps) {
   const clearAll = async () => {
     if (tags.length === 0) return
     setBusy(true)
+    setError(null)
     try {
       await onChange([])
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Tags could not be saved. Try again.")
     } finally {
       setBusy(false)
     }
@@ -119,8 +133,9 @@ export function TagPopover({ tags, onChange }: TagPopoverProps) {
       {open && (
         <div
           onClick={(e) => e.stopPropagation()}
-          className="absolute right-0 top-full z-50 mt-2 w-64 rounded-xl border border-white/10 bg-slate-900/95 p-3 shadow-2xl backdrop-blur"
+          className={`absolute right-0 top-full z-50 mt-2 w-64 p-3 ${DROPDOWN_SURFACE}`}
         >
+          {error && <p role="alert" className="mb-2 text-xs text-rose-200">{error}</p>}
           {hasTags && (
             <div className="mb-2 flex flex-wrap gap-1.5">
               {tags.map((t) => (

@@ -1,375 +1,371 @@
+import { DROPDOWN_SURFACE, DROPDOWN_OPTION } from "@/components/ui/dropdownStyles"
 import { useState, useEffect, useRef, useCallback, useMemo } from "react"
 import {
   ArrowBackIcon,
-  BrushIcon,
-  CheckCircleIcon,
-  CheckIcon,
   CloseIcon,
   CreateNewFolderIcon,
   DeleteIcon,
   DownloadIcon,
   DraftIcon,
   FolderIcon,
-  FolderOpenIcon,
-  HardDriveIcon,
-  MusicNoteIcon,
   ProgressActivityIcon,
-  RectangleIcon,
   SearchIcon,
-  SwapVertIcon,
   UploadIcon,
-  VideocamIcon,
-  VolumeUpIcon,
 } from "@/components/icons"
 import { cn } from "@/lib/utils"
+import { SelectMenu } from "@/components/ui/SelectMenu"
+import { responseError, uploadRelativePath } from "@/lib/file-upload"
 
-type SortOption = "name-asc" | "name-desc" | "date-newest" | "date-oldest" | "size-largest" | "size-smallest" | "type"
-
+type SortOption =
+  | "name-asc"
+  | "name-desc"
+  | "date-newest"
+  | "date-oldest"
+  | "size-largest"
+  | "size-smallest"
+  | "type"
 const SORT_LABELS: Record<SortOption, string> = {
-  "name-asc": "Name (A-Z)",
-  "name-desc": "Name (Z-A)",
-  "date-newest": "Date (Newest)",
-  "date-oldest": "Date (Oldest)",
-  "size-largest": "Size (Largest)",
-  "size-smallest": "Size (Smallest)",
-  "type": "Type",
+  "name-asc": "Name (A–Z)",
+  "name-desc": "Name (Z–A)",
+  "date-newest": "Newest",
+  "date-oldest": "Oldest",
+  "size-largest": "Largest",
+  "size-smallest": "Smallest",
+  type: "Type",
 }
-
 interface FileEntry {
   name: string
   path: string
   is_dir: boolean
   size: number
-  // Matches the backend's serialized field name (files.rs FileEntry).
-  // This was previously declared as `modified`, which doesn't exist in
-  // the response — the Date column rendered blank for every file and
-  // the two date sorts quietly degraded to name order (NaN timestamps
-  // made the name tiebreaker always win).
   mod_time: string
 }
-
 interface DriveTab {
   id: string
   base: string
-  icon: "cam" | "media" | "wrap" | "plate" | "lock" | "drive"
+  config?: string
 }
-
 const ALL_DRIVES: DriveTab[] = [
-  { id: "USB Drive", base: "/mutable", icon: "drive" },
-  { id: "TeslaCam", base: "/mutable/TeslaCam", icon: "cam" },
-  { id: "Lock Sounds", base: "/mutable/LockChime", icon: "lock" },
-  { id: "Wraps", base: "/mutable/Wraps", icon: "wrap" },
-  { id: "License Plates", base: "/mutable/LicensePlate", icon: "plate" },
-  { id: "Music", base: "/var/www/html/fs/Music", icon: "media" },
-  { id: "LightShow", base: "/var/www/html/fs/LightShow", icon: "media" },
-  { id: "Boombox", base: "/var/www/html/fs/Boombox", icon: "media" },
+  { id: "TeslaCam", base: "/mutable/TeslaCam", config: "has_cam" },
+  { id: "Lock Sounds", base: "/mutable/LockChime" },
+  { id: "Wraps", base: "/mutable/Wraps" },
+  { id: "License Plates", base: "/mutable/LicensePlate" },
+  { id: "Music", base: "/var/www/html/fs/Music", config: "has_music" },
+  { id: "LightShow", base: "/var/www/html/fs/LightShow", config: "has_lightshow" },
+  { id: "Boombox", base: "/var/www/html/fs/Boombox", config: "has_boombox" },
+  { id: "USB Drive", base: "/mutable" },
 ]
-
-const TAB_ICONS: Record<DriveTab["icon"], React.ComponentType<{ className?: string }>> = {
-  cam: VideocamIcon,
-  media: MusicNoteIcon,
-  wrap: BrushIcon,
-  plate: RectangleIcon,
-  lock: VolumeUpIcon,
-  drive: HardDriveIcon,
-}
-
-function formatSize(bytes: number): string {
-  if (bytes === 0) return "—"
-  const units = ["B", "KB", "MB", "GB"]
-  const i = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1)
-  return `${(bytes / Math.pow(1024, i)).toFixed(i > 0 ? 1 : 0)} ${units[i]}`
-}
-
 interface UploadProgress {
+  file: File
   fileName: string
+  destination: string
   loaded: number
   total: number
   done: boolean
-  error: boolean
+  error: string | null
+  conflict: boolean
+}
+let remembered: { drive: string; path: string; search: string; sort: SortOption } | null = null
+const buttonClass =
+  "inline-flex min-h-9 items-center justify-center gap-2 rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-sm text-slate-300 hover:bg-white/10 disabled:opacity-50"
+function formatSize(bytes: number): string {
+  if (!bytes) return "0 B"
+  const i = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), 3)
+  return `${(bytes / 1024 ** i).toFixed(i ? 1 : 0)} ${["B", "KB", "MB", "GB"][i]}`
 }
 
 export default function Files() {
   const [drives, setDrives] = useState<DriveTab[]>([])
   const [activeDrive, setActiveDrive] = useState<DriveTab | null>(null)
   const [currentPath, setCurrentPath] = useState("")
+  const [effectiveBase, setEffectiveBase] = useState("")
   const [files, setFiles] = useState<FileEntry[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [operationError, setOperationError] = useState<string | null>(null)
   const [selected, setSelected] = useState<Set<string>>(new Set())
-  const uploadRef = useRef<HTMLInputElement>(null)
-  const folderUploadRef = useRef<HTMLInputElement>(null)
+  const [busy, setBusy] = useState(false)
+  const [search, setSearch] = useState(remembered?.search ?? "")
+  const [sort, setSort] = useState<SortOption>(remembered?.sort ?? "name-asc")
+  const [visibleCount, setVisibleCount] = useState(100)
   const [uploads, setUploads] = useState<UploadProgress[]>([])
   const [uploading, setUploading] = useState(false)
   const [dragging, setDragging] = useState(false)
-  const dragCounter = useRef(0)
-  const [effectiveBase, setEffectiveBase] = useState("")
-  const [search, setSearch] = useState("")
-  const [sortOption, setSortOption] = useState<SortOption>("name-asc")
-  const [showSortMenu, setShowSortMenu] = useState(false)
-  const searchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const sortMenuRef = useRef<HTMLDivElement>(null)
+  const uploadRef = useRef<HTMLInputElement>(null)
+  const folderRef = useRef<HTMLInputElement>(null)
+  const uploadMenuRef = useRef<HTMLDetailsElement>(null)
+  const request = useRef(0)
+  const controller = useRef<AbortController | null>(null)
+  const locationRef = useRef("")
+  const mounted = useRef(true)
+  const uploadBusy = useRef(false)
+  const dragDepth = useRef(0)
 
-  // Fetch config to determine which tabs to show
   useEffect(() => {
-    async function loadConfig() {
+    mounted.current = true
+    const abort = new AbortController()
+    void (async () => {
+      let available = ALL_DRIVES
       try {
-        const res = await fetch("/api/config")
-        const cfg = await res.json()
-        const visible: DriveTab[] = []
-        // Always show USB Drive root (shows LockChime.wav, TeslaCam, etc.)
-        visible.push(ALL_DRIVES.find(d => d.id === "USB Drive")!)
-        // Show TeslaCam tab if cam is configured
-        if (cfg.has_cam === "yes") {
-          visible.push(ALL_DRIVES.find(d => d.id === "TeslaCam")!)
-        }
-        // Always show Lock Sounds, Wraps and License Plates (they're user-uploadable)
-        visible.push(ALL_DRIVES.find(d => d.id === "Lock Sounds")!)
-        visible.push(ALL_DRIVES.find(d => d.id === "Wraps")!)
-        visible.push(ALL_DRIVES.find(d => d.id === "License Plates")!)
-        if (cfg.has_music === "yes") visible.push(ALL_DRIVES.find(d => d.id === "Music")!)
-        if (cfg.has_lightshow === "yes") visible.push(ALL_DRIVES.find(d => d.id === "LightShow")!)
-        if (cfg.has_boombox === "yes") visible.push(ALL_DRIVES.find(d => d.id === "Boombox")!)
-        // If nothing is configured (e.g. dev mode), show all
-        const result = visible.length > 0 ? visible : ALL_DRIVES
-        setDrives(result)
-        setActiveDrive(result[0])
-        setCurrentPath(result[0].base)
+        const response = await fetch("/api/config", { signal: abort.signal })
+        if (!response.ok) throw new Error("Configuration unavailable")
+        const config = await response.json()
+        available = ALL_DRIVES.filter((d) => !d.config || config[d.config] === "yes")
       } catch {
-        // Fallback: show all
-        setDrives(ALL_DRIVES)
-        setActiveDrive(ALL_DRIVES[0])
-        setCurrentPath(ALL_DRIVES[0].base)
+        if (abort.signal.aborted) return
       }
+      const chosen = available.find((d) => d.id === remembered?.drive) ?? available[0]
+      setDrives(available)
+      setActiveDrive(chosen)
+      const savedPath = remembered?.drive === chosen.id ? remembered.path : ""
+      setCurrentPath(
+        savedPath === chosen.base || savedPath.startsWith(chosen.base + "/")
+          ? savedPath
+          : chosen.base,
+      )
+    })()
+    return () => {
+      mounted.current = false
+      abort.abort()
+      controller.current?.abort()
     }
-    loadConfig()
   }, [])
 
-  async function fetchFiles(path: string, searchQuery?: string) {
-    setLoading(true)
-    setError(null)
-    setSelected(new Set())
-    try {
-      let url = `/api/files/ls?path=${encodeURIComponent(path)}`
-      if (searchQuery) url += `&search=${encodeURIComponent(searchQuery)}`
-      const res = await fetch(url)
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({ error: "Failed to load" }))
-        setError(data.error || "Failed to load directory")
-        setFiles([])
-      } else {
-        const raw = await res.json()
-        // Server returns { path, entries: [...] } wrapper
-        const data: FileEntry[] = Array.isArray(raw) ? raw : (raw.entries ?? [])
-        // Auto-navigate into the matching subfolder when at a drive's base path
-        // (Music/LightShow/Boombox disk images have a root folder matching the
-        // drive name, possibly alongside hidden macOS/Tesla metadata folders)
-        if (activeDrive && path === activeDrive.base && !searchQuery) {
-          const match = data.find(
-            (e) => e.is_dir && e.name === activeDrive.id
-          )
-          if (match) {
-            setEffectiveBase(match.path)
-            setCurrentPath(match.path)
+  const fetchFiles = useCallback(
+    async (path: string, query: string) => {
+      const id = ++request.current
+      controller.current?.abort()
+      const abort = new AbortController()
+      controller.current = abort
+      setLoading(true)
+      setError(null)
+      try {
+        const params = new URLSearchParams({ path })
+        if (query) params.set("search", query)
+        const response = await fetch(`/api/files/ls?${params}`, { signal: abort.signal })
+        if (!response.ok) throw new Error(await responseError(response, "Could not load folder"))
+        const raw = await response.json()
+        if (id !== request.current || abort.signal.aborted) return
+        const entries: FileEntry[] = Array.isArray(raw) ? raw : (raw.entries ?? [])
+        if (activeDrive && path === activeDrive.base && !query) {
+          const child = entries.find((e) => e.is_dir && e.name === activeDrive.id)
+          if (child) {
+            setEffectiveBase(child.path)
+            setCurrentPath(child.path)
             return
           }
         }
-        setFiles(data)
+        setFiles(entries)
+      } catch (e) {
+        if (id === request.current && !abort.signal.aborted)
+          setError(e instanceof Error ? e.message : "Could not load folder")
+      } finally {
+        if (id === request.current && !abort.signal.aborted) setLoading(false)
       }
-    } catch {
-      setError("Unable to connect")
-      setFiles([])
-    }
-    setLoading(false)
-  }
+    },
+    [activeDrive],
+  )
 
   useEffect(() => {
-    if (currentPath) fetchFiles(currentPath, search || undefined)
-    // search intentionally omitted: search changes fetch via the debounced
-    // handler below; including it here would double-fetch on every keystroke.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentPath])
+    const changedPath = locationRef.current !== currentPath
+    locationRef.current = currentPath
+    controller.current?.abort()
+    request.current++
+    setSelected(new Set())
+    setVisibleCount(100)
+    if (changedPath) setFiles([])
+    if (!currentPath) return
+    const timer = setTimeout(() => void fetchFiles(currentPath, search), changedPath ? 0 : 300)
+    return () => {
+      clearTimeout(timer)
+      controller.current?.abort()
+    }
+  }, [currentPath, search, fetchFiles])
 
-  // Debounced search
-  function handleSearchChange(value: string) {
-    setSearch(value)
-    if (searchTimerRef.current) clearTimeout(searchTimerRef.current)
-    searchTimerRef.current = setTimeout(() => {
-      if (currentPath) fetchFiles(currentPath, value || undefined)
-    }, 300)
-  }
-
-  // Close sort menu on outside click
   useEffect(() => {
-    function handleClick(e: MouseEvent) {
-      if (sortMenuRef.current && !sortMenuRef.current.contains(e.target as Node)) {
-        setShowSortMenu(false)
-      }
-    }
-    if (showSortMenu) document.addEventListener("mousedown", handleClick)
-    return () => document.removeEventListener("mousedown", handleClick)
-  }, [showSortMenu])
+    if (activeDrive && currentPath)
+      remembered = { drive: activeDrive.id, path: currentPath, search, sort }
+  }, [activeDrive, currentPath, search, sort])
 
-  // Client-side sorting (directories always first, name tiebreaker for stability)
-  const sortedFiles = useMemo(() => {
-    const sorted = [...files]
-    sorted.sort((a, b) => {
-      // Directories always come first
-      if (a.is_dir !== b.is_dir) return a.is_dir ? -1 : 1
-      const nameCmp = a.name.localeCompare(b.name, undefined, { sensitivity: "base" })
-      switch (sortOption) {
-        case "name-asc":
-          return nameCmp
-        case "name-desc":
-          return -nameCmp
-        case "date-newest":
-          return (new Date(b.mod_time).getTime() - new Date(a.mod_time).getTime()) || -nameCmp
-        case "date-oldest":
-          return (new Date(a.mod_time).getTime() - new Date(b.mod_time).getTime()) || nameCmp
-        case "size-largest":
-          return b.size - a.size
-        case "size-smallest":
-          return a.size - b.size
-        case "type": {
-          const extA = a.name.includes(".") ? a.name.split(".").pop()!.toLowerCase() : ""
-          const extB = b.name.includes(".") ? b.name.split(".").pop()!.toLowerCase() : ""
-          return extA.localeCompare(extB) || a.name.localeCompare(b.name, undefined, { sensitivity: "base" })
-        }
-        default:
-          return 0
-      }
-    })
-    return sorted
-  }, [files, sortOption])
-
-  function navigate(entry: FileEntry) {
-    if (entry.is_dir) {
-      setCurrentPath(entry.path)
-    }
+  function navigate(path: string) {
+    controller.current?.abort()
+    request.current++
+    setCurrentPath(path)
+    setSearch("")
+    setOperationError(null)
   }
-
-  function goUp() {
-    const base = effectiveBase || activeDrive?.base
-    if (!activeDrive || !base || currentPath === base) return
-    const parent = currentPath.split("/").slice(0, -1).join("/")
-    if (parent.length < base.length) return
-    setCurrentPath(parent || base)
-  }
-
-  function switchDrive(drive: DriveTab) {
+  function switchDrive(id: string) {
+    const drive = drives.find((d) => d.id === id)
+    if (!drive) return
     setActiveDrive(drive)
     setEffectiveBase("")
-    setSearch("")
-    setCurrentPath(drive.base)
+    navigate(drive.base)
   }
+  function toggle(path: string) {
+    setSelected((prev) => {
+      const next = new Set(prev)
+      if (next.has(path)) next.delete(path)
+      else next.add(path)
+      return next
+    })
+  }
+  const sorted = useMemo(
+    () =>
+      [...files].sort((a, b) => {
+        if (a.is_dir !== b.is_dir) return a.is_dir ? -1 : 1
+        const name = a.name.localeCompare(b.name, undefined, { sensitivity: "base" })
+        if (sort === "name-desc") return -name
+        if (sort === "date-newest") return Date.parse(b.mod_time) - Date.parse(a.mod_time) || name
+        if (sort === "date-oldest") return Date.parse(a.mod_time) - Date.parse(b.mod_time) || name
+        if (sort === "size-largest") return b.size - a.size || name
+        if (sort === "size-smallest") return a.size - b.size || name
+        if (sort === "type")
+          return (
+            (a.name.split(".").pop() ?? "").localeCompare(b.name.split(".").pop() ?? "") || name
+          )
+        return name
+      }),
+    [files, sort],
+  )
 
-  async function handleDelete() {
-    if (selected.size === 0) return
-    if (!confirm(`Delete ${selected.size} item(s)?`)) return
-    for (const path of selected) {
-      await fetch(`/api/files?path=${encodeURIComponent(path)}`, { method: "DELETE" })
+  async function deleteSelected() {
+    if (busy || !selected.size || !confirm(`Permanently delete ${selected.size} selected item(s)?`))
+      return
+    const path = currentPath
+    setBusy(true)
+    setOperationError(null)
+    const failed = new Set<string>()
+    const messages: string[] = []
+    for (const item of selected) {
+      try {
+        const response = await fetch(`/api/files?path=${encodeURIComponent(item)}`, {
+          method: "DELETE",
+        })
+        if (!response.ok) throw new Error(await responseError(response, "Delete failed"))
+      } catch (e) {
+        failed.add(item)
+        messages.push(
+          `${item.split("/").pop()}: ${e instanceof Error ? e.message : "Delete failed"}`,
+        )
+      }
     }
-    fetchFiles(currentPath)
+    if (mounted.current && locationRef.current === path) {
+      await fetchFiles(path, search)
+      setSelected(failed)
+      setOperationError(messages.length ? messages.join(" · ") : null)
+    }
+    setBusy(false)
   }
-
-  function uploadFileWithProgress(file: globalThis.File, destPath: string, index: number): Promise<void> {
+  async function newFolder() {
+    const name = prompt("Folder name:")?.trim()
+    if (!name) return
+    if ([".", ".."].includes(name) || /[/\\\0]/.test(name)) {
+      setOperationError("Enter a folder name without path separators.")
+      return
+    }
+    const path = currentPath
+    setBusy(true)
+    setOperationError(null)
+    try {
+      const response = await fetch("/api/files/mkdir", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ path: `${path}/${name}` }),
+      })
+      if (!response.ok) throw new Error(await responseError(response, "Could not create folder"))
+      if (locationRef.current === path) await fetchFiles(path, search)
+    } catch (e) {
+      setOperationError(e instanceof Error ? e.message : "Could not create folder")
+    } finally {
+      setBusy(false)
+    }
+  }
+  function sendUpload(item: UploadProgress, index: number, overwrite = false): Promise<void> {
     return new Promise((resolve) => {
+      const update = (patch: Partial<UploadProgress>) => {
+        if (mounted.current)
+          setUploads((prev) => prev.map((u, i) => (i === index ? { ...u, ...patch } : u)))
+      }
       const form = new FormData()
-      form.append("file", file)
-      form.append("path", destPath)
-
+      form.append("path", item.destination)
+      form.append("relative_path", item.fileName)
+      form.append("overwrite", String(overwrite))
+      form.append("file", item.file)
       const xhr = new XMLHttpRequest()
       xhr.open("POST", "/api/files/upload")
-
+      update({ done: false, error: null, conflict: false, loaded: 0 })
       xhr.upload.onprogress = (e) => {
-        if (e.lengthComputable) {
-          setUploads((prev) => prev.map((u, i) => i === index ? { ...u, loaded: e.loaded, total: e.total } : u))
-        }
+        if (e.lengthComputable) update({ loaded: e.loaded, total: e.total })
       }
-
       xhr.onload = () => {
-        setUploads((prev) => prev.map((u, i) => i === index ? { ...u, done: true, loaded: u.total, error: xhr.status >= 400 } : u))
+        let error = null
+        if (xhr.status < 200 || xhr.status >= 300) {
+          try {
+            error = JSON.parse(xhr.responseText).error
+          } catch {
+            /* Non-JSON proxy errors still get a useful fallback. */
+          }
+          error ||= `Upload failed (${xhr.status})`
+        }
+        update({ done: true, error, conflict: xhr.status === 409, loaded: error ? 0 : item.total })
         resolve()
       }
-
       xhr.onerror = () => {
-        setUploads((prev) => prev.map((u, i) => i === index ? { ...u, done: true, error: true } : u))
+        update({ done: true, error: "Connection lost. Retry the upload." })
         resolve()
       }
-
+      xhr.onabort = () => {
+        update({ done: true, error: "Upload cancelled." })
+        resolve()
+      }
       xhr.send(form)
     })
   }
-
-  const processFiles = useCallback(async (fileArr: globalThis.File[]) => {
-    if (fileArr.length === 0) return
-    const initial: UploadProgress[] = fileArr.map((f) => ({
-      fileName: f.name,
-      loaded: 0,
-      total: f.size,
-      done: false,
-      error: false,
-    }))
-
-    setUploads(initial)
-    setUploading(true)
-
-    // Upload files sequentially to avoid overwhelming low-RAM devices
-    for (let i = 0; i < fileArr.length; i++) {
-      await uploadFileWithProgress(fileArr[i], currentPath, i)
+  async function processFiles(list: File[]) {
+    if (!list.length || uploadBusy.current) return
+    let batch: UploadProgress[]
+    try {
+      batch = list.map((file) => ({
+        file,
+        fileName: uploadRelativePath(file),
+        destination: currentPath,
+        loaded: 0,
+        total: file.size,
+        done: false,
+        error: null,
+        conflict: false,
+      }))
+    } catch (e) {
+      setOperationError(e instanceof Error ? e.message : "Invalid upload")
+      return
     }
-
-    fetchFiles(currentPath)
+    uploadBusy.current = true
+    setUploading(true)
+    setUploads(batch)
+    for (let i = 0; i < batch.length; i++) await sendUpload(batch[i], i)
+    uploadBusy.current = false
+    if (!mounted.current) return
+    setUploading(false)
     if (uploadRef.current) uploadRef.current.value = ""
-    if (folderUploadRef.current) folderUploadRef.current.value = ""
-
-    setTimeout(() => {
-      setUploads([])
-      setUploading(false)
-    }, 2000)
-    // fetchFiles is a plain function (new identity each render); listing it
-    // would defeat the memoization. It only closes over currentPath, which
-    // is a dep.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentPath])
-
-  const handleUpload = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const fileList = e.target.files
-    if (!fileList || fileList.length === 0) return
-    await processFiles(Array.from(fileList))
-  }, [processFiles])
-
-  const handleDragEnter = useCallback((e: React.DragEvent) => {
-    e.preventDefault()
-    e.stopPropagation()
-    dragCounter.current++
-    if (e.dataTransfer.items?.length) setDragging(true)
-  }, [])
-
-  const handleDragLeave = useCallback((e: React.DragEvent) => {
-    e.preventDefault()
-    e.stopPropagation()
-    dragCounter.current--
-    if (dragCounter.current === 0) setDragging(false)
-  }, [])
-
-  const handleDragOver = useCallback((e: React.DragEvent) => {
-    e.preventDefault()
-    e.stopPropagation()
-  }, [])
-
-  const handleDrop = useCallback(async (e: React.DragEvent) => {
-    e.preventDefault()
-    e.stopPropagation()
-    setDragging(false)
-    dragCounter.current = 0
-    if (uploading) return
-    const files = Array.from(e.dataTransfer.files)
-    if (files.length > 0) await processFiles(files)
-  }, [uploading, processFiles])
-
-  function handleDownloadSelected() {
-    if (selected.size === 0) return
+    if (folderRef.current) folderRef.current.value = ""
+    if (locationRef.current === batch[0].destination) await fetchFiles(batch[0].destination, search)
+  }
+  async function retryUpload(index: number, overwrite = false) {
+    const item = uploads[index]
+    if (
+      uploadBusy.current ||
+      !item ||
+      (overwrite && !confirm(`Replace ${item.fileName} in ${item.destination}?`))
+    )
+      return
+    uploadBusy.current = true
+    setUploading(true)
+    await sendUpload(item, index, overwrite)
+    uploadBusy.current = false
+    setUploading(false)
+    if (locationRef.current === item.destination) await fetchFiles(item.destination, search)
+  }
+  function downloadSelected() {
     const form = document.createElement("form")
     form.method = "POST"
     form.action = "/api/files/download-zip-multi"
@@ -377,356 +373,312 @@ export default function Files() {
     const input = document.createElement("input")
     input.type = "hidden"
     input.name = "paths"
-    input.value = JSON.stringify(Array.from(selected))
+    input.value = JSON.stringify([...selected])
     form.appendChild(input)
     document.body.appendChild(form)
     form.submit()
     form.remove()
   }
 
-  async function handleNewFolder() {
-    const name = prompt("Folder name:")
-    if (!name) return
-    await fetch("/api/files/mkdir", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ path: `${currentPath}/${name}` }),
-    })
-    fetchFiles(currentPath)
-  }
-
-  if (!activeDrive) {
+  if (!activeDrive)
     return (
-      <div className="flex items-center justify-center p-8">
-        <ProgressActivityIcon className="h-5 w-5 animate-spin text-slate-500" />
+      <div className="p-8 text-slate-400" role="status">
+        Loading files…
       </div>
     )
-  }
-
   const base = effectiveBase || activeDrive.base
-  const relativePath = currentPath.replace(base, "") || "/"
-
+  const crumbs = currentPath.slice(base.length).split("/").filter(Boolean)
   return (
-    <div className="flex h-[calc(100vh-120px)] flex-col space-y-4 md:h-[calc(100vh-96px)]">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-bold text-slate-100">Files</h1>
-          <p className="mt-1 text-sm text-slate-500">
-            Manage dashcam clips and media files
-          </p>
-        </div>
-        <div className="flex flex-wrap gap-2">
-          <button
-            onClick={handleNewFolder}
-            className="glass-card glass-card-hover flex items-center gap-1.5 px-3 py-1.5 text-sm text-slate-400 transition-colors hover:text-slate-200"
-          >
+    <div className="flex min-h-[70vh] flex-col gap-4">
+      <header className="flex flex-wrap items-center justify-between gap-3">
+        <h1 className="text-2xl font-bold text-slate-100">Files</h1>
+        <div className="flex gap-2">
+          <button className={buttonClass} disabled={busy} onClick={() => void newFolder()}>
             <CreateNewFolderIcon className="h-4 w-4" />
-            New Folder
+            New folder
           </button>
-          <button
-            onClick={() => uploadRef.current?.click()}
-            disabled={uploading}
-            className={cn(
-              "glass-card glass-card-hover flex items-center gap-1.5 px-3 py-1.5 text-sm transition-colors",
-              uploading ? "text-slate-600 cursor-not-allowed" : "text-slate-400 hover:text-slate-200"
-            )}
-          >
-            {uploading ? <ProgressActivityIcon className="h-4 w-4 animate-spin" /> : <UploadIcon className="h-4 w-4" />}
-            {uploading ? "Uploading..." : "Upload"}
-          </button>
-          <input ref={uploadRef} type="file" multiple className="hidden" onChange={handleUpload} />
-          <button
-            onClick={() => folderUploadRef.current?.click()}
-            disabled={uploading}
-            className={cn(
-              "glass-card glass-card-hover flex items-center gap-1.5 px-3 py-1.5 text-sm transition-colors",
-              uploading ? "text-slate-600 cursor-not-allowed" : "text-slate-400 hover:text-slate-200"
-            )}
-          >
-            <FolderOpenIcon className="h-4 w-4" />
-            Upload Folder
-          </button>
-          {/* @ts-expect-error webkitdirectory is non-standard but supported in all major browsers */}
-          <input ref={folderUploadRef} type="file" multiple webkitdirectory="" className="hidden" onChange={handleUpload} />
-        </div>
-      </div>
-
-      {/* Drive selector */}
-      <div className="flex flex-wrap gap-1">
-        {drives.map((drive) => (
-          <button
-            key={drive.id}
-            onClick={() => switchDrive(drive)}
-            className={cn(
-              "flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm font-medium transition-colors",
-              activeDrive.id === drive.id
-                ? "bg-blue-500/15 text-blue-400"
-                : "text-slate-500 hover:bg-white/5 hover:text-slate-300"
-            )}
-          >
-            {(() => { const Icon = TAB_ICONS[drive.icon]; return <Icon className="h-3.5 w-3.5" /> })()}
-            {drive.id}
-          </button>
-        ))}
-      </div>
-
-      {/* Search and Sort */}
-      <div className="flex items-center gap-2">
-        <div className="relative flex-1">
-          <SearchIcon className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-600" />
-          <input
-            type="text"
-            value={search}
-            onChange={(e) => handleSearchChange(e.target.value)}
-            placeholder="Search files..."
-            className="w-full rounded-lg border border-white/10 bg-white/5 py-1.5 pl-8 pr-8 text-sm text-slate-300 placeholder-slate-600 outline-none transition focus:border-blue-500/50 focus:ring-1 focus:ring-blue-500/25"
-          />
-          {search && (
-            <button
-              onClick={() => handleSearchChange("")}
-              className="absolute right-2 top-1/2 -translate-y-1/2 rounded p-0.5 text-slate-600 hover:text-slate-400"
-            >
-              <CloseIcon className="h-3.5 w-3.5" />
-            </button>
-          )}
-        </div>
-        <div className="relative" ref={sortMenuRef}>
-          <button
-            onClick={() => setShowSortMenu(!showSortMenu)}
-            className={cn(
-              "glass-card glass-card-hover flex items-center gap-1.5 whitespace-nowrap px-3 py-1.5 text-sm transition-colors",
-              showSortMenu ? "text-blue-400" : "text-slate-400 hover:text-slate-200"
-            )}
-          >
-            <SwapVertIcon className="h-3.5 w-3.5" />
-            <span className="hidden sm:inline">{SORT_LABELS[sortOption]}</span>
-          </button>
-          {showSortMenu && (
-            <div className="absolute right-0 top-full z-20 mt-1 w-44 overflow-hidden rounded-lg border border-white/10 bg-slate-900 shadow-xl">
-              {(Object.keys(SORT_LABELS) as SortOption[]).map((opt) => (
-                <button
-                  key={opt}
-                  onClick={() => { setSortOption(opt); setShowSortMenu(false) }}
-                  className={cn(
-                    "flex w-full items-center justify-between px-3 py-2 text-left text-sm transition-colors hover:bg-white/5",
-                    sortOption === opt ? "text-blue-400" : "text-slate-400"
-                  )}
-                >
-                  {SORT_LABELS[opt]}
-                  {sortOption === opt && <CheckIcon className="h-3.5 w-3.5" />}
-                </button>
-              ))}
-            </div>
-          )}
-        </div>
-      </div>
-
-      {/* Upload progress */}
-      {uploads.length > 0 && (
-        <div className="glass-card space-y-2 p-3">
-          <div className="flex items-center justify-between">
-            <p className="text-xs font-medium text-slate-300">
-              {uploading ? "Uploading files..." : (
-                <span className="flex items-center gap-1.5">
-                  <CheckCircleIcon className="h-3.5 w-3.5 text-emerald-400" />
-                  Upload complete
-                </span>
-              )}
-            </p>
-            {!uploading && (
-              <button onClick={() => setUploads([])} className="rounded p-0.5 text-slate-600 hover:text-slate-400">
-                <CloseIcon className="h-3.5 w-3.5" />
+          <details ref={uploadMenuRef} className="relative">
+            <summary className={cn(buttonClass, "cursor-pointer list-none")}>
+              <UploadIcon className="h-4 w-4" />
+              Upload
+            </summary>
+            <div className={`absolute right-0 top-full z-30 mt-2 grid w-44 gap-1 p-2 ${DROPDOWN_SURFACE}`}>
+              <button
+                className={DROPDOWN_OPTION}
+                disabled={uploading}
+                onClick={() => {
+                  uploadMenuRef.current?.removeAttribute("open")
+                  uploadRef.current?.click()
+                }}
+              >
+                Files
               </button>
-            )}
-          </div>
-          {uploads.map((u, i) => {
-            const pct = u.total > 0 ? Math.round((u.loaded / u.total) * 100) : 0
-            return (
-              <div key={i} className="space-y-1">
-                <div className="flex items-center justify-between text-[11px]">
-                  <span className="truncate text-slate-400">{u.fileName}</span>
-                  <span className={cn("tabular-nums", u.error ? "text-red-400" : u.done ? "text-emerald-400" : "text-slate-500")}>
-                    {u.error ? "Error" : u.done ? "Done" : `${pct}%`}
-                  </span>
-                </div>
-                <div className="h-1 overflow-hidden rounded-full bg-slate-800">
-                  <div
-                    className={cn(
-                      "h-full rounded-full transition-all duration-300",
-                      u.error ? "bg-red-500" : u.done ? "bg-emerald-500" : "bg-blue-500"
-                    )}
-                    style={{ width: `${pct}%` }}
-                  />
-                </div>
-              </div>
-            )
-          })}
-          {uploading && uploads.length > 1 && (() => {
-            const totalLoaded = uploads.reduce((s, u) => s + u.loaded, 0)
-            const totalSize = uploads.reduce((s, u) => s + u.total, 0)
-            const totalPct = totalSize > 0 ? Math.round((totalLoaded / totalSize) * 100) : 0
-            const doneCount = uploads.filter((u) => u.done).length
-            return (
-              <div className="border-t border-white/5 pt-2">
-                <div className="flex items-center justify-between text-[11px]">
-                  <span className="text-slate-500">{doneCount}/{uploads.length} files</span>
-                  <span className="tabular-nums text-slate-400">{formatSize(totalLoaded)} / {formatSize(totalSize)} ({totalPct}%)</span>
-                </div>
-                <div className="mt-1 h-1.5 overflow-hidden rounded-full bg-slate-800">
-                  <div className="h-full rounded-full bg-blue-500 transition-all duration-300" style={{ width: `${totalPct}%` }} />
-                </div>
-              </div>
-            )
-          })()}
+              <button
+                className={DROPDOWN_OPTION}
+                disabled={uploading}
+                onClick={() => {
+                  uploadMenuRef.current?.removeAttribute("open")
+                  folderRef.current?.click()
+                }}
+              >
+                Folder
+              </button>
+            </div>
+          </details>
+          <input
+            ref={uploadRef}
+            type="file"
+            multiple
+            className="hidden"
+            onChange={(e) => void processFiles(Array.from(e.target.files ?? []))}
+          />
+            <input
+            ref={folderRef}
+            type="file"
+            multiple
+            {...{ webkitdirectory: "" }}
+            className="hidden"
+            onChange={(e) => void processFiles(Array.from(e.target.files ?? []))}
+          />
+        </div>
+      </header>
+      <div className="flex flex-wrap gap-2">
+        <SelectMenu label="File location" value={activeDrive.id} onChange={switchDrive}
+          options={drives.map(drive => ({ value: drive.id, label: drive.id, group: drive.id === "USB Drive" ? "Advanced locations" : "Media" }))} />
+        <div className="relative min-w-40 flex-1">
+          <SearchIcon className="pointer-events-none absolute left-3 top-3 h-4 w-4 text-slate-400" />
+          <input
+            aria-label="Search files"
+            placeholder="Search this location"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            className="min-h-10 w-full rounded-xl border border-white/10 bg-white/5 py-2 pl-9 pr-3 text-sm text-slate-200"
+          />
+        </div>
+        <SelectMenu label="Sort files" value={sort} align="end" onChange={value => setSort(value as SortOption)}
+          options={Object.entries(SORT_LABELS).map(([value, label]) => ({ value, label }))} />
+      </div>
+      {operationError && (
+        <div
+          role="alert"
+          className="rounded-xl border border-red-400/20 bg-red-400/10 p-3 text-sm text-red-300"
+        >
+          {operationError}
         </div>
       )}
-
-      {/* File list */}
-      <div
-        className={cn("glass-card flex min-h-0 flex-1 flex-col overflow-hidden relative", dragging && "ring-2 ring-blue-500/50")}
-        onDragEnter={handleDragEnter}
-        onDragLeave={handleDragLeave}
-        onDragOver={handleDragOver}
-        onDrop={handleDrop}
-      >
-        {dragging && (
-          <div className="absolute inset-0 z-30 flex items-center justify-center bg-slate-900/80 backdrop-blur-sm">
-            <div className="flex flex-col items-center gap-2 text-blue-400">
-              <UploadIcon className="h-10 w-10" />
-              <p className="text-sm font-medium">Drop files here to upload</p>
-            </div>
-          </div>
-        )}
-        <div className="flex items-center justify-between border-b border-white/5 px-3 py-2">
-          <div className="flex items-center gap-2">
-            {currentPath !== base && (
-              <button
-                onClick={goUp}
-                className="rounded p-1 text-slate-500 hover:bg-white/5 hover:text-slate-300"
-              >
-                <ArrowBackIcon className="h-4 w-4" />
+      {!!uploads.length && (
+        <section aria-label="Upload results" className="glass-card space-y-3 p-4">
+          <div className="flex justify-between gap-2">
+            <span className="text-sm text-slate-200">
+              {uploading
+                ? "Uploading…"
+                : uploads.some((u) => u.error)
+                  ? "Some uploads need attention"
+                  : "Uploads complete"}
+            </span>
+            {!uploading && (
+              <button aria-label="Dismiss upload results" onClick={() => setUploads([])}>
+                <CloseIcon className="h-5 w-5" />
               </button>
             )}
-            <p className="font-mono text-sm text-slate-400">{relativePath}</p>
           </div>
-          {selected.size > 0 && (
-            <span className="rounded-full bg-blue-500/20 px-2 py-0.5 text-[10px] font-semibold text-blue-400">
-              {selected.size} selected
-            </span>
-          )}
-        </div>
-
-        <div className="flex-1 overflow-y-auto">
-          {loading ? (
-            <div className="flex items-center justify-center p-8">
-              <ProgressActivityIcon className="h-5 w-5 animate-spin text-slate-500" />
-            </div>
-          ) : error ? (
-            <div className="flex flex-col items-center justify-center p-8">
-              <FolderOpenIcon className="mb-2 h-10 w-10 text-slate-500" />
-              <p className="text-sm text-slate-500">{error}</p>
-            </div>
-          ) : sortedFiles.length === 0 ? (
-            <div className="flex flex-col items-center justify-center p-8">
-              {(() => { const Icon = TAB_ICONS[activeDrive.icon]; return <Icon className="mb-2 h-10 w-10 text-slate-500" /> })()}
-              <p className="text-sm text-slate-500">{search ? "No matching files" : "Empty folder"}</p>
-              <p className="mt-1 text-xs text-slate-600">
-                {search ? "Try a different search term" : activeDrive.icon === "cam" ? "No clips in this folder" : "Upload files to get started"}
-              </p>
-            </div>
-          ) : (
-            <table className="w-full text-sm">
-              <tbody>
-                {sortedFiles.map((f) => (
-                  <tr
-                    key={f.path}
-                    className={cn(
-                      "cursor-pointer border-b border-white/5 transition-colors hover:bg-white/5",
-                      selected.has(f.path) && "bg-blue-500/10"
-                    )}
-                    onClick={() => {
-                      if (f.is_dir) {
-                        navigate(f)
-                      } else {
-                        setSelected((prev) => {
-                          const next = new Set(prev)
-                          if (next.has(f.path)) next.delete(f.path)
-                          else next.add(f.path)
-                          return next
-                        })
-                      }
-                    }}
-                  >
-                    <td className="w-8 px-2 py-3">
-                      <input
-                        type="checkbox"
-                        checked={selected.has(f.path)}
-                        onChange={() => {
-                          setSelected((prev) => {
-                            const next = new Set(prev)
-                            if (next.has(f.path)) next.delete(f.path)
-                            else next.add(f.path)
-                            return next
-                          })
-                        }}
-                        onClick={(e) => e.stopPropagation()}
-                        className="h-3.5 w-3.5 cursor-pointer rounded border-slate-600 accent-blue-500"
-                      />
-                    </td>
-                    <td className="px-1 py-3">
-                      {f.is_dir ? (
-                        <FolderIcon className="h-4 w-4 text-blue-400" />
-                      ) : (
-                        <DraftIcon className="h-4 w-4 text-slate-500" />
-                      )}
-                    </td>
-                    <td className="min-w-0 truncate py-3 text-slate-300">{f.name}</td>
-                    <td className="hidden px-3 py-3 text-right text-xs text-slate-600 sm:table-cell">
-                      {f.mod_time ? new Date(f.mod_time).toLocaleDateString() : ""}
-                    </td>
-                    <td className="px-3 py-3 text-right text-xs text-slate-600">
-                      {f.is_dir ? "" : formatSize(f.size)}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          )}
-        </div>
-      </div>
-
-      {/* Floating selection action bar */}
-      {selected.size > 0 && (
-        <div className="fixed bottom-6 left-1/2 z-50 -translate-x-1/2 md:left-[calc(50%+7rem)]">
-          <div className="glass-card flex items-center gap-3 border border-blue-500/20 bg-slate-900/95 px-4 py-3 shadow-2xl backdrop-blur-xl animate-in slide-in-from-bottom-2 fade-in duration-200">
-            <span className="rounded-full bg-blue-500/20 px-2.5 py-1 text-xs font-semibold text-blue-400">
-              {selected.size} selected
-            </span>
-            <div className="h-4 w-px bg-white/10" />
+          <div className="max-h-64 space-y-3 overflow-y-auto">
+            {uploads.map((u, i) => (
+              <div key={`${u.destination}/${u.fileName}`}>
+                <div className="flex flex-wrap justify-between gap-2 text-sm">
+                  <span className="break-all text-slate-300">{u.fileName}</span>
+                  <span className={u.error ? "text-red-300" : "text-emerald-300"}>
+                    {u.error
+                      ? "Failed"
+                      : u.done
+                        ? "Done"
+                        : `${Math.min(100, Math.round((u.loaded / Math.max(1, u.total)) * 100))}%`}
+                  </span>
+                </div>
+                {u.error ? (
+                  <div className="mt-1 flex flex-wrap items-center gap-2">
+                    <span className="text-xs text-red-300">{u.error}</span>
+                    <button
+                      className={buttonClass}
+                      disabled={uploading}
+                      onClick={() => void retryUpload(i, u.conflict)}
+                    >
+                      {u.conflict ? "Replace existing file" : "Retry"}
+                    </button>
+                  </div>
+                ) : (
+                  <progress
+                    className="mt-1 h-1 w-full accent-emerald-400"
+                    value={u.done ? u.total || 1 : u.loaded}
+                    max={u.total || 1}
+                  />
+                )}
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
+      <section
+        className={cn("glass-card relative overflow-hidden", dragging && "ring-2 ring-emerald-400")}
+        onDragEnter={(e) => {
+          e.preventDefault()
+          dragDepth.current++
+          setDragging(true)
+        }}
+        onDragLeave={(e) => {
+          e.preventDefault()
+          if (--dragDepth.current <= 0) setDragging(false)
+        }}
+        onDragOver={(e) => e.preventDefault()}
+        onDrop={(e) => {
+          e.preventDefault()
+          dragDepth.current = 0
+          setDragging(false)
+          if (
+            Array.from(e.dataTransfer.items).some((item) => item.webkitGetAsEntry?.()?.isDirectory)
+          ) {
+            setOperationError("Choose Upload → Folder to preserve its folder structure.")
+            return
+          }
+          void processFiles(Array.from(e.dataTransfer.files))
+        }}
+      >
+        {dragging && (
+          <div className="pointer-events-none absolute inset-0 z-20 grid place-content-center bg-slate-950/90 text-emerald-300">
+            Drop files to upload
+          </div>
+        )}
+        <nav
+          aria-label="Folder path"
+          className="flex flex-wrap items-center gap-2 border-b border-white/10 px-4 py-3 text-sm text-slate-300"
+        >
+          {currentPath !== base && (
             <button
-              onClick={handleDownloadSelected}
-              className="flex items-center gap-2 rounded-lg bg-blue-500/15 px-3 py-2 text-sm font-medium text-blue-400 transition-colors hover:bg-blue-500/25"
+              aria-label="Parent folder"
+              className="p-1"
+              onClick={() => navigate(currentPath.split("/").slice(0, -1).join("/") || base)}
             >
+              <ArrowBackIcon className="h-4 w-4" />
+            </button>
+          )}
+          <button onClick={() => navigate(base)}>{activeDrive.id}</button>
+          {crumbs.map((part, i) => (
+            <span key={i} className="flex items-center gap-2">
+              <span aria-hidden="true">/</span>
+              <button onClick={() => navigate(`${base}/${crumbs.slice(0, i + 1).join("/")}`)}>
+                {part}
+              </button>
+            </span>
+          ))}
+        </nav>
+        {selected.size > 0 && (
+          <div className="flex flex-wrap items-center gap-2 border-b border-white/10 bg-emerald-500/5 px-4 py-2">
+            <span className="mr-auto text-sm text-slate-300">{selected.size} selected</span>
+            <button className={buttonClass} onClick={downloadSelected}>
               <DownloadIcon className="h-4 w-4" />
               Download
             </button>
-            <button
-              onClick={handleDelete}
-              className="flex items-center gap-2 rounded-lg bg-red-500/10 px-3 py-2 text-sm font-medium text-red-400 transition-colors hover:bg-red-500/20"
-            >
+            <button className={buttonClass} disabled={busy} onClick={() => void deleteSelected()}>
               <DeleteIcon className="h-4 w-4" />
               Delete
             </button>
-            <button
-              onClick={() => setSelected(new Set())}
-              className="rounded-lg p-2 text-slate-500 transition-colors hover:bg-white/5 hover:text-slate-300"
-              title="Clear selection"
-            >
-              <CloseIcon className="h-4 w-4" />
+            <button className={buttonClass} onClick={() => setSelected(new Set())}>
+              Clear
             </button>
           </div>
-        </div>
-      )}
+        )}
+        {loading && (
+          <div role="status" className="flex items-center gap-2 px-4 py-2 text-sm text-slate-400">
+            <ProgressActivityIcon className="h-4 w-4 animate-spin" />
+            Loading…
+          </div>
+        )}
+        {error ? (
+          <div role="alert" className="p-4 text-sm text-red-300">
+            {error}{" "}
+            <button className={buttonClass} onClick={() => void fetchFiles(currentPath, search)}>
+              Retry
+            </button>
+          </div>
+        ) : (
+          <>
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-sm">
+                <thead className="text-xs text-slate-400">
+                  <tr>
+                    <th className="w-12 p-3">
+                      <input
+                        aria-label="Select all listed files"
+                        type="checkbox"
+                        checked={files.length > 0 && selected.size === files.length}
+                        onChange={(e) =>
+                          setSelected(
+                            e.target.checked ? new Set(files.map((f) => f.path)) : new Set(),
+                          )
+                        }
+                      />
+                    </th>
+                    <th className="py-3">Name</th>
+                    <th className="hidden p-3 text-right sm:table-cell">Modified</th>
+                    <th className="p-3 text-right">Size</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {sorted.slice(0, visibleCount).map((f) => (
+                    <tr
+                      key={f.path}
+                      className={cn(
+                        "border-t border-white/5 hover:bg-white/5",
+                        selected.has(f.path) && "bg-emerald-500/10",
+                      )}
+                    >
+                      <td className="p-3">
+                        <input
+                          aria-label={`Select ${f.name}`}
+                          type="checkbox"
+                          checked={selected.has(f.path)}
+                          onChange={() => toggle(f.path)}
+                        />
+                      </td>
+                      <td className="max-w-[50vw] py-3 pr-3">
+                        <button
+                          className="flex max-w-full items-center gap-3 text-left text-slate-200"
+                          onClick={() => (f.is_dir ? navigate(f.path) : toggle(f.path))}
+                        >
+                          {f.is_dir ? (
+                            <FolderIcon className="h-4 w-4 shrink-0 text-emerald-400" />
+                          ) : (
+                            <DraftIcon className="h-4 w-4 shrink-0 text-slate-400" />
+                          )}
+                          <span className="break-all">{f.name}</span>
+                        </button>
+                      </td>
+                      <td className="hidden whitespace-nowrap p-3 text-right text-xs text-slate-400 sm:table-cell">
+                        {f.mod_time ? new Date(f.mod_time).toLocaleDateString() : "—"}
+                      </td>
+                      <td className="whitespace-nowrap p-3 text-right text-xs text-slate-400">
+                        {f.is_dir ? "—" : formatSize(f.size)}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            {!loading && !files.length && (
+              <p className="p-8 text-center text-sm text-slate-400">
+                {search ? "No matching files" : "This folder is empty"}
+              </p>
+            )}
+            {sorted.length > visibleCount && (
+              <div className="p-4 text-center">
+                <button className={buttonClass} onClick={() => setVisibleCount((n) => n + 100)}>
+                  Show more · {visibleCount} of {sorted.length}
+                </button>
+              </div>
+            )}
+          </>
+        )}
+      </section>
     </div>
   )
 }

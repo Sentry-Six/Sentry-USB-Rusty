@@ -198,6 +198,60 @@ fn process_one_clip(store: &DriveStore, file: &str, full_path: &str) -> ClipOutc
     out
 }
 
+struct ProgressClock {
+    job_id: String,
+    started: std::time::Instant,
+    started_at: u64,
+    sampled_at: u64,
+    last_change: std::time::Instant,
+    samples: std::collections::VecDeque<(std::time::Instant, usize)>,
+    total: usize,
+    completed: usize,
+    rate: f64,
+    has_total: bool,
+}
+
+impl ProgressClock {
+    fn new() -> Self {
+        let wall = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
+        let now = std::time::Instant::now();
+        Self { job_id: format!("{}-{}", std::process::id(), wall.as_nanos()), started: now,
+            started_at: wall.as_secs(), sampled_at: wall.as_secs(), last_change: now,
+            samples: [(now, 0)].into(), total: 0, completed: 0, rate: 0.0, has_total: false }
+    }
+
+    fn record(&mut self, total: usize, completed: usize) {
+        self.record_at(total, completed, std::time::Instant::now());
+    }
+
+    fn record_at(&mut self, total: usize, completed: usize, now: std::time::Instant) {
+        self.total = total;
+        self.has_total = true;
+        if completed > self.completed { self.last_change = now; }
+        self.completed = completed;
+        self.sampled_at = self.started_at + now.duration_since(self.started).as_secs();
+        if self.samples.back().is_some_and(|(at, _)| now.duration_since(*at).as_secs() < 5) { return; }
+        self.samples.push_back((now, completed));
+        while self.samples.len() > 2 && now.duration_since(self.samples[1].0).as_secs() >= 120 {
+            self.samples.pop_front();
+        }
+        let elapsed = now.duration_since(self.started).as_secs_f64();
+        if elapsed < 30.0 || completed < 3 { return; }
+        let (at, before) = self.samples.front().unwrap();
+        let recent = completed.saturating_sub(*before) as f64 / now.duration_since(*at).as_secs_f64();
+        let measured = 0.75 * recent + 0.25 * completed as f64 / elapsed;
+        self.rate = if self.rate > 0.0 { self.rate * 0.75 + measured * 0.25 } else { measured };
+    }
+
+    fn estimate(&self, now: std::time::Instant, running: bool) -> (Option<u64>, &'static str) {
+        if !running { return (None, "idle"); }
+        if self.has_total && self.completed >= self.total { return (None, "finalizing"); }
+        if now.duration_since(self.last_change).as_secs() >= 60 { return (None, "stalled"); }
+        if self.rate <= 0.0 { return (None, "estimating"); }
+        (Some(((self.total - self.completed) as f64 / self.rate).ceil() as u64), "ready")
+    }
+}
+
 /// Orchestrates GPS extraction from TeslaCam clip files.
 pub struct Processor {
     store: Arc<DriveStore>,
@@ -207,6 +261,7 @@ pub struct Processor {
     archive_control: crate::archive_control::ArchiveControl,
     run_cycle: std::sync::Mutex<Option<String>>,
     status: Mutex<ProcessingStatus>,
+    progress_clock: std::sync::Mutex<ProgressClock>,
     clip_dir: String,
     /// Optional: woken with `notify_one()` whenever `do_process` finishes.
     /// The cloud-uploader subscribes to this so it can run a sweep at the
@@ -252,7 +307,10 @@ impl Processor {
                 total_files: 0,
                 processed_files: 0,
                 current_file: None,
+                job_id: String::new(), started_at: 0, sampled_at: 0,
+                eta_seconds: None, eta_state: "idle".into(),
             }),
+            progress_clock: std::sync::Mutex::new(ProgressClock::new()),
             clip_dir: Self::DEFAULT_CLIP_DIR.to_string(),
             on_complete,
             after_process: None,
@@ -289,6 +347,17 @@ impl Processor {
         // or exporting. The archive-side drive-data.json then silently
         // stopped updating (2026-08-26 field incident).
         status.running = status.running || self.is_running();
+        let clock = self.progress_clock.lock().unwrap();
+        status.job_id = clock.job_id.clone();
+        status.started_at = clock.started_at;
+        status.sampled_at = clock.sampled_at;
+        if !clock.has_total && status.running {
+            status.total_files = 0;
+            status.processed_files = 0;
+        }
+        let (eta, state) = clock.estimate(std::time::Instant::now(), status.running);
+        status.eta_seconds = eta;
+        status.eta_state = state.into();
         status
     }
 
@@ -306,6 +375,7 @@ impl Processor {
         if self.running.swap(true, Ordering::SeqCst) { return false; }
         *self.run_work.lock().unwrap() = Some(work);
         *cycle = self.archive_control.active_cycle();
+        *self.progress_clock.lock().unwrap() = ProgressClock::new();
         true
     }
 
@@ -398,6 +468,7 @@ impl Processor {
             status.processed_files = 0;
             status.current_file = None;
         }
+        self.progress_clock.lock().unwrap().record(total, 0);
 
         let mut scanned = 0usize;
         let mut updated = 0usize;
@@ -409,6 +480,7 @@ impl Processor {
                 status.current_file = Some(file.clone());
                 status.processed_files = i;
             }
+            self.progress_clock.lock().unwrap().record(total, i);
 
             full_path.clear();
             full_path.push_str(&self.clip_dir);
@@ -628,6 +700,7 @@ impl Processor {
             status.current_file = None;
         }
 
+        self.progress_clock.lock().unwrap().record(total, 0);
         self.hub.broadcast("drive_process", &serde_json::json!({
             "status": "started",
             "total": total,
@@ -666,6 +739,7 @@ impl Processor {
             .await
             .unwrap_or_else(|e| ClipOutcome::err(format!("clip task panicked — {}", e)));
             self.status.lock().await.processed_files = i + 1;
+            self.progress_clock.lock().unwrap().record(total, i + 1);
 
             if clip.route_added {
                 routes_found += 1;
@@ -688,9 +762,15 @@ impl Processor {
             }
             // Broadcast progress every 10 files.
             if (i + 1) % 10 == 0 || i + 1 == total {
+                let progress = self.get_status().await;
                 self.hub.broadcast("drive_process", &serde_json::json!({
                     "status": "progress",
+                    "current": i + 1,
                     "processed": i + 1,
+                    "eta_seconds": progress.eta_seconds,
+                    "eta_state": progress.eta_state,
+                    "job_id": progress.job_id,
+                    "sampled_at": progress.sampled_at,
                     "total": total,
                     "errorCount": error_count,
                 }));
@@ -1348,4 +1428,49 @@ mod tests {
         assert_eq!(hooks.load(Ordering::SeqCst), 1);
     }
 
+}
+
+#[cfg(test)]
+mod progress_clock_tests {
+    use super::ProgressClock;
+    use std::time::Duration;
+
+    #[test]
+    fn progress_is_producer_owned_and_queries_do_not_reset_it() {
+        let mut clock = ProgressClock::new();
+        let start = clock.started;
+        clock.record_at(1000, 10, start + Duration::from_secs(5));
+        assert_eq!(clock.estimate(start + Duration::from_secs(5), true), (None, "estimating"));
+        for second in (10..=120).step_by(5) {
+            clock.record_at(1000, second as usize * 2, start + Duration::from_secs(second));
+        }
+        let expected = clock.estimate(start + Duration::from_secs(120), true);
+        assert_eq!(expected.1, "ready");
+        assert!((370..=390).contains(&expected.0.unwrap()));
+        for _ in 0..20 { assert_eq!(clock.estimate(start + Duration::from_secs(120), true), expected); }
+        assert_eq!(clock.estimate(start + Duration::from_secs(181), true), (None, "stalled"));
+        clock.record_at(1000, 1000, start + Duration::from_secs(200));
+        assert_eq!(clock.estimate(start + Duration::from_secs(200), true), (None, "finalizing"));
+        assert_eq!(clock.estimate(start + Duration::from_secs(200), false), (None, "idle"));
+        let next = ProgressClock::new();
+        assert_ne!(next.job_id, clock.job_id);
+        assert_eq!(next.estimate(next.started, true), (None, "estimating"));
+    }
+
+    #[test]
+    fn sustained_slowdown_changes_estimate_without_one_sample_jump() {
+        let mut clock = ProgressClock::new();
+        let start = clock.started;
+        for second in (5..=120).step_by(5) {
+            clock.record_at(10000, second as usize * 10, start + Duration::from_secs(second));
+        }
+        let before = clock.estimate(start + Duration::from_secs(120), true).0.unwrap();
+        clock.record_at(10000, 1205, start + Duration::from_secs(125));
+        let after_one = clock.estimate(start + Duration::from_secs(125), true).0.unwrap();
+        assert!(after_one < before * 2);
+        for second in (130..=300).step_by(5) {
+            clock.record_at(10000, 1200 + (second - 120) as usize, start + Duration::from_secs(second));
+        }
+        assert!(clock.estimate(start + Duration::from_secs(300), true).0.unwrap() > before * 2);
+    }
 }

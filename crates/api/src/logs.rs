@@ -122,6 +122,8 @@ pub struct LogPageQuery {
     /// Byte offset returned by a previous page. Reads the lines immediately
     /// before it; absent means start at the end of the file.
     before: Option<u64>,
+    /// Optional identity from the tail endpoint; rejects rotation while paging.
+    cursor: Option<String>,
 }
 
 /// GET /api/logs/{name}/page?lines=50&before=<offset>
@@ -147,7 +149,7 @@ pub async fn get_log_page(
     let lines = q.lines.unwrap_or(DEFAULT_PAGE_LINES).clamp(1, MAX_PAGE_LINES);
     let before = q.before;
 
-    tokio::task::spawn_blocking(move || read_log_page(name, lines, before))
+    tokio::task::spawn_blocking(move || read_log_page(name, lines, before, q.cursor))
         .await
         .unwrap_or_else(|_| {
             page_error(StatusCode::INTERNAL_SERVER_ERROR, "log read task failed")
@@ -172,7 +174,7 @@ fn page_response(content: String, start: u64) -> Response {
         .into_response()
 }
 
-fn read_log_page(name: String, lines: usize, before: Option<u64>) -> Response {
+fn read_log_page(name: String, lines: usize, before: Option<u64>, cursor: Option<String>) -> Response {
     let known = log_path(&name).is_some();
     let path = match log_path(&name) {
         Some(p) => p.to_string(),
@@ -182,11 +184,12 @@ fn read_log_page(name: String, lines: usize, before: Option<u64>) -> Response {
     let mut file = match std::fs::File::open(&path) {
         Ok(f) => f,
         // A known log that has not been created yet is an empty page.
-        Err(_) if known => return page_response(String::new(), 0),
+        Err(_) if cursor.is_some() => return page_error(StatusCode::CONFLICT, "Log rotated. Reload its newest entries."),
+        Err(e) if known && e.kind() == std::io::ErrorKind::NotFound => return page_response(String::new(), 0),
         Err(_) => return page_error(StatusCode::NOT_FOUND, "Log file not found"),
     };
 
-    match page_window(&mut file, lines, before) {
+    match guarded_page_window(&mut file, lines, before, cursor.as_deref()) {
         Ok((content, start)) => page_response(content, start),
         Err(PageError::StaleCursor) => page_error(
             StatusCode::CONFLICT,
@@ -270,7 +273,9 @@ fn page_window(
     file.seek(SeekFrom::Start(start)).map_err(|_| PageError::Io)?;
     file.read_exact(&mut out).map_err(|_| PageError::Io)?;
 
-    Ok((String::from_utf8_lossy(&out).into_owned(), start))
+    // A byte-capped long line can start inside a codepoint.
+    let skip = if start > 0 { out.iter().take_while(|byte| **byte & 0xc0 == 0x80).count() } else { 0 };
+    Ok((String::from_utf8_lossy(&out[skip..]).into_owned(), start + skip as u64))
 }
 
 #[cfg(test)]
@@ -341,4 +346,176 @@ mod tests {
             Err(PageError::StaleCursor)
         ));
     }
+}
+
+#[derive(Deserialize)]
+pub struct LogDeltaQuery {
+    cursor: Option<String>,
+}
+
+#[derive(serde::Serialize)]
+struct LogDelta {
+    content: String,
+    cursor: String,
+    before: u64,
+    reset: bool,
+    has_more: bool,
+}
+
+/// Bounded append-only reads. The cursor binds the inode and preceding bytes,
+/// so rotation and copy-truncate trigger a fresh tail instead of mixing files.
+pub async fn get_log_delta(Path(name): Path<String>, Query(query): Query<LogDeltaQuery>) -> Response {
+    if name.contains("..") || name.contains('/') || name.contains('\\') || name == "bluetooth" {
+        return page_error(StatusCode::BAD_REQUEST, "invalid log name");
+    }
+    tokio::task::spawn_blocking(move || {
+        let path = log_path(&name).map(str::to_owned).unwrap_or_else(|| format!("/var/log/{name}"));
+        match std::fs::File::open(path) {
+            Ok(mut file) => match delta_window(&mut file, query.cursor.as_deref()) {
+                Ok(delta) => ([(header::CACHE_CONTROL, "no-store")], Json(delta)).into_response(),
+                Err(_) => page_error(StatusCode::INTERNAL_SERVER_ERROR, "Cannot read log"),
+            },
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound && log_path(&name).is_some() => {
+                ([(header::CACHE_CONTROL, "no-store")], Json(LogDelta { content: String::new(), cursor: String::new(), before: 0, reset: true, has_more: false })).into_response()
+            }
+            Err(_) => page_error(StatusCode::NOT_FOUND, "Log file unavailable"),
+        }
+    }).await.unwrap_or_else(|_| page_error(StatusCode::INTERNAL_SERVER_ERROR, "Log read failed"))
+}
+
+fn cursor_at(file: &mut std::fs::File, position: u64) -> std::io::Result<String> {
+    use std::hash::{Hash, Hasher};
+    use std::os::unix::fs::MetadataExt;
+    let metadata = file.metadata()?;
+    let start = position.saturating_sub(64);
+    let mut preceding = vec![0; (position - start) as usize];
+    file.seek(SeekFrom::Start(start))?;
+    file.read_exact(&mut preceding)?;
+    let mut hash = std::collections::hash_map::DefaultHasher::new();
+    preceding.hash(&mut hash);
+    Ok(format!("{}:{}:{position}:{}", metadata.dev(), metadata.ino(), hash.finish()))
+}
+
+fn cursor_position(file: &mut std::fs::File, cursor: &str) -> std::io::Result<Option<u64>> {
+    let position = cursor.split(':').nth(2).and_then(|part| part.parse::<u64>().ok());
+    match position {
+        Some(at) if at <= file.metadata()?.len() && cursor_at(file, at)? == cursor => Ok(Some(at)),
+        _ => Ok(None),
+    }
+}
+
+fn guarded_page_window(file: &mut std::fs::File, lines: usize, before: Option<u64>, cursor: Option<&str>) -> Result<(String, u64), PageError> {
+    if let Some(cursor) = cursor {
+        if cursor_position(file, cursor).map_err(|_| PageError::Io)?.is_none() {
+            return Err(PageError::StaleCursor);
+        }
+    }
+    page_window(file, lines, before)
+}
+
+// Hold back only an unfinished trailing codepoint, even after malformed bytes.
+fn complete_utf8_len(bytes: &[u8]) -> usize {
+    let mut offset = 0;
+    while offset < bytes.len() {
+        match std::str::from_utf8(&bytes[offset..]) {
+            Ok(_) => return bytes.len(),
+            Err(error) => match error.error_len() {
+                Some(length) => offset += error.valid_up_to() + length,
+                None => return offset + error.valid_up_to(),
+            },
+        }
+    }
+    bytes.len()
+}
+
+fn complete_log_end(file: &mut std::fs::File, length: u64) -> std::io::Result<u64> {
+    let start = length.saturating_sub(4);
+    let mut suffix = vec![0; (length - start) as usize];
+    file.seek(SeekFrom::Start(start))?;
+    file.read_exact(&mut suffix)?;
+    Ok(start + complete_utf8_len(&suffix) as u64)
+}
+
+fn delta_window(file: &mut std::fs::File, cursor: Option<&str>) -> std::io::Result<LogDelta> {
+    let length = file.metadata()?.len();
+    let requested = match cursor { Some(cursor) => cursor_position(file, cursor)?, None => None };
+    let complete_end = complete_log_end(file, length)?;
+    let Some(start) = requested else {
+        let (content, before) = page_window(file, 500, Some(complete_end))
+            .map_err(|_| std::io::Error::other("Unable to read initial tail"))?;
+        return Ok(LogDelta { content, cursor: cursor_at(file, complete_end)?, before, reset: true, has_more: false });
+    };
+    let mut bytes = vec![0; (complete_end.saturating_sub(start)).min(64 * 1024) as usize];
+    file.seek(SeekFrom::Start(start))?;
+    file.read_exact(&mut bytes)?;
+    bytes.truncate(complete_utf8_len(&bytes));
+    let end = start + bytes.len() as u64;
+    Ok(LogDelta { content: String::from_utf8_lossy(&bytes).into_owned(), cursor: cursor_at(file, end)?, before: start, reset: false, has_more: end < complete_end })
+}
+
+#[cfg(test)]
+mod delta_tests {
+    use super::*;
+    use std::io::Write;
+
+    #[test]
+    fn unchanged_logs_send_nothing_and_appends_send_only_new_content() {
+        let mut file = tempfile::tempfile().unwrap();
+        file.write_all(b"first\n").unwrap();
+        let initial = delta_window(&mut file, None).unwrap();
+        assert!(initial.reset);
+        assert!(delta_window(&mut file, Some(&initial.cursor)).unwrap().content.is_empty());
+        file.seek(SeekFrom::End(0)).unwrap(); file.write_all(b"second\n").unwrap();
+        let next = delta_window(&mut file, Some(&initial.cursor)).unwrap();
+        assert!(!next.reset); assert_eq!(next.content, "second\n");
+    }
+
+    #[test]
+    fn copy_truncate_and_replacement_are_detected() {
+        let mut file = tempfile::tempfile().unwrap(); file.write_all(b"old log\n").unwrap();
+        let initial = delta_window(&mut file, None).unwrap();
+        file.set_len(0).unwrap(); file.seek(SeekFrom::Start(0)).unwrap(); file.write_all(b"new log longer\n").unwrap();
+        let next = delta_window(&mut file, Some(&initial.cursor)).unwrap();
+        assert!(next.reset); assert_eq!(next.content, "new log longer\n");
+        let mut other = tempfile::tempfile().unwrap(); other.write_all(b"new log longer\n").unwrap();
+        assert!(delta_window(&mut other, Some(&next.cursor)).unwrap().reset);
+    }
+    #[test]
+    fn incomplete_unicode_waits_without_fast_polling_and_completes_losslessly() {
+        let mut file = tempfile::tempfile().unwrap();
+        file.write_all(b"first\n\xf0\x9f").unwrap();
+        let initial = delta_window(&mut file, None).unwrap();
+        assert_eq!(initial.content, "first\n");
+        let unchanged = delta_window(&mut file, Some(&initial.cursor)).unwrap();
+        assert_eq!(unchanged.content, "");
+        assert!(!unchanged.has_more);
+        assert_eq!(unchanged.cursor, initial.cursor);
+        file.seek(SeekFrom::End(0)).unwrap();
+        file.write_all(b"\x9a\x97\n").unwrap();
+        let completed = delta_window(&mut file, Some(&initial.cursor)).unwrap();
+        assert_eq!(completed.content, "🚗\n");
+        assert!(!completed.has_more);
+    }
+
+    #[test]
+    fn older_pages_reject_same_size_replacement_and_allow_appends() {
+        let mut file = tempfile::tempfile().unwrap();
+        file.write_all(b"one\ntwo\nthree\n").unwrap();
+        let original = delta_window(&mut file, None).unwrap();
+        file.seek(SeekFrom::End(0)).unwrap(); file.write_all(b"four\n").unwrap();
+        assert_eq!(guarded_page_window(&mut file, 1, Some(4), Some(&original.cursor)).unwrap().0, "one\n");
+        file.set_len(0).unwrap(); file.seek(SeekFrom::Start(0)).unwrap();
+        file.write_all(b"new\nlog\nmore!\nlonger\n").unwrap();
+        assert!(matches!(guarded_page_window(&mut file, 1, Some(4), Some(&original.cursor)), Err(PageError::StaleCursor)));
+    }
+
+    #[test]
+    fn byte_capped_initial_tail_starts_on_unicode_boundary() {
+        let body = "🚗".repeat(140_000) + "a";
+        let mut file = tempfile::tempfile().unwrap(); file.write_all(body.as_bytes()).unwrap();
+        let initial = delta_window(&mut file, None).unwrap();
+        assert!(!initial.content.contains('�'));
+        assert_eq!(initial.before as usize + initial.content.len(), body.len());
+    }
+
 }

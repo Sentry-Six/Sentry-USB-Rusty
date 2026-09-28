@@ -66,39 +66,58 @@ fn mime_for(path: &str) -> &'static str {
 pub async fn spa_handler(uri: Uri, headers: HeaderMap) -> Response {
     let path = uri.path().trim_start_matches('/');
 
-    if let Some((file, encoding)) = pick_encoding(path, &headers) {
-        return serve_embedded(path, file, encoding, &headers);
-    }
-
-    if let Some(file) = StaticFiles::get(path) {
-        return serve_embedded(path, file, None, &headers);
-    }
-
-    // SPA fallback. index.html is short and changes per release; let
-    // tower-http's CompressionLayer handle its (small) gzip.
-    match StaticFiles::get("index.html") {
-        Some(file) => serve_embedded("index.html", file, None, &headers),
+    let path = if StaticFiles::get(path).is_some() { path } else { "index.html" };
+    match pick_encoding(path, &headers) {
+        Some((file, encoding)) => serve_embedded(path, file, encoding, &headers),
+        None if StaticFiles::get(path).is_some() => {
+            (StatusCode::NOT_ACCEPTABLE, "No acceptable content encoding").into_response()
+        }
         None => (StatusCode::NOT_FOUND, "Not Found").into_response(),
     }
 }
 
-/// Returns (file, content-encoding) if the client accepts a pre-compressed
-/// sibling we have on disk. Brotli first (better ratio), then gzip.
-fn pick_encoding(path: &str, req_headers: &HeaderMap) -> Option<(EmbeddedFile, Option<&'static str>)> {
-    let accept = req_headers
-        .get(header::ACCEPT_ENCODING)
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("");
-
-    if accept.contains("br") {
-        if let Some(f) = StaticFiles::get(&format!("{path}.br")) {
-            return Some((f, Some("br")));
+fn preferred_encodings(accept: &str) -> Vec<&'static str> {
+    let mut explicit = std::collections::HashMap::new();
+    for item in accept.split(',') {
+        let mut fields = item.trim().split(';');
+        let coding = fields.next().unwrap_or("").trim().to_ascii_lowercase();
+        let mut quality = 1.0_f32;
+        for field in fields {
+            if let Some((name, value)) = field.trim().split_once('=') {
+                if name.trim().eq_ignore_ascii_case("q") {
+                    quality = value.trim().parse::<f32>().ok()
+                        .filter(|q| q.is_finite() && (0.0..=1.0).contains(q)).unwrap_or(0.0);
+                }
+            }
         }
+        explicit.insert(coding, quality);
     }
-    if accept.contains("gzip") {
-        if let Some(f) = StaticFiles::get(&format!("{path}.gz")) {
-            return Some((f, Some("gzip")));
-        }
+    let wildcard = explicit.get("*").copied();
+    let mut choices: Vec<(&str, f32)> = ["br", "gzip"].into_iter()
+        .map(|coding| (coding, explicit.get(coding).copied().or(wildcard).unwrap_or(0.0)))
+        .filter(|(_, q)| *q > 0.0).collect();
+    if let Some(q) = explicit.get("identity").copied() {
+        if q > 0.0 { choices.push(("identity", q)); }
+    }
+    choices.sort_by(|a, b| b.1.total_cmp(&a.1));
+    let mut result: Vec<_> = choices.into_iter().map(|(coding, _)| coding).collect();
+    // Identity is the fallback unless the client explicitly excludes it.
+    if !explicit.contains_key("identity") && wildcard != Some(0.0) {
+        result.push("identity");
+    }
+    result
+}
+
+fn pick_encoding(path: &str, req_headers: &HeaderMap) -> Option<(EmbeddedFile, Option<&'static str>)> {
+    let accept = req_headers.get_all(header::ACCEPT_ENCODING).iter()
+        .filter_map(|v| v.to_str().ok()).collect::<Vec<_>>().join(",");
+    for encoding in preferred_encodings(&accept) {
+        let (filename, header) = match encoding {
+            "br" => (format!("{path}.br"), Some("br")),
+            "gzip" => (format!("{path}.gz"), Some("gzip")),
+            _ => (path.to_owned(), None),
+        };
+        if let Some(file) = StaticFiles::get(&filename) { return Some((file, header)); }
     }
     None
 }
@@ -117,6 +136,7 @@ fn serve_embedded(
             let mut resp = Response::builder()
                 .status(StatusCode::NOT_MODIFIED)
                 .header(header::CACHE_CONTROL, cache_control)
+                .header(header::VARY, "Accept-Encoding")
                 .header(header::ETAG, &etag);
             if let Some(enc) = encoding {
                 resp = resp.header(header::CONTENT_ENCODING, enc);
@@ -129,6 +149,7 @@ fn serve_embedded(
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, mime_for(path))
         .header(header::CACHE_CONTROL, cache_control)
+        .header(header::VARY, "Accept-Encoding")
         .header(header::ETAG, &etag);
     if let Some(enc) = encoding {
         // Tell intermediaries the encoded body varies by Accept-Encoding
@@ -160,5 +181,21 @@ fn cache_control_for(path: &str) -> &'static str {
         "public, max-age=31536000, immutable"
     } else {
         "no-cache"
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::preferred_encodings;
+
+    #[test]
+    fn honors_quality_exclusions_and_identity() {
+        assert_eq!(preferred_encodings("br;q=0, gzip"), vec!["gzip", "identity"]);
+        assert_eq!(preferred_encodings("br;q=0.3, gzip;q=0.8"), vec!["gzip", "br", "identity"]);
+        assert_eq!(preferred_encodings("gzip;q=0.5, identity;q=1"), vec!["identity", "gzip"]);
+        assert_eq!(preferred_encodings("*;q=0"), Vec::<&str>::new());
+        assert_eq!(preferred_encodings("*;q=1, br;q=0"), vec!["gzip", "identity"]);
+        assert_eq!(preferred_encodings("x-br, gzip;q=NaN"), vec!["identity"]);
+        assert_eq!(preferred_encodings(""), vec!["identity"]);
     }
 }

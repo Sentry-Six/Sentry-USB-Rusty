@@ -10,7 +10,7 @@
 //! `apply_cost_override`) — costs are derived at render time on every
 //! surface and never baked into stored/uploaded session data.
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 /// A gap larger than this between consecutive charging samples ends the
 /// session. The sampler polls charge state well inside this window while
@@ -57,7 +57,7 @@ pub struct ChargeRow {
 /// of the encrypted summary uploaded to Sentry Cloud — the web client
 /// deserializes this exact camelCase shape, so field changes are a
 /// cross-repo wire change.
-#[derive(Serialize)]
+#[derive(Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ChargeSessionSummary {
     /// Session id == start timestamp in unix seconds. Stable and
@@ -337,13 +337,22 @@ pub fn session_coord(rows: &[ChargeRow]) -> (Option<f64>, Option<f64>) {
 pub fn summarize(rows: &[ChargeRow]) -> ChargeSessionSummary {
     let first = &rows[0];
     let last = &rows[rows.len() - 1];
+    let start_soc = rows.iter().find_map(|row| row.battery_pct);
+    let end_soc = rows.iter().rev().find_map(|row| row.battery_pct);
 
-    // Energy is cumulative within a plug-in; the span between the first
-    // and last reading is what this session added. Clamp at zero so a
-    // mid-session counter reset can't produce a negative.
+    // Preserve historical session identity, but do not present a reset/merged
+    // cumulative counter as a genuine zero-energy charge.
+    let counters: Vec<f64> = rows.iter().filter_map(|row| row.energy_added_kwh)
+        .filter(|value| value.is_finite()).collect();
+    let counter_reset = counters.windows(2).any(|pair| pair[1] + 0.1 < pair[0]);
     let energy_added_kwh = match (first.energy_added_kwh, last.energy_added_kwh) {
-        (Some(a), Some(b)) => Some((b - a).max(0.0)),
-        (None, Some(b)) => Some(b),
+        _ if counter_reset => None,
+        (Some(a), Some(b)) if a.is_finite() && b.is_finite() && b >= a => {
+            let gain = b - a;
+            let soc_gain = start_soc.zip(end_soc).map(|(a,b)| b-a);
+            if gain == 0.0 && soc_gain.is_some_and(|gain| gain >= 1.0) { None } else { Some(gain) }
+        }
+        (None, Some(b)) if b.is_finite() && b >= 0.0 => Some(b),
         _ => None,
     };
 
@@ -378,8 +387,8 @@ pub fn summarize(rows: &[ChargeRow]) -> ChargeSessionSummary {
         energy_used_kwh,
         efficiency_pct,
         peak_power_kw,
-        start_soc: rows.iter().find_map(|r| r.battery_pct),
-        end_soc: rows.iter().rev().find_map(|r| r.battery_pct),
+        start_soc,
+        end_soc,
         start_range_mi: rows.iter().find_map(|r| r.range_mi),
         end_range_mi: rows.iter().rev().find_map(|r| r.range_mi),
         charge_limit_soc: rows.iter().rev().find_map(|r| r.limit_soc),

@@ -775,6 +775,34 @@ pub fn migrate(conn: &Connection) -> Result<()> {
         })?;
     }
 
+    // Disposable projections never replace the underlying route or telemetry records.
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS drive_preview_cache (
+            start_time TEXT NOT NULL, max_points INTEGER NOT NULL, revision INTEGER NOT NULL,
+            body TEXT NOT NULL, used_at INTEGER NOT NULL, version INTEGER NOT NULL DEFAULT 1, PRIMARY KEY(start_time, max_points));
+         CREATE TABLE IF NOT EXISTS charge_projection_clock (
+            id INTEGER PRIMARY KEY CHECK(id=1), revision INTEGER NOT NULL DEFAULT 0,
+            rewrite_revision INTEGER NOT NULL DEFAULT 0, latest_ts INTEGER NOT NULL DEFAULT 0);
+         INSERT OR IGNORE INTO charge_projection_clock(id,latest_ts)
+            SELECT 1,coalesce(max(ts),0) FROM telemetry_samples;
+         CREATE TRIGGER IF NOT EXISTS charge_projection_insert AFTER INSERT ON telemetry_samples BEGIN
+            UPDATE charge_projection_clock SET
+                revision=revision+1,
+                rewrite_revision=rewrite_revision+(NEW.ts<=latest_ts),
+                latest_ts=max(latest_ts,NEW.ts) WHERE id=1;
+         END;
+         CREATE TRIGGER IF NOT EXISTS charge_projection_update AFTER UPDATE ON telemetry_samples BEGIN
+            UPDATE charge_projection_clock SET revision=revision+1,rewrite_revision=rewrite_revision+1,
+                latest_ts=max(latest_ts,NEW.ts) WHERE id=1;
+         END;
+         CREATE TRIGGER IF NOT EXISTS charge_projection_delete AFTER DELETE ON telemetry_samples BEGIN
+            UPDATE charge_projection_clock SET revision=revision+1,rewrite_revision=rewrite_revision+1 WHERE id=1;
+         END;
+         CREATE TABLE IF NOT EXISTS charge_list_projection (
+            id INTEGER PRIMARY KEY CHECK(id=1), version INTEGER NOT NULL, revision INTEGER NOT NULL,
+            rewrite_revision INTEGER NOT NULL, context TEXT NOT NULL, body TEXT NOT NULL, latest_ts INTEGER NOT NULL DEFAULT 0);"
+    ).context("migrate: history projections")?;
+
     // v2/v3/v4/v6/v7 upgrade: add columns to existing routes tables.
     // Check column presence rather than parsing schema_version to stay
     // robust against DBs restored from future-version backups.

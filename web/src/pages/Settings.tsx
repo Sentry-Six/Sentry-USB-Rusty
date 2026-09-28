@@ -16,11 +16,7 @@ import { useVersion } from "@/hooks/useVersion"
 import type { RawConfigEntry } from "@/components/settings/sections/RawConfigEditor"
 import type { PiStatus } from "@/lib/api"
 
-// Lazy tab chunks — only the active tab pays for its bundle. Visiting
-// /settings without clicking a tab pulls just the shell + Device
-// (default). Each tab module exports a named component, so wrap with
-// `.then(m => ({ default: m.X }))` to satisfy React.lazy's
-// default-export contract.
+// Load settings sections when opened.
 const DeviceTab = lazy(() => import("@/pages/settings/DeviceTab").then(m => ({ default: m.DeviceTab })))
 const NetworkTab = lazy(() => import("@/pages/settings/NetworkTab").then(m => ({ default: m.NetworkTab })))
 const NotificationsTab = lazy(() => import("@/pages/settings/NotificationsTab").then(m => ({ default: m.NotificationsTab })))
@@ -34,15 +30,10 @@ const RawConfigEditor = lazy(() => import("@/components/settings/sections/RawCon
 const HealthCheckModal = lazy(() => import("@/components/settings/sections/HealthCheckModal").then(m => ({ default: m.HealthCheckModal })))
 const SpeedTestModal = lazy(() => import("@/components/settings/sections/SpeedTestModal").then(m => ({ default: m.SpeedTestModal })))
 
-// Four task-based groups (consolidated from the original seven):
-//   Device                  — keep-awake, units, keep-accessory, software updates
-//   Car & Network           — WiFi/Eth, Tesla BLE, Away Mode, SentryCloud
-//   Notifications & Community — mobile push + community features (wraps, chimes)
-//   System                  — backups/export/raw-config, setup wizard, privacy
 const TABS = [
   "Device",
   "Car & Network",
-  "Notifications & Community",
+  "Community",
   "System",
 ] as const
 type TabName = (typeof TABS)[number]
@@ -53,7 +44,8 @@ function isTab(s: string | null): s is TabName {
 
 export default function Settings() {
   const [params, setParams] = useSearchParams()
-  const activeTab: TabName = isTab(params.get("tab")) ? (params.get("tab") as TabName) : "Device"
+  const requestedTab = params.get("tab") === "Notifications & Community" ? "Community" : params.get("tab")
+  const activeTab: TabName = isTab(requestedTab) ? requestedTab : "Device"
 
   const [status, setStatus] = useState<PiStatus | null>(null)
   const [piConfig, setPiConfig] = useState<{
@@ -294,7 +286,7 @@ export default function Settings() {
             onTravelModeClose={handleTravelModeClose}
           />
         )}
-        {activeTab === "Notifications & Community" && <NotificationsTab />}
+        {activeTab === "Community" && <NotificationsTab />}
         {activeTab === "System" && (
           <SystemTab
             onOpenRawConfig={handleOpenRawConfig}

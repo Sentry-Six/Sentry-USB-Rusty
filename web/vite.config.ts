@@ -1,13 +1,28 @@
 import path from "path"
-import { defineConfig } from 'vite'
+import { defineConfig, type Plugin } from 'vite'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
 
+const readOnlyPreview: Plugin = {
+  name: 'read-only-device-preview',
+  configureServer(server) {
+    if (process.env.SENTRYUSB_READ_ONLY !== '1') return
+    server.middlewares.use((request, response, next) => {
+      if (request.url?.startsWith('/api/') && !['GET', 'HEAD', 'OPTIONS'].includes(request.method ?? '')) {
+        response.writeHead(403, { 'Content-Type': 'application/json' })
+        response.end(JSON.stringify({ error: 'This local preview is read-only.' }))
+        return
+      }
+      next()
+    })
+  },
+}
+
 export default defineConfig({
-  plugins: [react(), tailwindcss()],
+  plugins: [react(), tailwindcss(), readOnlyPreview],
   resolve: {
     alias: {
-      "@": path.resolve(__dirname, "./src"),
+      "@": path.resolve(import.meta.dirname, "./src"),
     },
   },
   build: {
@@ -39,7 +54,7 @@ export default defineConfig({
     allowedHosts: true,
     proxy: {
       // SENTRYUSB_API can point development at a remote backend.
-      '/api': process.env.SENTRYUSB_API || 'http://localhost:8788',
+      '/api': { target: process.env.SENTRYUSB_API || 'http://localhost:8788', ws: true },
       '/TeslaCam': process.env.SENTRYUSB_API || 'http://localhost:8788',
     },
   },

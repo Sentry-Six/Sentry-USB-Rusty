@@ -1,3 +1,4 @@
+import { DROPDOWN_SURFACE, DROPDOWN_TRIGGER, DROPDOWN_OPTION } from "@/components/ui/dropdownStyles"
 import { useEffect, useRef, useState } from "react"
 import {
   CachedIcon,
@@ -141,12 +142,13 @@ export function DrivesActionsBar({ onChanged }: DrivesActionsBarProps) {
   return (
     <>
       <div className="flex flex-wrap items-center gap-2">
-        <div ref={menuRef} className="relative">
+        <div ref={menuRef} className="relative" onKeyDown={event => { if (event.key === "Escape" && processMenuOpen) { event.stopPropagation(); setProcessMenuOpen(false); event.currentTarget.querySelector("button")?.focus() } }}>
           <button
             type="button"
             disabled={processing || backendProcessing}
+            aria-expanded={processMenuOpen}
             onClick={() => setProcessMenuOpen((o) => !o)}
-            className="inline-flex items-center gap-1.5 rounded-lg border border-white/10 bg-white/[0.03] px-3 py-1.5 text-xs font-medium text-slate-200 transition-colors hover:bg-white/[0.06] disabled:opacity-50"
+            className={DROPDOWN_TRIGGER}
           >
             {processing || backendProcessing ? (
               <ProgressActivityIcon className="h-3.5 w-3.5 animate-spin" />
@@ -159,7 +161,7 @@ export function DrivesActionsBar({ onChanged }: DrivesActionsBarProps) {
             )}
           </button>
           {processMenuOpen && !(processing || backendProcessing) && (
-            <div className="absolute right-0 z-50 mt-1 w-60 rounded-lg border border-white/10 bg-slate-950/95 py-1 shadow-2xl backdrop-blur">
+            <div className={`absolute right-0 z-50 mt-1 w-60 p-1.5 ${DROPDOWN_SURFACE}`}>
               <MenuItem
                 icon={<PlayArrowIcon className="h-3.5 w-3.5 text-emerald-400" />}
                 title="Process new drives"
@@ -284,7 +286,7 @@ function MenuItem({ icon, title, hint, onClick }: MenuItemProps) {
     <button
       type="button"
       onClick={onClick}
-      className="flex w-full items-start gap-2 px-3 py-2 text-left text-xs text-slate-300 transition-colors hover:bg-white/[0.04]"
+      className={`${DROPDOWN_OPTION} w-full items-start`}
     >
       <span className="mt-0.5">{icon}</span>
       <span>

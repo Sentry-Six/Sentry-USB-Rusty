@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react"
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useState } from "react"
 import { useNavigate } from "react-router-dom"
 import {
   BatteryAndroidFrameBoltIcon,
@@ -6,27 +6,24 @@ import {
   CheckBoxIcon,
   ChevronRightIcon,
   DeleteIcon,
-  ElectricalServicesIcon,
-  EvStationIcon,
   HomeIcon,
   LocationOnIcon,
   ProgressActivityIcon,
 } from "@/components/icons"
 import {
   bulkDeleteCharges,
-  fetchChargeSessions,
-  fetchChargeTags,
-  fetchCurrentCharge,
   setChargeTags,
 } from "@/api/charging"
-import type { ChargeSessionSummary, CurrentCharge } from "@/types/charging"
+import type { ChargeSessionSummary } from "@/types/charging"
+import { useChargingHistory } from "@/hooks/useChargingHistory"
+import { summarizeCharges } from "@/lib/charging-stats"
+import { Pagination } from "@/components/drives/Pagination"
 import { cn } from "@/lib/utils"
 import { DatePopover } from "@/components/drives/DatePopover"
 import { TagPopover } from "@/components/drives/TagPopover"
 import { HomeLocationSection } from "@/components/charging/HomeLocationSection"
 import {
   ChargingSummaryStrip,
-  type ChargingStats,
 } from "@/components/charging/ChargingSummaryStrip"
 import { ChargingTagFilter } from "@/components/charging/ChargingTagFilter"
 import { ChargingRatesButton } from "@/components/charging/ChargingRatesButton"
@@ -35,9 +32,10 @@ import { rangeBounds, type DateRange } from "@/hooks/useDrivesList"
 import { useDistanceUnit } from "@/hooks/useDistanceUnit"
 import { fmtDuration, fmtEnergy, fmtMoney, fmtSoc } from "@/lib/charge-format"
 
-// While a charge is in progress, refresh on this cadence so the active
-// session grows in place instead of only settling once the charge ends.
-const POLL_MS = 30_000
+const PAGE_SIZE = 25
+let viewState: { range: DateRange; selectedTags: string[]; query: string; page: number; scroll: number } = {
+  range: { kind: "preset", preset: "all" }, selectedTags: [], query: "", page: 1, scroll: 0,
+}
 
 export default function Charging() {
   const [homeSeed, setHomeSeed] = useState<{ lat: number | null; lon: number | null } | null>(null)
@@ -68,16 +66,20 @@ export default function Charging() {
       alive = false
     }
   }, [])
-  const [sessions, setSessions] = useState<ChargeSessionSummary[]>([])
-  const [tags, setTags] = useState<string[]>([])
-  const [selectedTags, setSelectedTags] = useState<string[]>([])
-  const [current, setCurrent] = useState<CurrentCharge | null>(null)
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState<string | null>(null)
+  const { sessions, tags, current, loading, error, warning, reload, patchTags } = useChargingHistory()
   const metric = useDistanceUnit()
-  // Charge sessions are infrequent, so default to All time rather than
-  // the Drives default of Last 7 days (which would usually be empty).
-  const [range, setRange] = useState<DateRange>({ kind: "preset", preset: "all" })
+  const [range, updateRange] = useState<DateRange>(() => viewState.range)
+  const [selectedTags, updateTags] = useState<string[]>(() => viewState.selectedTags)
+  const [query, updateQuery] = useState(() => viewState.query)
+  const [page, setPage] = useState(() => viewState.page)
+  const setRange = (next: DateRange) => { updateRange(next); setPage(1); setSelected(new Set()) }
+  const setSelectedTags = (next: string[]) => { updateTags(next); setPage(1); setSelected(new Set()) }
+  useEffect(() => { viewState = { ...viewState, range, selectedTags, query, page } }, [range, selectedTags, query, page])
+  useLayoutEffect(() => {
+    const position = viewState.scroll
+    window.scrollTo(0, position)
+    return () => { viewState.scroll = window.scrollY }
+  }, [])
 
   const [selectMode, setSelectMode] = useState(false)
   const [selected, setSelected] = useState<Set<number>>(new Set())
@@ -86,65 +88,6 @@ export default function Charging() {
   } | null>(null)
   const [deletingBulk, setDeletingBulk] = useState(false)
   const [bulkDeleteError, setBulkDeleteError] = useState<string | null>(null)
-
-  // Refresh sessions + tags + live status. Used after a tag edit, a rate
-  // change, or a delete so server-computed values stay in sync.
-  const reload = useCallback(async () => {
-    const [s, t, c] = await Promise.all([
-      fetchChargeSessions(),
-      fetchChargeTags(),
-      fetchCurrentCharge().catch(() => null),
-    ])
-    setSessions(s)
-    setTags(t)
-    if (c) setCurrent(c)
-  }, [])
-
-  useEffect(() => {
-    let cancelled = false
-    setLoading(true)
-    setError(null)
-    Promise.all([
-      fetchChargeSessions(),
-      fetchChargeTags(),
-      fetchCurrentCharge().catch(() => null),
-    ])
-      .then(([s, t, c]) => {
-        if (cancelled) return
-        setSessions(s)
-        setTags(t)
-        if (c) setCurrent(c)
-      })
-      .catch((e) => {
-        if (!cancelled) setError(e instanceof Error ? e.message : String(e))
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false)
-      })
-    return () => {
-      cancelled = true
-    }
-  }, [])
-
-  // Poll live status; while actively charging, also refresh the session
-  // list so the in-progress charge updates without a manual reload.
-  useEffect(() => {
-    const id = setInterval(async () => {
-      if (document.hidden) return
-      const c = await fetchCurrentCharge().catch(() => null)
-      if (!c) return
-      setCurrent(c)
-      if (c.charging) {
-        const [s, t] = await Promise.all([
-          fetchChargeSessions(),
-          fetchChargeTags(),
-        ])
-        setSessions(s)
-        setTags(t)
-      }
-    }, POLL_MS)
-    return () => clearInterval(id)
-  }, [])
 
   const onTagsChange = useCallback(
     async (id: number, next: string[]) => {
@@ -167,16 +110,17 @@ export default function Charging() {
       next = next.filter((t) => !isHome(t))
       // Optimistic: show the new tags immediately, then resync (cost is
       // recomputed server-side from the tags).
-      setSessions((prev) =>
-        prev.map((s) => (s.id === id ? { ...s, tags: next } : s)),
-      )
+      patchTags(id, next)
+      const previous = sess?.tags ?? []
       try {
         await setChargeTags(id, next)
-      } finally {
-        await reload()
+      } catch (error) {
+        patchTags(id, previous)
+        throw error
       }
+      await reload()
     },
-    [reload, sessions],
+    [reload, sessions, patchTags],
   )
 
   const toggleSelectMode = () => {
@@ -186,14 +130,14 @@ export default function Charging() {
     })
   }
 
-  const onToggleSelected = useCallback((id: number) => {
+  const onToggleSelected = (id: number) => {
     setSelected((prev) => {
       const next = new Set(prev)
       if (next.has(id)) next.delete(id)
       else next.add(id)
       return next
     })
-  }, [])
+  }
 
   // The newest session is the in-progress one while the car reports
   // charging (sessions come back newest-first).
@@ -202,6 +146,8 @@ export default function Charging() {
   const visible = useMemo(() => {
     const { from, to } = rangeBounds(range, new Date())
     return sessions.filter((s) => {
+      const search = query.trim().toLocaleLowerCase()
+      if (search && !`${s.location ?? ""} ${s.tags.join(" ")} ${new Date(s.startMs).toLocaleDateString()}`.toLocaleLowerCase().includes(search)) return false
       const t = new Date(s.startMs)
       if (from && t < from) return false
       if (to && t >= to) return false
@@ -217,7 +163,7 @@ export default function Charging() {
       }
       return true
     })
-  }, [sessions, range, selectedTags])
+  }, [sessions, range, selectedTags, query])
 
   // Tags-dropdown options = real tags (incl. the API-surfaced "Home") plus the
   // derived "Fast charging" filter when any session qualifies — so it lives in
@@ -232,9 +178,9 @@ export default function Charging() {
     return tags
   }, [tags, sessions])
 
-  const onSelectAll = useCallback(() => {
+  const onSelectAll = () => {
     setSelected(new Set(visible.map((s) => s.id)))
-  }, [visible])
+  }
 
   const onDeleteSelected = useCallback(() => {
     if (selected.size === 0) return
@@ -242,7 +188,7 @@ export default function Charging() {
     setConfirmingBulkDelete({ ids: Array.from(selected) })
   }, [selected])
 
-  const confirmBulkDelete = useCallback(async () => {
+  const confirmBulkDelete = async () => {
     if (!confirmingBulkDelete) return
     setDeletingBulk(true)
     setBulkDeleteError(null)
@@ -257,34 +203,25 @@ export default function Charging() {
     } finally {
       setDeletingBulk(false)
     }
-  }, [confirmingBulkDelete, reload])
+  }
 
-  const stats: ChargingStats = useMemo(() => {
-    const costs = visible
-      .map((s) => s.cost)
-      .filter((c): c is number => c != null)
-    const effs = visible
-      .map((s) => s.efficiencyPct)
-      .filter((e): e is number => e != null)
-    return {
-      count: visible.length,
-      totalEnergyKwh: visible.reduce((sum, s) => sum + (s.energyAddedKwh ?? 0), 0),
-      totalDurationSecs: visible.reduce((sum, s) => sum + s.durationSecs, 0),
-      totalCost: costs.length ? costs.reduce((a, b) => a + b, 0) : null,
-      currency: visible.find((s) => s.currency)?.currency ?? "$",
-      avgEfficiency: effs.length
-        ? effs.reduce((a, b) => a + b, 0) / effs.length
-        : null,
-    }
-  }, [visible])
+  const stats = useMemo(() => summarizeCharges(visible), [visible])
+  const pageCount = Math.max(1, Math.ceil(visible.length / PAGE_SIZE))
+  const safePage = Math.min(page, pageCount)
+  const paged = visible.slice((safePage - 1) * PAGE_SIZE, safePage * PAGE_SIZE)
+  const pagination = <Pagination page={safePage} pageCount={pageCount}
+    pageStart={visible.length ? (safePage - 1) * PAGE_SIZE + 1 : 0}
+    pageEnd={Math.min(safePage * PAGE_SIZE, visible.length)} total={visible.length} onChange={setPage} />
 
   return (
-    <div className="mx-auto w-full max-w-5xl px-4 py-6 sm:px-6 sm:py-8">
+    <div className="mx-auto w-full max-w-6xl px-4 py-6 sm:px-6 sm:py-8">
       <div className="mb-4 flex flex-wrap items-center justify-between gap-3 sm:mb-6">
         <h1 className="text-2xl font-semibold text-slate-100 sm:text-3xl">
           Charging
         </h1>
+        <button type="button" onClick={() => void reload()} className="rounded-full border border-white/10 px-3 py-1.5 text-sm text-slate-300">Refresh</button>
       </div>
+      <div className="glass-card mb-5 p-4"><ChargingSummaryStrip stats={stats} loading={loading} /></div>
 
       <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
         <DatePopover range={range} onChange={setRange} />
@@ -293,12 +230,10 @@ export default function Charging() {
           selected={selectedTags}
           onChange={setSelectedTags}
         />
-        <ChargingRatesButton tags={tags} onSaved={reload} />
-        {!selectMode && (
-          <div className="order-last w-full sm:order-none sm:ml-3 sm:w-auto sm:min-w-0 sm:flex-1">
-            <ChargingSummaryStrip stats={stats} loading={loading} />
-          </div>
-        )}
+        <ChargingRatesButton tags={tags} onSaved={() => reload()} />
+        <input type="search" aria-label="Search charging history" placeholder="Search location, tag or date"
+          value={query} onChange={(event) => { updateQuery(event.target.value); setPage(1); setSelected(new Set()) }}
+          className="order-first w-full rounded-full border border-white/10 bg-white/[.04] px-4 py-2 text-sm sm:w-64" />
         <div className="ml-auto flex flex-wrap items-center gap-2">
           {selectMode ? (
             <ChargingSelectBar
@@ -347,20 +282,28 @@ export default function Charging() {
         </div>
       )}
 
-      <div className="mt-4 flex flex-col gap-3">
+      {(query || selectedTags.length > 0 || range.kind === "custom" || range.preset !== "all") && (
+        <div className="mt-3 flex flex-wrap items-center gap-2 text-xs text-slate-400">
+          {selectedTags.map((tag) => <button key={tag} type="button" onClick={() => setSelectedTags(selectedTags.filter((value) => value !== tag))} className="rounded-full border border-white/10 px-3 py-1">{tag} ×</button>)}
+          <button type="button" onClick={() => { setRange({ kind: "preset", preset: "all" }); setSelectedTags([]); updateQuery("") }}>Clear filters</button>
+        </div>
+      )}
+      {warning && <p role="status" className="mt-3 text-sm text-amber-200">{warning} <button type="button" onClick={() => void reload()} className="underline">Retry</button></p>}
+      <div className="mt-4">{pagination}</div>
+      <div className="mt-3 flex flex-col gap-3">
         {loading && (
-          <div className="flex items-center justify-center gap-2 rounded-2xl border border-white/[0.06] bg-white/[0.025] p-10 text-sm text-slate-400">
+          <div className="glass-card flex items-center justify-center gap-2 p-10 text-sm text-slate-400">
             <ProgressActivityIcon className="h-4 w-4 animate-spin" />
             Loading charging history…
           </div>
         )}
         {error && !loading && (
           <div className="rounded-2xl border border-rose-400/30 bg-rose-500/5 p-6 text-sm text-rose-200">
-            Failed to load charging history: {error}
+            {sessions.length ? "Charging history could not refresh." : "Charging history could not load."} <button type="button" onClick={() => void reload()} className="underline">Try again</button>
           </div>
         )}
         {!loading && !error && visible.length === 0 && (
-          <div className="rounded-2xl border border-white/[0.06] bg-white/[0.025] p-10 text-center text-sm text-slate-400">
+          <div className="glass-card p-10 text-center text-sm text-slate-400">
             <BatteryAndroidFrameBoltIcon className="mx-auto mb-3 h-8 w-8 text-slate-600" />
             {sessions.length === 0
               ? "No charging sessions recorded yet. Sessions appear here once the car charges while the Pi is sampling."
@@ -368,7 +311,7 @@ export default function Charging() {
           </div>
         )}
         {!loading &&
-          visible.map((s) => (
+          paged.map((s) => (
             <ChargeRow
               key={s.id}
               session={s}
@@ -379,11 +322,12 @@ export default function Charging() {
               selected={selected.has(s.id)}
               onToggleSelected={onToggleSelected}
               onTagsChange={onTagsChange}
-              onOpenHomeLocation={(lat, lon) => setHomeSeed({ lat, lon })}
+              onOpenHomeLocation={setHomeSeed}
             />
           ))}
       </div>
 
+      {visible.length > PAGE_SIZE && <div className="mt-4">{pagination}</div>}
       {homeSeed && (
         <div
           className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4"
@@ -519,216 +463,62 @@ function ChargingSelectBar({
   )
 }
 
-function ChargeRow({
-  session,
-  metric,
-  active,
-  livePowerKw,
-  selectMode,
-  selected,
-  onToggleSelected,
-  onTagsChange,
-  onOpenHomeLocation,
+const ChargeRow = memo(function ChargeRow({ session, metric, active, livePowerKw, selectMode, selected,
+  onToggleSelected, onTagsChange, onOpenHomeLocation,
 }: {
-  session: ChargeSessionSummary
-  metric: boolean
-  active: boolean
-  livePowerKw: number | null
-  selectMode: boolean
-  selected: boolean
-  onToggleSelected: (id: number) => void
-  onTagsChange: (id: number, tags: string[]) => Promise<void> | void
-  onOpenHomeLocation: (lat: number | null, lon: number | null) => void
+  session: ChargeSessionSummary; metric: boolean; active: boolean; livePowerKw: number | null
+  selectMode: boolean; selected: boolean; onToggleSelected: (id: number) => void
+  onTagsChange: (id: number, tags: string[]) => Promise<void>
+  onOpenHomeLocation: (location: { lat: number | null; lon: number | null }) => void
 }) {
   const navigate = useNavigate()
+  const [mapOpen, setMapOpen] = useState(false)
   const start = new Date(session.startMs)
-  const onRowClick = () => {
-    if (selectMode) {
-      onToggleSelected(session.id)
-      return
-    }
-    navigate(`/charging/${session.id}`)
-  }
-
-  // Two forms so the SoC range degrades instead of vanishing when the
-  // row is tight: `socShort` is always shown ("62% → 79%"); the range
-  // ("62% (132 mi) → …") only appears when there's room (sm+).
-  const socShort =
-    session.startSoc != null && session.endSoc != null
-      ? `${fmtSoc(session.startSoc)} → ${fmtSoc(session.endSoc)}`
-      : session.endSoc != null
-        ? fmtSoc(session.endSoc)
-        : "—"
-  const socPart = (pct: number | null, mi: number | null): string => {
-    if (pct == null) return "—"
-    if (mi == null) return fmtSoc(pct)
-    const dist = metric ? `${Math.round(mi * 1.609344)} km` : `${Math.round(mi)} mi`
-    return `${fmtSoc(pct)} (${dist})`
-  }
-  const socFull =
-    session.startSoc != null && session.endSoc != null
-      ? `${socPart(session.startSoc, session.startRangeMi)} → ${socPart(session.endSoc, session.endRangeMi)}`
-      : session.endSoc != null
-        ? socPart(session.endSoc, session.endRangeMi)
-        : "—"
-
-  return (
-    <div
-      role="button"
-      tabIndex={0}
-      onClick={onRowClick}
-      onKeyDown={(e) => {
-        if (e.key === "Enter" || e.key === " ") {
-          e.preventDefault()
-          onRowClick()
-        }
-      }}
-      className={cn(
-        "group flex cursor-pointer items-center gap-3 rounded-2xl border p-3 transition-colors sm:gap-4 sm:p-4",
-        selected
-          ? "border-emerald-400/40 bg-emerald-400/[0.06]"
-          : active
-            ? "border-emerald-400/30 bg-emerald-500/10 hover:bg-emerald-500/15"
-            : "border-white/[0.06] bg-white/[0.025] hover:border-white/10 hover:bg-white/[0.04]",
-      )}
-    >
-      {selectMode && (
-        <span
-          aria-hidden
-          className={cn(
-            "flex h-5 w-5 shrink-0 items-center justify-center rounded border-2 transition-colors",
-            selected ? "border-emerald-400 bg-emerald-400" : "border-white/30",
-          )}
-        >
-          {selected && (
-            <svg viewBox="0 0 12 12" className="h-3 w-3 text-slate-950">
-              <path
-                d="M2 6.5 L5 9.5 L10 3.5"
-                stroke="currentColor"
-                strokeWidth="2"
-                fill="none"
-              />
-            </svg>
-          )}
-        </span>
-      )}
-
-      <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-emerald-500/10 text-emerald-300 ring-1 ring-inset ring-emerald-500/20">
-        {session.fastCharging ? (
-          <EvStationIcon className={"h-5 w-5" + (active ? " animate-pulse" : "")} />
-        ) : (
-          <ElectricalServicesIcon className={"h-5 w-5" + (active ? " animate-pulse" : "")} />
-        )}
+  const hasSoc = session.startSoc != null && session.endSoc != null
+  const startPct = Math.max(0, Math.min(100, session.startSoc ?? 0))
+  const endPct = Math.max(0, Math.min(100, session.endSoc ?? 0))
+  const range = (value: number | null) => value == null ? "" : `${Math.round(value * (metric ? 1.609344 : 1))} ${metric ? "km" : "mi"}`
+  return <article className={cn("glass-card overflow-visible", selected ? "ring-2 ring-emerald-400/60" : active ? "ring-1 ring-emerald-400/35" : "")}>
+    <button type="button" onClick={() => selectMode ? onToggleSelected(session.id) : navigate(`/charging/${session.id}`)}
+      aria-pressed={selectMode ? selected : undefined}
+      aria-label={`${selectMode ? "Select" : "Open"} charge ${formatDate(start)} at ${session.location ?? "unknown location"}`}
+      className="grid w-full grid-cols-[3.5rem_minmax(0,1fr)_auto] items-center gap-3 rounded-t-2xl p-4 text-left hover:bg-white/[0.03] sm:grid-cols-[4.5rem_minmax(0,1fr)_minmax(9rem,12rem)_auto] sm:gap-5">
+      <span className="flex flex-col items-center border-r border-white/10 pr-3 tabular-nums">
+        <span className="text-[10px] text-slate-400">{start.toLocaleDateString([], { month: "short", year: "numeric" })}</span>
+        <span className="text-2xl font-semibold text-slate-100">{start.getDate()}</span>
+        <span className="text-[10px] text-slate-400">{formatTime(start)}</span>
       </span>
-
-      <div className="min-w-0 flex-1">
-        <div className="flex items-center gap-1.5 text-sm font-medium text-slate-100">
-          {active && (
-            <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-emerald-500/15 px-1.5 py-0.5 text-[10px] font-medium text-emerald-300 ring-1 ring-inset ring-emerald-400/20">
-              <span className="h-1.5 w-1.5 rounded-full bg-emerald-400 animate-pulse" />
-              Charging
-            </span>
-          )}
-          {session.fastCharging && (
-            <span
-              title="DC fast charging (Supercharger / CCS) — peak power over 22 kW"
-              className="inline-flex shrink-0 items-center gap-1 rounded-full bg-amber-500/15 px-1.5 py-0.5 text-[10px] font-medium text-amber-300 ring-1 ring-inset ring-amber-400/20"
-            >
-              <BoltIcon className="h-2.5 w-2.5 fill-amber-300" />
-              Fast
-            </span>
-          )}
-          {session.location ? (
-            <>
-              <LocationOnIcon className="h-3.5 w-3.5 shrink-0 text-emerald-300/80" />
-              <span className="truncate">{session.location}</span>
-            </>
-          ) : (
-            <span className="truncate">{formatDate(start)}</span>
-          )}
-        </div>
-        <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-slate-500">
-          {session.location && <span>{formatDate(start)}</span>}
-          {session.location && <span>·</span>}
-          <span>{formatTime(start)}</span>
-          <span>·</span>
-          <span>{fmtDuration(session.durationSecs)}</span>
-          {active && livePowerKw != null && (
-            <>
-              <span>·</span>
-              <span className="text-emerald-300">{livePowerKw} kW</span>
-            </>
-          )}
-        </div>
-        {/* Mobile: energy + SoC + cost sit below the meta line so the
-            title gets the full row width instead of being squeezed. */}
-        <div className="mt-1.5 flex items-center gap-2.5 tabular-nums sm:hidden">
-          <span className="inline-flex items-center gap-1 text-sm font-semibold text-emerald-300">
-            <BoltIcon className="h-3.5 w-3.5" />
-            {fmtEnergy(session.energyAddedKwh)}
-          </span>
-          <span className="text-xs text-slate-500">{socShort}</span>
-          {session.cost != null && (
-            <span className="text-xs font-medium text-slate-300">
-              {fmtMoney(session.cost, session.currency)}
-            </span>
-          )}
-        </div>
-      </div>
-
-      {/* Desktop: energy + SoC + cost as a right-aligned column. */}
-      <div className="hidden shrink-0 text-right sm:block">
-        <div className="flex items-center justify-end gap-1 text-sm font-semibold text-emerald-300 tabular-nums">
-          <BoltIcon className="h-3.5 w-3.5" />
-          {fmtEnergy(session.energyAddedKwh)}
-        </div>
-        <div className="mt-0.5 text-xs text-slate-500 tabular-nums">{socFull}</div>
-        {session.cost != null && (
-          <div className="mt-0.5 text-xs font-medium text-slate-300 tabular-nums">
-            {fmtMoney(session.cost, session.currency)}
-          </div>
-        )}
-      </div>
-
-      <div
-        onClick={(e) => e.stopPropagation()}
-        className="flex items-center gap-1.5"
-      >
-        {session.atHome && (
-          // Tappable on purpose. The Home chip is derived from the geofence, so
-          // "how does it know?" is the obvious next question — answer it where
-          // the question is asked instead of burying the setting in a menu.
-          <button
-            type="button"
-            title="Charged at home — tap to see or change your home location"
-            onClick={(e) => {
-              e.stopPropagation() // the whole row navigates to the detail page
-              onOpenHomeLocation(null, null) // edit the saved home, don't propose a move
-            }}
-            className="inline-flex items-center gap-1 rounded-md border border-emerald-400/30 bg-emerald-400/10 px-2 py-1 text-xs font-medium text-emerald-200 transition-colors hover:bg-emerald-400/20"
-          >
-            <HomeIcon className="h-3 w-3" />
-            Home
-          </button>
-        )}
-        <TagPopover
-          tags={session.tags}
-          onChange={(t) => onTagsChange(session.id, t)}
-        />
-      </div>
-
-      {session.locationLat != null && session.locationLon != null && (
-        <MiniPinMap
-          lat={session.locationLat}
-          lon={session.locationLon}
-          className="h-14 w-20 sm:h-20 sm:w-32"
-        />
-      )}
-
-      <ChevronRightIcon className="h-4 w-4 shrink-0 text-slate-600 transition-colors group-hover:text-slate-400" />
+      <span className="min-w-0">
+        <span className="flex flex-wrap items-center gap-2 text-sm font-medium text-slate-100">
+          <span className="truncate">{session.location ?? "Unknown location"}</span>
+          {session.fastCharging && <span className="inline-flex items-center gap-1 rounded-full bg-amber-500/10 px-2 py-0.5 text-[10px] text-amber-200"><BoltIcon className="h-3 w-3" />Fast</span>}
+        </span>
+        <span className="mt-1 block text-xs text-slate-400">{fmtDuration(session.durationSecs)}
+          {active && <span className="ml-2 text-emerald-300">Charging{livePowerKw == null ? "" : ` · ${livePowerKw} kW`}</span>}
+        </span>
+        <span className="mt-1 block text-xs text-slate-400 sm:hidden">{fmtSoc(session.startSoc)} → {fmtSoc(session.endSoc)}</span>
+      </span>
+      <span className="hidden min-w-0 sm:block">
+        <span className="flex justify-between text-xs tabular-nums text-slate-300"><span>{fmtSoc(session.startSoc)}</span><span className="text-slate-500">Battery</span><span>{fmtSoc(session.endSoc)}</span></span>
+        {hasSoc && <span aria-hidden="true" className="relative mt-2 block h-1.5 overflow-hidden rounded-full bg-white/10"><span className="absolute inset-y-0 left-0 bg-emerald-900" style={{ width: `${startPct}%` }} /><span className="absolute inset-y-0 bg-emerald-400" style={{ left: `${Math.min(startPct, endPct)}%`, width: `${Math.abs(endPct - startPct)}%` }} /></span>}
+        {(session.startRangeMi != null || session.endRangeMi != null) && <span className="mt-1 block text-[10px] text-slate-500">{range(session.startRangeMi) || "—"} → {range(session.endRangeMi) || "—"}</span>}
+      </span>
+      <span className="flex items-center gap-3 text-right">
+        <span><span className="block text-sm font-semibold tabular-nums text-emerald-300">{fmtEnergy(session.energyAddedKwh)}</span>
+          {session.energyAddedKwh == null && <span className="block text-[10px] text-slate-400">Energy unavailable</span>}
+          {session.cost != null && <span className="block text-xs tabular-nums text-slate-300">{fmtMoney(session.cost, session.currency)}</span>}
+        </span>
+        {selectMode && selected ? <CheckBoxIcon className="h-4 w-4 text-emerald-300" /> : <ChevronRightIcon className="h-4 w-4 text-slate-500" />}
+      </span>
+    </button>
+    <div className="flex flex-wrap items-center gap-2 border-t border-white/5 px-4 py-2">
+      {session.atHome && <button type="button" onClick={() => onOpenHomeLocation({ lat: null, lon: null })} className="inline-flex items-center gap-1 rounded-full bg-emerald-500/10 px-2 py-1 text-xs text-emerald-200"><HomeIcon className="h-3 w-3" />Home</button>}
+      <TagPopover tags={session.tags} onChange={(tags) => onTagsChange(session.id, tags)} />
+      {session.locationLat != null && session.locationLon != null && <button type="button" aria-expanded={mapOpen} onClick={() => setMapOpen((open) => !open)} className="ml-auto inline-flex items-center gap-1 text-xs text-slate-400"><LocationOnIcon className="h-3.5 w-3.5" />{mapOpen ? "Hide map" : "Show map"}</button>}
     </div>
-  )
-}
+    {mapOpen && <div className="px-4 pb-4"><MiniPinMap lat={session.locationLat} lon={session.locationLon} className="h-36 w-full" /></div>}
+  </article>
+})
 
 function formatDate(d: Date): string {
   return d.toLocaleDateString([], {

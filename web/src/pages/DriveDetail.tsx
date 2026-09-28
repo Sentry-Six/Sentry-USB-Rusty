@@ -122,7 +122,7 @@ function DriveDetailContent({ drive, onSaveTags }: DriveDetailContentProps) {
   const [batterySeries, setBatterySeries] = useState<BatteryPoint[]>([])
   useEffect(() => {
     let cancelled = false
-    fetch(`/api/drives/${drive.id}/battery-series`)
+    fetch(`/api/drives/${encodeURIComponent(drive.startTime)}/battery-series`)
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
       .then((data: { points?: BatteryPoint[] }) => {
         if (cancelled) return
@@ -134,7 +134,7 @@ function DriveDetailContent({ drive, onSaveTags }: DriveDetailContentProps) {
     return () => {
       cancelled = true
     }
-  }, [drive.id])
+  }, [drive.startTime])
 
   // Tesla can stitch overlapping/duplicate same-minute clips into one drive,
   // which makes a sample's synthesized time jump backward at the seam even
@@ -560,7 +560,7 @@ function ClimateSection({ drive, metric }: ClimateSectionProps) {
   useEffect(() => {
     if (!anyClimate) return
     let cancelled = false
-    fetch(`/api/drives/${drive.id}/temperature-series`)
+    fetch(`/api/drives/${encodeURIComponent(drive.startTime)}/temperature-series`)
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
       .then((data: { points?: TemperaturePoint[] }) => {
         if (cancelled) return
@@ -572,7 +572,7 @@ function ClimateSection({ drive, metric }: ClimateSectionProps) {
     return () => {
       cancelled = true
     }
-  }, [drive.id, anyClimate])
+  }, [drive.startTime, anyClimate])
 
   if (!anyClimate) return null
 

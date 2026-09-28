@@ -1,3 +1,4 @@
+import type { CSSProperties } from "react"
 import {
   AttachMoneyIcon,
   BatteryAndroidFrameBoltIcon,
@@ -11,6 +12,8 @@ import { fmtDuration, fmtMoney, fmtPercent } from "@/lib/charge-format"
 export interface ChargingStats {
   count: number
   totalEnergyKwh: number
+  energySessionCount?: number
+  costsByCurrency?: { currency: string; amount: number }[]
   totalDurationSecs: number
   // Null means no rate-derived cost or computable efficiency is available.
   totalCost: number | null
@@ -36,57 +39,57 @@ export function ChargingSummaryStrip({
     )
   }
 
-  const avgKwh = stats.count > 0 ? stats.totalEnergyKwh / stats.count : 0
+  const energyCount = stats.energySessionCount ?? stats.count
+  const avgKwh = energyCount > 0 ? stats.totalEnergyKwh / energyCount : 0
+  const costs = stats.costsByCurrency ?? (stats.totalCost == null ? [] : [{ currency: stats.currency, amount: stats.totalCost }])
 
+  const columns = 3 + Number(energyCount > 0) + Number(stats.avgEfficiency != null) + Number(costs.length > 0)
   return (
-    <div className="grid grid-cols-2 gap-x-4 gap-y-3 sm:flex sm:flex-wrap sm:items-center sm:gap-x-5 sm:gap-y-2">
-      <StatCell
-        icon={<BatteryAndroidFrameBoltIcon className="h-3.5 w-3.5" />}
-        label="Sessions"
-        value={stats.count.toLocaleString()}
-      />
-      <Divider />
-      <StatCell
-        icon={<BoltIcon className="h-3.5 w-3.5 text-emerald-300" />}
-        label="Energy added"
-        value={`${stats.totalEnergyKwh.toFixed(1)} kWh`}
-      />
-      <Divider />
-      <StatCell
-        icon={<ScheduleIcon className="h-3.5 w-3.5" />}
-        label="Time charging"
-        value={fmtDuration(stats.totalDurationSecs)}
-      />
-      {stats.count > 0 && (
-        <>
-          <Divider />
+    <div className="@container">
+      <dl
+        aria-label="Charging summary"
+        style={{ "--summary-columns": `repeat(${columns}, minmax(0, 1fr))` } as CSSProperties}
+        className="grid grid-cols-2 gap-x-4 gap-y-4 @min-[520px]:grid-cols-3 @min-[800px]:[grid-template-columns:var(--summary-columns)] @min-[800px]:gap-x-3"
+      >
+        <StatCell
+          icon={<BatteryAndroidFrameBoltIcon className="h-3.5 w-3.5" />}
+          label="Sessions"
+          value={stats.count.toLocaleString()}
+        />
+        <StatCell
+          icon={<BoltIcon className="h-3.5 w-3.5 text-emerald-300" />}
+          label={energyCount < stats.count ? "Recorded energy" : "Energy added"}
+          value={energyCount ? `${stats.totalEnergyKwh.toFixed(1)} kWh` : "—"}
+        />
+        <StatCell
+          icon={<ScheduleIcon className="h-3.5 w-3.5" />}
+          label="Time charging"
+          value={fmtDuration(stats.totalDurationSecs)}
+        />
+        {energyCount > 0 && (
           <StatCell
             icon={<SpeedIcon className="h-3.5 w-3.5" />}
             label="Avg / session"
             value={`${avgKwh.toFixed(1)} kWh`}
           />
-        </>
-      )}
-      {stats.avgEfficiency != null && (
-        <>
-          <Divider />
+        )}
+        {stats.avgEfficiency != null && (
           <StatCell
             icon={<NestEcoLeafIcon className="h-3.5 w-3.5 text-emerald-300" />}
             label="Avg efficiency"
             value={fmtPercent(stats.avgEfficiency)}
           />
-        </>
-      )}
-      {stats.totalCost != null && (
-        <>
-          <Divider />
+        )}
+        {costs.length > 0 && (
           <StatCell
             icon={<AttachMoneyIcon className="h-3.5 w-3.5 text-emerald-300" />}
             label="Total cost"
-            value={fmtMoney(stats.totalCost, stats.currency)}
+            value={costs.map(({ currency, amount }) => (
+              <span key={currency} className="block">{fmtMoney(amount, currency)}</span>
+            ))}
           />
-        </>
-      )}
+        )}
+      </dl>
     </div>
   )
 }
@@ -101,7 +104,7 @@ function StatCell({
   value: React.ReactNode
 }) {
   return (
-    <div className="flex min-w-0 items-center gap-2">
+    <div data-summary-stat={label} className="flex min-w-0 items-center gap-2">
       <span
         className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-white/[0.04] ring-1 ring-inset ring-white/10 text-slate-300"
         aria-hidden
@@ -109,17 +112,13 @@ function StatCell({
         {icon}
       </span>
       <div className="min-w-0">
-        <div className="text-[9px] font-semibold uppercase tracking-wider text-slate-500">
+        <dt className="text-[9px] font-semibold uppercase tracking-wide text-slate-500">
           {label}
-        </div>
-        <div className="text-sm font-semibold tabular-nums leading-tight text-slate-100">
+        </dt>
+        <dd className="whitespace-nowrap text-sm font-semibold tabular-nums leading-tight text-slate-100">
           {value}
-        </div>
+        </dd>
       </div>
     </div>
   )
-}
-
-function Divider() {
-  return <span aria-hidden className="hidden h-7 w-px bg-white/[0.06] sm:block" />
 }

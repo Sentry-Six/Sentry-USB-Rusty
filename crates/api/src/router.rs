@@ -36,8 +36,10 @@ impl axum::extract::FromRef<AppState> for sentryusb_ws::Hub {
 
 /// Build the complete Axum router with all API routes.
 pub fn build_router(state: AppState) -> Router {
+    crate::status::start_network_sampler(state.net_sampler.clone());
     let api = Router::new()
         // Status & config
+        .route("/api/health", get(crate::status::liveness))
         .route("/api/status", get(crate::status::get_status))
         .route(
             "/api/dashboard-snapshot",
@@ -83,6 +85,7 @@ pub fn build_router(state: AppState) -> Router {
             get(crate::ble_debug::get_ble_bundle),
         )
         .route("/api/logs/{name}/page", get(crate::logs::get_log_page))
+        .route("/api/logs/{name}/tail", get(crate::logs::get_log_delta))
         .route("/api/logs/{name}", get(crate::logs::get_log))
         // Diagnostics & health
         .route("/api/diagnostics/refresh", post(crate::healthcheck::refresh_diagnostics))
@@ -147,6 +150,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/notifications/test", post(crate::notifications::send_test_notification))
         .route("/api/notifications/send", post(crate::notifications::send_notification))
         .route("/api/notifications/settings", get(crate::notification_center::get_settings).put(crate::notification_center::update_settings))
+        .route("/api/notifications/providers", get(crate::notification_providers::get_provider_config).put(crate::notification_providers::save_provider_config))
         .route("/api/notifications/history", get(crate::notification_center::get_history).post(crate::notification_center::append_history).delete(crate::notification_center::clear_history))
         .route("/api/notifications/history/{id}", delete(crate::notification_center::delete_history_item))
         .route("/api/notifications/settings/check", get(crate::notification_center::check_notification_type))

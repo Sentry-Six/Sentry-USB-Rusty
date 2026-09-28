@@ -13,9 +13,11 @@ interface Props {
 export function DeviceTab({ onOpenWizard }: Props = {}) {
   return (
     <PrefGrid>
-      <KeepAwakePreference />
-      <DisplayUnitsSection />
-      <KeepAccessorySection onOpenWizard={onOpenWizard} />
+      <>
+        <KeepAwakePreference />
+        <DisplayUnitsSection />
+        <KeepAccessorySection onOpenWizard={onOpenWizard} />
+      </>
       <UpdateSection />
     </PrefGrid>
   )

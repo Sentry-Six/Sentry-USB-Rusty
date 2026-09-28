@@ -36,6 +36,7 @@ import {
   fmtRangeUnit,
   fmtSoc,
 } from "@/lib/charge-format"
+import { invalidateChargingHistory } from "@/hooks/useChargingHistory"
 import { useDistanceUnit } from "@/hooks/useDistanceUnit"
 
 // Static chart series — hoisted to module scope so their references stay
@@ -61,11 +62,12 @@ export default function ChargeSessionDetailPage() {
   useEffect(() => {
     if (!id) return
     let cancelled = false
+    const controller = new AbortController()
     setLoading(true)
     setError(null)
-    fetchChargeSession(id)
+    fetchChargeSession(id, controller.signal)
       .then((s) => {
-        if (!cancelled) setSession(s)
+        if (!cancelled) { setSession(s); invalidateChargingHistory() }
       })
       .catch((e) => {
         if (!cancelled) setError(e instanceof Error ? e.message : String(e))
@@ -75,23 +77,18 @@ export default function ChargeSessionDetailPage() {
       })
     return () => {
       cancelled = true
+      controller.abort()
     }
   }, [id])
 
   const onTagsChange = useCallback(
     async (next: string[]) => {
       if (!id) return
-      // Optimistic, then refetch so cost reflects the new tags' rate.
-      setSession((prev) => (prev ? { ...prev, tags: next } : prev))
-      try {
-        await setChargeTags(id, next)
-      } finally {
-        try {
-          setSession(await fetchChargeSession(id))
-        } catch {
-          /* keep optimistic tags if the refetch fails */
-        }
-      }
+      // Confirm the write before displaying saved tags, then refresh derived cost.
+      await setChargeTags(id, next)
+      invalidateChargingHistory()
+      setSession((previous) => previous ? { ...previous, tags: next } : previous)
+      try { setSession(await fetchChargeSession(id)) } catch { /* Saved tags remain visible if enrichment is unavailable. */ }
     },
     [id],
   )
@@ -102,37 +99,40 @@ export default function ChargeSessionDetailPage() {
     async (amount: number | null) => {
       if (!id) return
       await setChargeCost(id, amount)
+      invalidateChargingHistory()
       setSession(await fetchChargeSession(id))
     },
     [id],
   )
 
-  // Live status: refresh the in-progress charge + drive its projection.
+  // Final totals need one authoritative fetch when the live session stops.
   useEffect(() => {
     if (!id) return
-    let cancelled = false
+    let cancelled = false, inFlight = false, wasCharging = false
+    let request: AbortController | null = null
     const tick = async () => {
-      const c = await fetchCurrentCharge().catch(() => null)
-      if (cancelled) return
-      setNowMs(Date.now())
-      if (c) setCurrent(c)
-      if (c?.charging) {
-        try {
-          const s = await fetchChargeSession(id)
-          if (!cancelled) setSession(s)
-        } catch {
-          /* keep the current view on a transient error */
+      if (inFlight || document.hidden) return
+      inFlight = true
+      request = new AbortController()
+      try {
+        const current = await fetchCurrentCharge(request.signal)
+        if (cancelled) return
+        const finished = wasCharging && !current.charging
+        wasCharging = current.charging
+        setNowMs(Date.now())
+        setCurrent(current)
+        if (current.charging || finished) {
+          const updated = await fetchChargeSession(id, request.signal)
+          if (!cancelled) { setSession(updated); invalidateChargingHistory() }
         }
-      }
+      } catch { /* Retain last known detail until the next successful poll. */ }
+      finally { inFlight = false }
     }
-    tick()
-    const interval = setInterval(() => {
-      if (!document.hidden) tick()
-    }, 30_000)
-    return () => {
-      cancelled = true
-      clearInterval(interval)
-    }
+    void tick()
+    const interval = setInterval(() => void tick(), 30_000)
+    const foreground = () => { if (!document.hidden) void tick() }
+    document.addEventListener("visibilitychange", foreground)
+    return () => { cancelled = true; request?.abort(); clearInterval(interval); document.removeEventListener("visibilitychange", foreground) }
   }, [id])
 
   const rangeAdded =

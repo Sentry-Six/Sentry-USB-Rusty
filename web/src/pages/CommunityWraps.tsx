@@ -14,6 +14,7 @@ import {
 import GodotRenderer, { type GodotRendererHandle } from "../components/wraps/GodotRenderer"
 import MultiFileUploader, { type FileEntry } from "../components/upload/MultiFileUploader"
 import { useObjectUrl } from "@/hooks/useObjectUrl"
+import { SelectMenu } from "@/components/ui/SelectMenu"
 import { errorMessage } from "@/lib/utils"
 
 const API_BASE = "/api"
@@ -331,25 +332,10 @@ function BrowseTab({ adminPasscode, onAdminExit }: { adminPasscode: string | nul
             className="w-full rounded-lg border border-white/10 bg-white/[0.03] py-2 pl-10 pr-4 text-sm text-slate-200 placeholder:text-slate-600 focus:border-blue-500/50 focus:outline-none"
           />
         </div>
-        <select
-          value={model}
-          onChange={(e) => setModel(e.target.value)}
-          className="rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2 text-sm text-slate-200 focus:border-blue-500/50 focus:outline-none"
-        >
-          {FILTER_MODELS.map((m) => (
-            <option key={m} value={m} className="bg-slate-900">{m}</option>
-          ))}
-        </select>
-        <select
-          value={sort}
-          onChange={(e) => setSort(e.target.value as SortOption)}
-          className="rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2 text-sm text-slate-200 focus:border-blue-500/50 focus:outline-none"
-        >
-          <option value="newest" className="bg-slate-900">Newest</option>
-          <option value="oldest" className="bg-slate-900">Oldest</option>
-          <option value="popular" className="bg-slate-900">Most Popular</option>
-          <option value="name" className="bg-slate-900">Name (A-Z)</option>
-        </select>
+        <SelectMenu label="Filter wraps by Tesla model" value={model} onChange={setModel}
+          options={FILTER_MODELS.map((value) => ({ value, label: value }))} />
+        <SelectMenu label="Sort wraps" value={sort} onChange={(value) => setSort(value as SortOption)} align="end"
+          options={[{ value: "newest", label: "Newest" }, { value: "oldest", label: "Oldest" }, { value: "popular", label: "Most Popular" }, { value: "name", label: "Name (A-Z)" }]} />
       </div>
 
       {/* Results */}
@@ -566,7 +552,7 @@ function EditWrapModal({ wrap, onSave, onClose }: {
   }
 
   return (
-    <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/60 p-4" onClick={onClose}>
+    <div role="dialog" aria-modal="true" aria-label="Edit wrap" className="fixed inset-0 z-[60] flex items-center justify-center bg-black/60 p-4" onClick={onClose}>
       <div
         className="w-full max-w-sm overflow-hidden rounded-2xl border border-white/10 bg-slate-900 p-6"
         onClick={(e) => e.stopPropagation()}
@@ -586,15 +572,8 @@ function EditWrapModal({ wrap, onSave, onClose }: {
           </div>
           <div>
             <label className="mb-1.5 block text-sm font-medium text-slate-300">Tesla Model</label>
-            <select
-              value={model}
-              onChange={(e) => setModel(e.target.value)}
-              className="w-full rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2 text-sm text-slate-200 focus:border-blue-500/50 focus:outline-none"
-            >
-              {TESLA_MODELS.map((m) => (
-                <option key={m} value={m} className="bg-slate-900">{m}</option>
-              ))}
-            </select>
+            <SelectMenu label="Tesla model for wrap" value={model} onChange={setModel} fullWidth
+              options={TESLA_MODELS.map((value) => ({ value, label: value }))} />
           </div>
         </div>
 
@@ -835,16 +814,8 @@ function UploadTab({ godotReadyRef, godotRef, adminPasscode }: UploadTabProps) {
       {/* Default Tesla model selector */}
       <div>
         <label className="mb-1.5 block text-sm font-medium text-slate-300">Default Tesla Model</label>
-        <select
-          value={defaultModel}
-          onChange={(e) => setDefaultModel(e.target.value)}
-          className="w-full rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2 text-sm text-slate-200 focus:border-blue-500/50 focus:outline-none"
-        >
-          <option value="" className="bg-slate-900">Select model...</option>
-          {TESLA_MODELS.map((m) => (
-            <option key={m} value={m} className="bg-slate-900">{m}</option>
-          ))}
-        </select>
+        <SelectMenu label="Default Tesla model" value={defaultModel} onChange={setDefaultModel} fullWidth
+          options={[{ value: "", label: "Select model..." }, ...TESLA_MODELS.map((value) => ({ value, label: value }))]} />
         <p className="mt-1 text-xs text-slate-600">Applied to all files unless overridden per file</p>
       </div>
 
@@ -870,16 +841,9 @@ function UploadTab({ godotReadyRef, godotRef, adminPasscode }: UploadTabProps) {
             </div>
             <div>
               <label className="mb-1 block text-xs font-medium text-slate-400">Tesla Model</label>
-              <select
-                value={entry.fields.tesla_model || defaultModel}
-                onChange={(e) => onChange({ fields: { tesla_model: e.target.value } })}
-                className="w-full rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2 text-sm text-slate-200 focus:border-blue-500/50 focus:outline-none"
-              >
-                <option value="" className="bg-slate-900">Select model...</option>
-                {TESLA_MODELS.map((m) => (
-                  <option key={m} value={m} className="bg-slate-900">{m}</option>
-                ))}
-              </select>
+              <SelectMenu label={`Tesla model for ${entry.name || "uploaded wrap"}`} value={entry.fields.tesla_model || defaultModel}
+                onChange={(value) => onChange({ fields: { tesla_model: value } })} fullWidth
+                options={[{ value: "", label: "Select model..." }, ...TESLA_MODELS.map((value) => ({ value, label: value }))]} />
             </div>
           </div>
         )}

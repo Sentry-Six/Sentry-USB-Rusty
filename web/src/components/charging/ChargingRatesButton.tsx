@@ -5,6 +5,7 @@ import {
   type RateSchedule,
   type TagRate,
 } from "@/hooks/useChargingRates"
+import { SelectMenu } from "@/components/ui/SelectMenu"
 import { cn } from "@/lib/utils"
 
 const TIME_RE = /^([01]?\d|2[0-3]):[0-5]\d$/
@@ -33,6 +34,24 @@ const MONTHS = [
   "October",
   "November",
   "December",
+]
+
+const CUSTOM_CURRENCY = "__custom_currency__"
+const CURRENCY_OPTIONS = [
+  { value: "$", label: "$ — Dollar", group: "Symbols" },
+  { value: "€", label: "€ — Euro", group: "Symbols" },
+  { value: "£", label: "£ — Pound", group: "Symbols" },
+  { value: "¥", label: "¥ — Yen / yuan", group: "Symbols" },
+  { value: "₹", label: "₹ — Rupee", group: "Symbols" },
+  ...[
+    ["CAD", "Canadian dollar"], ["USD", "US dollar"], ["EUR", "Euro"], ["GBP", "Pound sterling"],
+    ["AUD", "Australian dollar"], ["NZD", "New Zealand dollar"], ["CHF", "Swiss franc"],
+    ["CNY", "Chinese yuan"], ["DKK", "Danish krone"], ["HKD", "Hong Kong dollar"],
+    ["INR", "Indian rupee"], ["JPY", "Japanese yen"], ["KRW", "South Korean won"],
+    ["MXN", "Mexican peso"], ["NOK", "Norwegian krone"], ["PLN", "Polish złoty"],
+    ["SEK", "Swedish krona"], ["SGD", "Singapore dollar"], ["TWD", "Taiwan dollar"], ["ZAR", "South African rand"],
+  ].map(([value, label]) => ({ value, label: `${value} — ${label}`, group: "Currency codes" })),
+  { value: CUSTOM_CURRENCY, label: "Custom symbol…", group: "Custom" },
 ]
 
 // String drafts allow numeric fields to be temporarily empty.
@@ -74,6 +93,7 @@ export function ChargingRatesButton({
   const [open, setOpen] = useState(false)
 
   const [currency, setCurrency] = useState("$")
+  const [customCurrency, setCustomCurrency] = useState(false)
   const [defaultRate, setDefaultRate] = useState("")
   const [plans, setPlans] = useState<Record<string, PlanDraft>>({})
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
@@ -85,6 +105,7 @@ export function ChargingRatesButton({
     const rates = await refresh()
     if (!rates) return
     setCurrency(rates.currency)
+    setCustomCurrency(!CURRENCY_OPTIONS.some((option) => option.value === rates.currency))
     setDefaultRate(rates.defaultRate != null ? String(rates.defaultRate) : "")
     const draft: Record<string, PlanDraft> = Object.create(null)
     const seed = (tag: string) => {
@@ -218,6 +239,7 @@ export function ChargingRatesButton({
       {loadError && <span role="alert" className="text-xs text-rose-300">{loadError}</span>}
       {open && (
         <div
+          role="dialog" aria-modal="true" aria-label="Electricity rates"
           className="fixed inset-0 z-[2000] flex items-stretch justify-center bg-black/60 backdrop-blur-sm sm:items-center sm:p-4"
           onClick={() => { if (!busy) setOpen(false) }}
         >
@@ -241,16 +263,21 @@ export function ChargingRatesButton({
             </div>
 
             <fieldset disabled={busy} className="min-w-0 flex-1 space-y-4 overflow-y-auto px-4 py-4">
-              <div className="flex gap-3">
-                <Labeled label="Symbol" className="w-20">
-                  <input
-                    type="text"
-                    value={currency}
-                    maxLength={3}
-                    onChange={(e) => setCurrency(e.target.value)}
-                    className={inputClass}
-                  />
-                </Labeled>
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                <div className="min-w-0 space-y-2">
+                  <Labeled label="Currency">
+                    <SelectMenu label="Charging currency" value={customCurrency ? CUSTOM_CURRENCY : currency}
+                      options={CURRENCY_OPTIONS} disabled={busy} fullWidth searchable searchPlaceholder="Find currency or symbol"
+                      onChange={(value) => {
+                        setCustomCurrency(value === CUSTOM_CURRENCY)
+                        if (value !== CUSTOM_CURRENCY) setCurrency(value)
+                      }} />
+                  </Labeled>
+                  {customCurrency && <Labeled label="Custom symbol">
+                    <input type="text" aria-label="Custom currency symbol" value={currency} maxLength={3}
+                      onChange={(event) => setCurrency(event.target.value)} className={inputClass} />
+                  </Labeled>}
+                </div>
                 <Labeled label="Default rate / kWh" className="flex-1">
                   <input
                     type="number"
@@ -504,12 +531,14 @@ function ScheduleCard({
       <div className="flex flex-wrap items-end gap-3">
         <Labeled label="Starting in">
           <MonthSelect
+            label="Schedule starting month"
             value={schedule.startMonth}
             onChange={(m) => onChange({ ...schedule, startMonth: m })}
           />
         </Labeled>
         <Labeled label="Through">
           <MonthSelect
+            label="Schedule ending month"
             value={schedule.endMonth}
             onChange={(m) => onChange({ ...schedule, endMonth: m })}
           />
@@ -558,26 +587,13 @@ function DayToggles({
   )
 }
 
-function MonthSelect({
-  value,
-  onChange,
-}: {
+function MonthSelect({ label, value, onChange }: {
+  label: string
   value: number
-  onChange: (m: number) => void
+  onChange: (month: number) => void
 }) {
-  return (
-    <select
-      value={value}
-      onChange={(e) => onChange(Number(e.target.value))}
-      className="rounded-md border border-white/10 bg-slate-950/60 px-2 py-1 text-sm text-slate-100 [color-scheme:dark] focus:border-emerald-400/40 focus:outline-none"
-    >
-      {MONTHS.map((m, i) => (
-        <option key={i} value={i + 1}>
-          {m}
-        </option>
-      ))}
-    </select>
-  )
+  return <SelectMenu label={label} value={String(value)} onChange={(next) => onChange(Number(next))}
+    options={MONTHS.map((month, index) => ({ value: String(index + 1), label: month }))} />
 }
 
 function Labeled({

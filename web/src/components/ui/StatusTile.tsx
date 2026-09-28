@@ -31,7 +31,7 @@ export function StatusTile({
   children,
 }: StatusTileProps) {
   return (
-    <div className={cn("glass-card tile", className)}>
+    <div className={cn("glass-card tile h-full min-w-0", className)}>
       <div className="tile-header">
         <span className={cn("tile-icon", `halo-${halo}`)}>{icon}</span>
         <span className="tile-title">{title}</span>

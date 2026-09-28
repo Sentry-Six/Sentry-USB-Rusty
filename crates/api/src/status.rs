@@ -6,12 +6,12 @@ use axum::http::StatusCode;
 use serde::Serialize;
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex, Once, OnceLock};
 use std::time::{Duration, Instant};
 
 use crate::router::AppState;
 
-// Cache shell-derived network data for 10 s and filesystem capacity for 5 s.
+// Shared status snapshots keep UI polling independent of archive I/O.
 
 #[derive(Clone, Default)]
 struct CachedNetwork {
@@ -47,15 +47,9 @@ fn read_wireless_quality(dev: &str) -> Option<(String, Option<i32>)> {
     None
 }
 
-#[derive(Clone, Copy, Default)]
-struct CachedStorage {
-    total_space: u64,
-    free_space: u64,
-}
-
 struct StatusCache {
     network: Mutex<Option<(CachedNetwork, Instant)>>,
-    storage: Mutex<Option<(CachedStorage, Instant)>>,
+    network_refresh: tokio::sync::Mutex<()>,
 }
 
 static STATUS_CACHE: OnceLock<StatusCache> = OnceLock::new();
@@ -63,12 +57,92 @@ static STATUS_CACHE: OnceLock<StatusCache> = OnceLock::new();
 fn cache() -> &'static StatusCache {
     STATUS_CACHE.get_or_init(|| StatusCache {
         network: Mutex::new(None),
-        storage: Mutex::new(None),
+        network_refresh: tokio::sync::Mutex::new(()),
     })
 }
 
 const NETWORK_TTL: Duration = Duration::from_secs(10);
-const STORAGE_TTL: Duration = Duration::from_secs(5);
+
+#[derive(Clone, Serialize)]
+pub struct ManagedStorageHealth {
+    pub state: &'static str,
+    pub message: String,
+    pub reserve_bytes: u64,
+    pub free_bytes: u64,
+    pub total_bytes: u64,
+    pub cleanup_state: String,
+    pub cleanup_sampled_at: Option<u64>,
+}
+
+impl ManagedStorageHealth {
+    fn unknown() -> Self {
+        Self { state: "unknown", message: "Storage status unavailable".into(), reserve_bytes: 0,
+            free_bytes: 0, total_bytes: 0, cleanup_state: "unknown".into(), cleanup_sampled_at: None }
+    }
+}
+
+fn unix_seconds() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs()
+}
+
+pub(crate) fn mount_writable(mounts: &str, path: &str) -> Option<bool> {
+    mounts.lines().find_map(|line| {
+        let fields: Vec<_> = line.split_whitespace().collect();
+        (fields.get(1).copied() == Some(path)).then(|| fields.get(3)
+            .is_some_and(|opts| opts.split(',').any(|o| o == "rw")))
+    })
+}
+
+fn storage_verdict(mounted: Option<bool>, total: u64, free: u64, cleanup: &str, inode_stalled: bool) -> (&'static str, &'static str) {
+    if mounted.is_none() { return ("fail", "Recording storage is not mounted"); }
+    if mounted == Some(false) { return ("fail", "Recording storage is read-only"); }
+    if total == 0 { return ("unknown", "Storage capacity unavailable"); }
+    if free == 0 { return ("fail", "Recording storage is full"); }
+    if inode_stalled { return ("fail", "Clip index cleanup needs attention"); }
+    let reserve = (10 * 1024 * 1024 * 1024u64).saturating_add(total / 33);
+    if free < reserve {
+        return match cleanup {
+            "failed" => ("warn", "Automatic cleanup could not restore recording headroom"),
+            "unknown" => ("warn", "Recording headroom is low; cleanup status unavailable"),
+            _ => ("recovering", "Automatic cleanup is restoring recording headroom"),
+        };
+    }
+    ("healthy", "Storage managed automatically")
+}
+
+pub fn managed_storage_health() -> ManagedStorageHealth {
+    static CACHE: OnceLock<Mutex<Option<(ManagedStorageHealth, Instant)>>> = OnceLock::new();
+    let mut cache = CACHE.get_or_init(|| Mutex::new(None)).lock().unwrap();
+    if let Some((health, at)) = &*cache {
+        if at.elapsed() < Duration::from_secs(5) { return health.clone(); }
+    }
+    let health = read_managed_storage_health();
+    *cache = Some((health.clone(), Instant::now()));
+    health
+}
+
+fn read_managed_storage_health() -> ManagedStorageHealth {
+    let mut health = ManagedStorageHealth::unknown();
+    let Ok(mounts) = std::fs::read_to_string("/proc/mounts") else { return health; };
+    let mounted = mount_writable(&mounts, "/backingfiles");
+    // Never mistake the root filesystem beneath a missing mount for recording storage.
+    let (total, free) = if mounted.is_some() { statvfs_backing_files().unwrap_or_default() } else { (0, 0) };
+    if let Some(value) = std::fs::read_to_string("/run/sentryusb_storage_cleanup.json").ok()
+        .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok()) {
+        health.cleanup_sampled_at = value["sampled_at"].as_u64();
+        if health.cleanup_sampled_at.is_some_and(|at| unix_seconds().saturating_sub(at) < 120) {
+            health.cleanup_state = value["state"].as_str().unwrap_or("unknown").to_string();
+        }
+    }
+    let (state, message) = storage_verdict(mounted, total, free, &health.cleanup_state,
+        std::path::Path::new("/run/sentryusb_inode_stall").exists());
+    health.state = state;
+    health.message = message.into();
+    health.total_bytes = total;
+    health.free_bytes = free;
+    health.reserve_bytes = (10 * 1024 * 1024 * 1024u64).saturating_add(total / 33);
+    health
+}
 
 /// Returns total and free bytes from `statvfs` without spawning `stat`.
 fn statvfs_backing_files() -> Option<(u64, u64)> {
@@ -85,35 +159,18 @@ fn statvfs_backing_files() -> Option<(u64, u64)> {
     Some((total, free))
 }
 
-async fn cached_storage() -> CachedStorage {
-    {
-        let guard = cache().storage.lock().unwrap();
-        if let Some((info, when)) = &*guard {
-            if when.elapsed() < STORAGE_TTL {
-                return *info;
-            }
-        }
-    }
-    let info = statvfs_backing_files()
-        .map(|(t, f)| CachedStorage { total_space: t, free_space: f })
-        .unwrap_or_default();
-    let mut guard = cache().storage.lock().unwrap();
-    *guard = Some((info, Instant::now()));
-    info
-}
-
-
 #[derive(Clone)]
 pub struct NetSample {
     pub rx_bytes: u64,
     pub tx_bytes: u64,
     pub taken_at: Instant,
+    rates: Option<(u64, u64)>,
 }
 
 pub type NetSampler = Arc<Mutex<HashMap<String, NetSample>>>;
 
 
-#[derive(Serialize)]
+#[derive(Clone, Serialize)]
 struct PiStatus {
     cpu_temp: String,
     num_snapshots: String,
@@ -142,6 +199,12 @@ struct PiStatus {
     wifi_tx_bps: u64,
     ether_rx_bps: u64,
     ether_tx_bps: u64,
+    wifi_rate_state: &'static str,
+    ether_rate_state: &'static str,
+    wifi_sample_age_ms: Option<u64>,
+    ether_sample_age_ms: Option<u64>,
+    sampled_at: u64,
+    storage_health: ManagedStorageHealth,
     /// Final hostname segment used as the stable device suffix.
     device_suffix: String,
 }
@@ -150,22 +213,17 @@ pub async fn get_status(
     State(state): State<AppState>,
 ) -> (StatusCode, Json<serde_json::Value>) {
     // Snapshot and backing-file metadata can block during archive I/O.
-    let mut s = match tokio::task::spawn_blocking(status_fs_snapshot).await {
-        Ok(s) => s,
-        Err(e) => {
+    static FS_CACHE: crate::ttl_cache::StaleWhileRevalidate<(), PiStatus> =
+        crate::ttl_cache::StaleWhileRevalidate::new(Duration::from_secs(2));
+    let mut s = match FS_CACHE.get((), || Some(status_fs_snapshot())).await {
+        Some(s) => s,
+        None => {
             return crate::json_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                &format!("status task: {}", e),
+                "status temporarily unavailable",
             );
         }
     };
-
-    // Capacity uses a cached `statvfs` call.
-    let storage = cached_storage().await;
-    if storage.total_space > 0 {
-        s.total_space = storage.total_space.to_string();
-        s.free_space = storage.free_space.to_string();
-    }
 
     // Cache stable network identity; keep signal and throughput live.
     let net = cached_network().await;
@@ -179,14 +237,18 @@ pub async fn get_status(
             s.wifi_strength = strength;
             s.wifi_signal_dbm = dbm;
         }
-        let (rx, tx) = compute_throughput(&state.net_sampler, &net.wifi_dev);
+        let (rx, tx, quality, age) = latest_throughput(&state.net_sampler, &net.wifi_dev);
         s.wifi_rx_bps = rx;
         s.wifi_tx_bps = tx;
+        s.wifi_rate_state = quality;
+        s.wifi_sample_age_ms = age;
     }
     if !net.eth_dev.is_empty() {
-        let (rx, tx) = compute_throughput(&state.net_sampler, &net.eth_dev);
+        let (rx, tx, quality, age) = latest_throughput(&state.net_sampler, &net.eth_dev);
         s.ether_rx_bps = rx;
         s.ether_tx_bps = tx;
+        s.ether_rate_state = quality;
+        s.ether_sample_age_ms = age;
     }
 
     (StatusCode::OK, Json(serde_json::to_value(s).unwrap_or_default()))
@@ -218,9 +280,18 @@ fn status_fs_snapshot() -> PiStatus {
         wifi_tx_bps: 0,
         ether_rx_bps: 0,
         ether_tx_bps: 0,
+        wifi_rate_state: "disconnected",
+        ether_rate_state: "disconnected",
+        wifi_sample_age_ms: None,
+        ether_sample_age_ms: None,
+        sampled_at: unix_seconds(),
+        storage_health: ManagedStorageHealth::unknown(),
         device_suffix: read_device_suffix(),
     };
 
+    s.storage_health = managed_storage_health();
+    s.total_space = s.storage_health.total_bytes.to_string();
+    s.free_space = s.storage_health.free_bytes.to_string();
     s.sbc_model = get_sbc_model();
 
     if let Ok(data) = std::fs::read_to_string("/sys/class/thermal/thermal_zone0/temp") {
@@ -243,7 +314,7 @@ fn status_fs_snapshot() -> PiStatus {
     s.cam_last_write_secs = cam_last_write_secs();
 
     // Slot numbers are not time-monotonic, so derive the range from mtimes.
-    let scan = scan_snapshots(std::path::Path::new("/backingfiles/snapshots/"));
+    let scan = cached_snapshot_scan();
     s.num_snapshots = scan.count.to_string();
     if let Some(t) = scan.oldest_unix {
         s.snapshot_oldest = t.to_string();
@@ -255,19 +326,26 @@ fn status_fs_snapshot() -> PiStatus {
     s
 }
 
-/// Returns shared cached network data, refreshing once when stale.
+/// Warm requests never wait for shell-derived identity refreshes.
 async fn cached_network() -> CachedNetwork {
-    {
-        let guard = cache().network.lock().unwrap();
-        if let Some((info, when)) = &*guard {
-            if when.elapsed() < NETWORK_TTL {
-                return info.clone();
-            }
-        }
+    let previous = cache().network.lock().unwrap().clone();
+    if let Some((info, at)) = &previous {
+        if at.elapsed() < NETWORK_TTL { return info.clone(); }
     }
+    if let Some((info, _)) = previous {
+        if let Ok(guard) = cache().network_refresh.try_lock() {
+            tokio::spawn(async move {
+                let _guard = guard;
+                let fresh = compute_network_info().await;
+                *cache().network.lock().unwrap() = Some((fresh, Instant::now()));
+            });
+        }
+        return info;
+    }
+    let _guard = cache().network_refresh.lock().await;
+    if let Some((info, _)) = &*cache().network.lock().unwrap() { return info.clone(); }
     let info = compute_network_info().await;
-    let mut guard = cache().network.lock().unwrap();
-    *guard = Some((info.clone(), Instant::now()));
+    *cache().network.lock().unwrap() = Some((info.clone(), Instant::now()));
     info
 }
 
@@ -284,9 +362,9 @@ async fn compute_network_info() -> CachedNetwork {
         // `iw` reports frequency in MHz.
         let iw_args = ["dev", wifi_dev.as_str(), "link"];
         let (ssid_r, ip_r, iw_r) = tokio::join!(
-            sentryusb_shell::run("iwgetid", &ssid_args),
-            sentryusb_shell::run("ip", &ip_args),
-            sentryusb_shell::run("iw", &iw_args),
+            sentryusb_shell::run_with_timeout(Duration::from_secs(2), "iwgetid", &ssid_args),
+            sentryusb_shell::run_with_timeout(Duration::from_secs(2), "ip", &ip_args),
+            sentryusb_shell::run_with_timeout(Duration::from_secs(2), "iw", &iw_args),
         );
         if let Ok(out) = ssid_r {
             info.wifi_ssid = out.trim().to_string();
@@ -325,8 +403,8 @@ async fn compute_network_info() -> CachedNetwork {
         let eth_ip_args = ["-4", "addr", "show", eth_dev.as_str()];
         let eth_tool_args = [eth_dev.as_str()];
         let (ip_r, ethtool_r) = tokio::join!(
-            sentryusb_shell::run("ip", &eth_ip_args),
-            sentryusb_shell::run("ethtool", &eth_tool_args),
+            sentryusb_shell::run_with_timeout(Duration::from_secs(2), "ip", &eth_ip_args),
+            sentryusb_shell::run_with_timeout(Duration::from_secs(2), "ethtool", &eth_tool_args),
         );
         if let Ok(out) = ip_r {
             for line in out.lines() {
@@ -362,6 +440,7 @@ struct StorageBreakdown {
     snapshots_size: i64,
     total_space: i64,
     free_space: i64,
+    storage_health: ManagedStorageHealth,
 }
 
 pub async fn get_storage_breakdown(
@@ -373,21 +452,17 @@ pub async fn get_storage_breakdown(
         disk_usage("/backingfiles/lightshow_disk.bin"),
         disk_usage("/backingfiles/boombox_disk.bin"),
     );
+    let health = tokio::task::spawn_blocking(managed_storage_health).await.unwrap_or_else(|_| ManagedStorageHealth::unknown());
     let mut sb = StorageBreakdown {
         cam_size: cam,
         music_size: music,
         lightshow_size: lightshow,
         boombox_size: boombox,
         snapshots_size: 0,
-        total_space: 0,
-        free_space: 0,
+        total_space: health.total_bytes as i64,
+        free_space: health.free_bytes as i64,
+        storage_health: health,
     };
-
-    // This slower-polled endpoint reads `statvfs` directly without caching.
-    if let Some((total, free)) = statvfs_backing_files() {
-        sb.total_space = total as i64;
-        sb.free_space = free as i64;
-    }
 
     // Reflink clones make `du` unsuitable; derive snapshot usage by subtraction.
     let disk_images = sb.cam_size + sb.music_size + sb.lightshow_size + sb.boombox_size;
@@ -523,10 +598,22 @@ pub async fn get_wifi_config(
 
 /// One-pass snapshot summary: count plus the oldest/newest `snap.bin`
 /// mtimes (unix seconds).
+#[derive(Clone)]
 struct SnapshotScan {
     count: usize,
     oldest_unix: Option<u64>,
     newest_unix: Option<u64>,
+}
+
+fn cached_snapshot_scan() -> SnapshotScan {
+    static SCAN: OnceLock<Mutex<Option<(SnapshotScan, Instant)>>> = OnceLock::new();
+    let mut cache = SCAN.get_or_init(|| Mutex::new(None)).lock().unwrap();
+    if let Some((scan, at)) = &*cache {
+        if at.elapsed() < Duration::from_secs(15) { return scan.clone(); }
+    }
+    let scan = scan_snapshots(std::path::Path::new("/backingfiles/snapshots"));
+    *cache = Some((scan.clone(), Instant::now()));
+    scan
 }
 
 /// Scans only top-level numeric snapshot directories, avoiding autofs symlinks.
@@ -572,6 +659,51 @@ fn scan_snapshots(base: &std::path::Path) -> SnapshotScan {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn throughput_reads_are_identical_and_do_not_consume_sample() {
+        let now = Instant::now();
+        let baseline = update_net_sample(None, 100, 200, now - Duration::from_secs(1));
+        let sample = update_net_sample(Some(&baseline), 1100, 2200, now);
+        assert_eq!(sample.rates, Some((8000, 16000)));
+        let sampler = Arc::new(Mutex::new(HashMap::from([("wlan0".into(), sample)])));
+        let first = latest_throughput(&sampler, "wlan0");
+        for _ in 0..20 { assert_eq!(latest_throughput(&sampler, "wlan0").0, first.0); }
+        assert_eq!(sampler.lock().unwrap()["wlan0"].taken_at, now);
+    }
+
+    #[test]
+    fn throughput_distinguishes_idle_reset_warmup_and_stale() {
+        let now = Instant::now();
+        let first = update_net_sample(None, 100, 200, now);
+        assert_eq!(first.rates, None);
+        let idle = update_net_sample(Some(&first), 100, 200, now + Duration::from_secs(1));
+        assert_eq!(idle.rates, Some((0, 0)));
+        let reset = update_net_sample(Some(&idle), 10, 20, now + Duration::from_secs(2));
+        assert_eq!(reset.rates, None);
+        let resumed = update_net_sample(Some(&reset), 110, 220, now + Duration::from_secs(3));
+        assert_eq!(resumed.rates, Some((800, 1600)));
+        let mut old = resumed;
+        old.taken_at = now - Duration::from_secs(10);
+        let sampler = Arc::new(Mutex::new(HashMap::from([("wlan0".into(), old)])));
+        assert_eq!(latest_throughput(&sampler, "wlan0").2, "stale");
+        assert_eq!(latest_throughput(&sampler, "absent").2, "unavailable");
+    }
+
+    #[test]
+    fn managed_storage_uses_actual_reserve_and_cleanup_outcome() {
+        const GIB: u64 = 1024 * 1024 * 1024;
+        assert_eq!(storage_verdict(Some(true), 924 * GIB, 42 * GIB, "healthy", false).0, "healthy");
+        assert_eq!(storage_verdict(Some(true), 924 * GIB, 35 * GIB, "recovering", false).0, "recovering");
+        assert_eq!(storage_verdict(Some(true), 924 * GIB, 35 * GIB, "failed", false).0, "warn");
+        assert_eq!(storage_verdict(Some(true), 32 * GIB, 5 * GIB, "failed", false).0, "warn");
+        assert_eq!(storage_verdict(Some(true), 924 * GIB, 0, "healthy", false).0, "fail");
+        assert_eq!(storage_verdict(None, 924 * GIB, 42 * GIB, "healthy", false).0, "fail");
+        assert_eq!(storage_verdict(Some(false), 924 * GIB, 42 * GIB, "healthy", false).0, "fail");
+        assert_eq!(storage_verdict(Some(true), 924 * GIB, 42 * GIB, "healthy", true).0, "fail");
+        assert_eq!(mount_writable("/dev/root / ext4 rw 0 0", "/backingfiles"), None);
+        assert_eq!(mount_writable("/dev/sda /backingfiles xfs ro,noatime 0 0", "/backingfiles"), Some(false));
+    }
 
     #[test]
     fn scan_snapshots_range_is_mtime_min_max_not_name_order() {
@@ -687,25 +819,61 @@ fn read_net_bytes(dev: &str, stat: &str) -> Option<u64> {
     std::fs::read_to_string(&path).ok()?.trim().parse::<u64>().ok()
 }
 
-fn compute_throughput(sampler: &NetSampler, dev: &str) -> (u64, u64) {
-    let Some(rx_now) = read_net_bytes(dev, "rx_bytes") else { return (0, 0); };
-    let Some(tx_now) = read_net_bytes(dev, "tx_bytes") else { return (0, 0); };
-    let now = Instant::now();
-    let mut map = sampler.lock().unwrap_or_else(|e| e.into_inner());
-    let result = if let Some(prev) = map.get(dev) {
-        let elapsed = now.duration_since(prev.taken_at).as_secs_f64();
-        if elapsed < 0.1 {
-            (0, 0)
-        } else {
-            let rx_bps = ((rx_now.saturating_sub(prev.rx_bytes) as f64 * 8.0) / elapsed) as u64;
-            let tx_bps = ((tx_now.saturating_sub(prev.tx_bytes) as f64 * 8.0) / elapsed) as u64;
-            (rx_bps, tx_bps)
+fn update_net_sample(previous: Option<&NetSample>, rx_bytes: u64, tx_bytes: u64, taken_at: Instant) -> NetSample {
+    let rates = previous.and_then(|prev| {
+        let elapsed = taken_at.saturating_duration_since(prev.taken_at).as_secs_f64();
+        if elapsed < 0.5 || elapsed > 5.0 || rx_bytes < prev.rx_bytes || tx_bytes < prev.tx_bytes {
+            return None;
         }
-    } else {
-        (0, 0)
-    };
-    map.insert(dev.to_string(), NetSample { rx_bytes: rx_now, tx_bytes: tx_now, taken_at: now });
-    result
+        Some((((rx_bytes - prev.rx_bytes) as f64 * 8.0 / elapsed) as u64,
+              ((tx_bytes - prev.tx_bytes) as f64 * 8.0 / elapsed) as u64))
+    });
+    NetSample { rx_bytes, tx_bytes, taken_at, rates }
+}
+
+/// One sampling clock serves every web and phone client. HTTP reads never move it.
+pub fn start_network_sampler(sampler: NetSampler) {
+    static START: Once = Once::new();
+    START.call_once(|| {
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(Duration::from_secs(1));
+            tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            loop {
+                tick.tick().await;
+                let sampler = sampler.clone();
+                let _ = tokio::task::spawn_blocking(move || {
+                    let Ok(entries) = std::fs::read_dir("/sys/class/net") else { return; };
+                    let mut values = Vec::new();
+                    for entry in entries.flatten() {
+                        let dev = entry.file_name().to_string_lossy().into_owned();
+                        if dev == "lo" || !iface_is_up(&dev) { continue; }
+                        if let (Some(rx), Some(tx)) = (read_net_bytes(&dev, "rx_bytes"), read_net_bytes(&dev, "tx_bytes")) {
+                            values.push((dev, rx, tx, Instant::now()));
+                        }
+                    }
+                    let mut map = sampler.lock().unwrap_or_else(|e| e.into_inner());
+                    map.retain(|dev, _| values.iter().any(|(name, _, _, _)| name == dev));
+                    for (dev, rx, tx, now) in values {
+                        let sample = update_net_sample(map.get(&dev), rx, tx, now);
+                        map.insert(dev, sample);
+                    }
+                }).await;
+            }
+        });
+    });
+}
+
+fn latest_throughput(sampler: &NetSampler, dev: &str) -> (u64, u64, &'static str, Option<u64>) {
+    let map = sampler.lock().unwrap_or_else(|e| e.into_inner());
+    let Some(sample) = map.get(dev) else { return (0, 0, "unavailable", None); };
+    let age = sample.taken_at.elapsed().as_millis() as u64;
+    let quality = if age > 5000 { "stale" } else if sample.rates.is_none() { "sampling" } else { "live" };
+    let (rx, tx) = sample.rates.unwrap_or_default();
+    (rx, tx, quality, Some(age))
+}
+
+pub async fn liveness() -> Json<serde_json::Value> {
+    Json(serde_json::json!({"ok": true}))
 }
 
 fn find_net_device(pattern: &str) -> String {
@@ -731,20 +899,14 @@ fn iface_is_up(dev: &str) -> bool {
 }
 
 async fn disk_usage(path: &str) -> i64 {
-    // Allocated blocks account for sparse and reflinked files.
-    if let Ok(out) = tokio::process::Command::new("stat")
-        .args(["--format=%b", path])
-        .output()
-        .await
-    {
-        if out.status.success() {
-            let s = String::from_utf8_lossy(&out.stdout);
-            if let Ok(blocks) = s.trim().parse::<i64>() {
-                return blocks * 512;
-            }
+    let path = path.to_owned();
+    tokio::task::spawn_blocking(move || {
+        #[cfg(unix)] {
+            use std::os::unix::fs::MetadataExt;
+            return std::fs::metadata(path).map(|m| m.blocks().saturating_mul(512) as i64).unwrap_or(0);
         }
-    }
-    0
+        #[cfg(not(unix))] { let _ = path; 0 }
+    }).await.unwrap_or(0)
 }
 
 /// Get SBC model from device tree.

@@ -1,184 +1,90 @@
-import { useState, useEffect } from "react"
-import {
-  CancelIcon,
-  CheckCircleIcon,
-  ChevronRightIcon,
-  ErrorIcon,
-  ExpandMoreIcon,
-  ProgressActivityIcon,
-  StethoscopeIcon,
-  WarningIcon,
-} from "@/components/icons"
-import { cn } from "@/lib/utils"
+import { useState, useEffect, useRef, useCallback } from "react"
+import { CancelIcon, CheckCircleIcon, ErrorIcon, InfoIcon, ProgressActivityIcon, StethoscopeIcon, WarningIcon } from "@/components/icons"
+import { InfoButton } from "@/components/ui/InfoButton"
+import { needsLegacyStorageProbe, normalizeLegacyStorage, type HealthItem, type HealthReport } from "./healthReport"
 import { Modal } from "@/components/ui/Modal"
 
-type HealthItem = { name: string; status: "pass" | "warn" | "fail"; detail?: string }
-type HealthCategory = { name: string; items: HealthItem[] }
-type HealthReport = { summary: string; categories: HealthCategory[] }
+const STATUS = {
+  info: { label: "Managed reserve", color: "text-slate-400", icon: InfoIcon },
+  pass: { label: "Healthy", color: "text-emerald-400", icon: CheckCircleIcon },
+  warn: { label: "Needs attention", color: "text-amber-400", icon: WarningIcon },
+  fail: { label: "Action needed", color: "text-red-400", icon: CancelIcon },
+  unknown: { label: "Not measured", color: "text-slate-400", icon: InfoIcon },
+  recovering: { label: "Recovering", color: "text-blue-400", icon: ProgressActivityIcon },
+  not_applicable: { label: "Not applicable", color: "text-slate-500", icon: InfoIcon },
+}
+function CheckRow({ item }: { item: HealthItem }) {
+  const presentation = STATUS[item.status] ?? STATUS.unknown
+  const Icon = presentation.icon
+  return <li className="flex items-start gap-3 py-2">
+    <Icon className={`mt-0.5 h-4 w-4 shrink-0 ${presentation.color}`} />
+    <div className="min-w-0 flex-1">
+      <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
+        <span className="flex items-center gap-1 text-sm text-slate-200">{item.name}{item.explanation && <InfoButton title={item.name}><p>{item.explanation}</p></InfoButton>}</span>
+        <span className={`text-xs ${presentation.color}`}>{presentation.label}</span>
+      </div>
+      {item.detail && <p className="mt-1 text-xs leading-relaxed text-slate-400">{item.detail}</p>}
+    </div>
+  </li>
+}
+async function readHealthReport(signal: AbortSignal): Promise<HealthReport> {
+  const res = await fetch("/api/system/health-check", { signal })
+  if (!res.ok) throw new Error(`Server responded with ${res.status}`)
+  const data: HealthReport = await res.json()
+  if (needsLegacyStorageProbe(data)) {
+    try {
+      const space = await fetch("/api/backingfiles/free-space", { signal, cache: "no-store" })
+      if (space.ok && /application\/(?:[\w.+-]+\+)?json/i.test(space.headers.get("content-type") ?? "")) {
+        return normalizeLegacyStorage(data, await space.json())
+      }
+    } catch { /* Preserve the original warning if the independent reading fails. */ }
+  }
+  return data
+}
 
 export function HealthCheckModal({ onClose }: { onClose: () => void }) {
   const [loading, setLoading] = useState(true)
   const [report, setReport] = useState<HealthReport | null>(null)
   const [error, setError] = useState<string | null>(null)
-  const [expanded, setExpanded] = useState<Record<string, boolean>>({})
-
-  async function runCheck() {
-    setLoading(true)
-    setError(null)
-    setReport(null)
-    try {
-      const res = await fetch("/api/system/health-check")
-      if (!res.ok) throw new Error(`Server responded with ${res.status}`)
-      const data: HealthReport = await res.json()
-      setReport(data)
-      const exp: Record<string, boolean> = {}
-      for (const cat of data.categories) {
-        if (cat.items.some((i) => i.status !== "pass")) exp[cat.name] = true
-      }
-      setExpanded(exp)
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Health check failed")
-    } finally {
-      setLoading(false)
-    }
-  }
-
-  // Run the initial check after mount.
-  useEffect(() => {
-    void runCheck()
+  const request = useRef<AbortController | null>(null)
+  const runCheck = useCallback(() => {
+    request.current?.abort()
+    const controller = new AbortController()
+    request.current = controller
+    return readHealthReport(controller.signal)
+      .then(data => { if (!controller.signal.aborted) setReport(data) })
+      .catch(err => { if (!controller.signal.aborted) setError(err instanceof Error ? err.message : "Health check failed") })
+      .finally(() => { if (!controller.signal.aborted) setLoading(false) })
   }, [])
-
-  const statusIcon = (s: string) => {
-    if (s === "pass") return <CheckCircleIcon className="h-3.5 w-3.5 text-emerald-400" />
-    if (s === "warn") return <WarningIcon className="h-3.5 w-3.5 text-amber-400" />
-    return <CancelIcon className="h-3.5 w-3.5 text-red-400" />
-  }
-
-  const failCount = report
-    ? report.categories.reduce(
-        (n, c) => n + c.items.filter((i) => i.status === "fail").length,
-        0
-      )
-    : 0
-  const warnCount = report
-    ? report.categories.reduce(
-        (n, c) => n + c.items.filter((i) => i.status === "warn").length,
-        0
-      )
-    : 0
-
-  const headerIconClass = error
-    ? "text-red-400"
-    : failCount > 0
-    ? "text-red-400"
-    : warnCount > 0
-    ? "text-amber-400"
-    : "text-emerald-400"
-
-  return (
-    <Modal
-      title={
-        <span className="flex items-center gap-2">
-          <StethoscopeIcon className={cn("h-4 w-4", headerIconClass)} />
-          <span>Health Check</span>
-          {report && !loading && (
-            <span
-              className={cn(
-                "rounded-full px-2 py-0.5 text-xs font-medium",
-                failCount > 0
-                  ? "bg-red-500/15 text-red-400"
-                  : warnCount > 0
-                  ? "bg-amber-500/15 text-amber-400"
-                  : "bg-emerald-500/15 text-emerald-400"
-              )}
-            >
-              {report.summary}
-            </span>
-          )}
-        </span>
-      }
-      onClose={onClose}
-      size="md"
-      footer={
-        <div className="flex justify-end">
-          <button
-            onClick={runCheck}
-            disabled={loading}
-            className="rounded-lg px-3 py-1.5 text-xs text-slate-400 hover:bg-white/5 hover:text-slate-200 disabled:opacity-50"
-          >
-            {loading ? "Running..." : "Re-run"}
-          </button>
-        </div>
-      }
-    >
-      {loading && (
-        <div className="flex items-center justify-center py-8 text-slate-500">
-          <ProgressActivityIcon className="mr-2 h-5 w-5 animate-spin" />
-          Running health check...
-        </div>
-      )}
-
-      {error && !loading && (
-        <div className="flex items-start gap-3 rounded-xl border border-red-500/20 bg-red-500/5 p-4 text-sm">
-          <ErrorIcon className="mt-0.5 h-5 w-5 shrink-0 text-red-400" />
-          <div>
-            <p className="font-medium text-red-300">Health check failed</p>
-            <p className="mt-1 text-xs text-slate-400">{error}</p>
-          </div>
-        </div>
-      )}
-
-      {report &&
-        !loading &&
-        !error &&
-        report.categories.map((cat) => {
-          const isOpen = expanded[cat.name] ?? false
-          const catFails = cat.items.filter((i) => i.status === "fail").length
-          const catWarns = cat.items.filter((i) => i.status === "warn").length
-          return (
-            <div key={cat.name} className="border-b border-white/5 last:border-0">
-              <button
-                onClick={() => setExpanded((p) => ({ ...p, [cat.name]: !isOpen }))}
-                className="flex w-full items-center gap-2 py-2 text-left"
-              >
-                {isOpen ? (
-                  <ExpandMoreIcon className="h-3.5 w-3.5 text-slate-500" />
-                ) : (
-                  <ChevronRightIcon className="h-3.5 w-3.5 text-slate-500" />
-                )}
-                <span className="flex-1 text-xs font-medium text-slate-300">{cat.name}</span>
-                {catFails > 0 && (
-                  <span className="rounded-md bg-red-500/15 px-1.5 py-0.5 text-[10px] text-red-400">
-                    {catFails} fail
-                  </span>
-                )}
-                {catWarns > 0 && (
-                  <span className="rounded-md bg-amber-500/15 px-1.5 py-0.5 text-[10px] text-amber-400">
-                    {catWarns} warn
-                  </span>
-                )}
-                {catFails === 0 && catWarns === 0 && (
-                  <span className="rounded-md bg-emerald-500/15 px-1.5 py-0.5 text-[10px] text-emerald-400">
-                    all pass
-                  </span>
-                )}
-              </button>
-              {isOpen && (
-                <div className="mb-2 space-y-0.5 pl-5">
-                  {cat.items.map((item, i) => (
-                    <div key={i} className="flex items-start gap-2 py-0.5">
-                      {statusIcon(item.status)}
-                      <span className="text-xs text-slate-300">{item.name}</span>
-                      {item.detail && (
-                        <span className="text-xs text-slate-600">— {item.detail}</span>
-                      )}
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-          )
-        })}
-    </Modal>
-  )
+  useEffect(() => { void runCheck(); return () => request.current?.abort() }, [runCheck])
+  const items = report?.categories.flatMap(category => category.items) ?? []
+  const attention = items.filter(item => item.status === "warn" || item.status === "fail")
+  const monitoring = items.filter(item => item.status === "recovering" || item.status === "unknown")
+  return <Modal title={<span className="flex items-center gap-2"><StethoscopeIcon className="h-4 w-4" />Health Check</span>}
+    onClose={onClose} size="lg" footer={<div className="flex justify-end">
+      <button onClick={() => { setLoading(true); setError(null); void runCheck() }} disabled={loading} className="rounded-lg px-3 py-2 text-sm text-slate-300 hover:bg-white/5 disabled:opacity-50">{loading ? "Checking…" : "Run again"}</button>
+    </div>}>
+    <div aria-busy={loading}>
+      {loading && <p role="status" className="flex items-center gap-2 py-4 text-sm text-slate-400"><ProgressActivityIcon className="h-4 w-4 animate-spin" />Checking device…</p>}
+      {error && <div role="alert" className="flex items-center gap-2 py-4 text-sm text-red-300"><ErrorIcon className="h-4 w-4" />{error}</div>}
+      {report && <>
+        <p className="mb-3 text-sm font-medium text-slate-200">{report.summary}</p>
+        {attention.length > 0 && <section aria-label="Needs attention">
+          <h3 className="text-xs font-semibold uppercase tracking-wide text-slate-400">Needs attention</h3>
+          <ul className="divide-y divide-white/5">{attention.map(item => <CheckRow key={item.name} item={item} />)}</ul>
+        </section>}
+        {monitoring.length > 0 && <section className="mt-4" aria-label="Device status">
+          <h3 className="text-xs font-semibold uppercase tracking-wide text-slate-400">Device status</h3>
+          <ul className="divide-y divide-white/5">{monitoring.map(item => <CheckRow key={item.name} item={item} />)}</ul>
+        </section>}
+        <details className="settings-details mt-4 border-t border-white/10 pt-2">
+          <summary>All checks ({items.length})</summary>
+          <div className="space-y-4 pt-2">{report.categories.map(category => <section key={category.name}>
+            <h3 className="text-sm font-semibold text-slate-300">{category.name}</h3>
+            <ul className="divide-y divide-white/5">{category.items.map(item => <CheckRow key={item.name} item={item} />)}</ul>
+          </section>)}</div>
+        </details>
+      </>}
+    </div>
+  </Modal>
 }

@@ -4,6 +4,8 @@ interface SelectModeBarProps {
   selectedCount: number
   totalCount: number
   onSelectAll: () => void
+  onSelectPage: () => void
+  busy: boolean
   onTag: () => void
   onExport: () => void
   onDelete: () => void
@@ -14,6 +16,8 @@ export function SelectModeBar({
   selectedCount,
   totalCount,
   onSelectAll,
+  onSelectPage,
+  busy,
   onTag,
   onExport,
   onDelete,
@@ -21,29 +25,30 @@ export function SelectModeBar({
 }: SelectModeBarProps) {
   const hasSelection = selectedCount > 0
   return (
-    <div className="flex items-center gap-2">
+    <div className="flex flex-wrap items-center gap-2">
       <span className="mr-1 text-sm text-slate-400">
         {selectedCount} of {totalCount} selected
       </span>
-      <Outlined onClick={onTag} disabled={!hasSelection}>
+      <Outlined onClick={onTag} disabled={!hasSelection || busy}>
         <SellIcon className="h-3.5 w-3.5" />
         Tag
       </Outlined>
-      <Outlined onClick={onExport} disabled={!hasSelection}>
+      <Outlined onClick={onExport} disabled={!hasSelection || busy}>
         <DownloadIcon className="h-3.5 w-3.5" />
-        Export
+        Export CSV
       </Outlined>
       <button
         type="button"
-        disabled={!hasSelection}
+        disabled={!hasSelection || busy}
         onClick={onDelete}
         className="inline-flex items-center gap-1.5 rounded-full bg-rose-500/95 px-3 py-1 text-xs font-medium text-white transition-colors hover:bg-rose-400 disabled:opacity-50"
       >
         <DeleteIcon className="h-3.5 w-3.5" />
         Delete
       </button>
-      <Outlined onClick={onSelectAll}>Select all</Outlined>
-      <Outlined onClick={onCancel}>Cancel</Outlined>
+      <Outlined onClick={onSelectPage} disabled={busy}>Select page</Outlined>
+      <Outlined onClick={onSelectAll} disabled={busy}>{busy ? "Working…" : "Select all matching"}</Outlined>
+      <Outlined onClick={onCancel} disabled={busy}>Cancel</Outlined>
     </div>
   )
 }

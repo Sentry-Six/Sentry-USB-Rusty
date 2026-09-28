@@ -8,7 +8,7 @@ type StatusListener = (connected: boolean) => void
 const INITIAL_RECONNECT_MS = 3000
 const MAX_RECONNECT_MS = 30000
 
-class WebSocketClient {
+export class WebSocketClient {
   private ws: WebSocket | null = null
   private handlers: Map<string, Set<MessageHandler>> = new Map()
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null
@@ -35,21 +35,34 @@ class WebSocketClient {
 
   onStatusChange(cb: StatusListener): () => void {
     this.statusListeners.add(cb)
-    return () => { this.statusListeners.delete(cb) }
+    return () => {
+      this.statusListeners.delete(cb)
+    }
   }
 
   connect() {
-    if (this.ws?.readyState === WebSocket.OPEN) return
+    if (
+      this.ws &&
+      (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING)
+    )
+      return
 
-    this.ws = new WebSocket(this.url)
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer)
+      this.reconnectTimer = null
+    }
+    const socket = new WebSocket(this.url)
+    this.ws = socket
 
-    this.ws.onopen = () => {
+    socket.onopen = () => {
+      if (this.ws !== socket) return
       this.setConnected(true)
       this.reconnectDelay = INITIAL_RECONNECT_MS
       this.startPing()
     }
 
-    this.ws.onmessage = (event) => {
+    socket.onmessage = (event) => {
+      if (this.ws !== socket) return
       try {
         const msg = JSON.parse(event.data) as { type: string; data: unknown }
         const handlers = this.handlers.get(msg.type)
@@ -61,14 +74,16 @@ class WebSocketClient {
       }
     }
 
-    this.ws.onclose = () => {
+    socket.onclose = () => {
+      if (this.ws !== socket) return
+      this.ws = null
       this.stopPing()
       this.setConnected(false)
       this.scheduleReconnect()
     }
 
-    this.ws.onerror = () => {
-      this.ws?.close()
+    socket.onerror = () => {
+      socket.close()
     }
   }
 
@@ -127,8 +142,13 @@ class WebSocketClient {
     // A manual reconnect should start from the fast floor, not wherever
     // the backoff had climbed to.
     this.reconnectDelay = INITIAL_RECONNECT_MS
-    this.ws?.close()
+    const socket = this.ws
     this.ws = null
+    if (socket) {
+      socket.onopen = socket.onmessage = socket.onclose = socket.onerror = null
+      socket.close()
+    }
+    this.setConnected(false)
   }
 }
 

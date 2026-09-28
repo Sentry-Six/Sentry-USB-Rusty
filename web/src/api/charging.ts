@@ -4,8 +4,8 @@ import type {
   CurrentCharge,
 } from "@/types/charging"
 
-export async function fetchChargeSessions(): Promise<ChargeSessionSummary[]> {
-  const res = await fetch("/api/charging")
+export async function fetchChargeSessions(signal?: AbortSignal, fresh = false): Promise<ChargeSessionSummary[]> {
+  const res = await fetch(`/api/charging${fresh ? "?fresh=true" : ""}`, { signal })
   if (!res.ok) throw new Error(`charging: ${res.status}`)
   const data = await res.json()
   return Array.isArray(data.sessions) ? data.sessions : []
@@ -13,15 +13,16 @@ export async function fetchChargeSessions(): Promise<ChargeSessionSummary[]> {
 
 export async function fetchChargeSession(
   id: string | number,
+  signal?: AbortSignal,
 ): Promise<ChargeSessionDetail> {
-  const res = await fetch(`/api/charging/${id}`)
+  const res = await fetch(`/api/charging/${id}`, { signal })
   if (!res.ok) throw new Error(`charge session ${id}: ${res.status}`)
   return res.json()
 }
 
 // Current charging state for the dashboard banner.
-export async function fetchCurrentCharge(): Promise<CurrentCharge> {
-  const res = await fetch("/api/charging/current")
+export async function fetchCurrentCharge(signal?: AbortSignal): Promise<CurrentCharge> {
+  const res = await fetch("/api/charging/current", { signal })
   if (!res.ok) throw new Error(`charging/current: ${res.status}`)
   return res.json()
 }
@@ -45,8 +46,8 @@ export async function sendChargingAction(
 }
 
 // Tags used by charging filters and rate plans.
-export async function fetchChargeTags(): Promise<string[]> {
-  const res = await fetch("/api/charging/tags")
+export async function fetchChargeTags(signal?: AbortSignal): Promise<string[]> {
+  const res = await fetch("/api/charging/tags", { signal })
   if (!res.ok) throw new Error(`charging tags: ${res.status}`)
   const data = await res.json()
   return Array.isArray(data) ? data : []

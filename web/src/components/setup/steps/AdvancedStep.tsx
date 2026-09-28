@@ -3,12 +3,12 @@ import {
   BatteryAndroidFrameFullIcon,
   DeviceThermostatIcon,
   LocationOnIcon,
-  SearchIcon,
   SettingsIcon,
   StraightenIcon,
   WarningIcon,
 } from "@/components/icons"
 import type { StepProps } from "../SetupWizard"
+import { SelectMenu } from "@/components/ui/SelectMenu"
 import { SizeInput } from "../SizeInput"
 
 function Field({ label, field, type = "text", placeholder, data, onChange, hint }: {
@@ -227,7 +227,6 @@ function TempInput({
 }
 
 export function AdvancedStep({ data, onChange, setupAlreadyFinished }: StepProps) {
-  const [tzSearch, setTzSearch] = useState("")
   const [isPi5, setIsPi5] = useState(false)
   const useFahrenheit = data.TEMPERATURE_UNIT === "F"
   // Master measurement-unit selector reflects the temperature choice (the
@@ -245,50 +244,17 @@ export function AdvancedStep({ data, onChange, setupAlreadyFinished }: StepProps
       .catch(() => {})
   }, [])
 
-  const filteredTz = tzSearch
-    ? TIMEZONES.filter(tz => tz.toLowerCase().includes(tzSearch.toLowerCase()))
-    : TIMEZONES
-
   return (
     <div className="space-y-6">
       {/* Timezone */}
       <div>
         <label className="mb-1 block text-sm font-medium text-slate-300">Time Zone</label>
-        <div className="relative mb-2">
-          <SearchIcon className="absolute left-3 top-2.5 h-3.5 w-3.5 text-slate-600" />
-          <input
-            type="text"
-            value={tzSearch}
-            onChange={(e) => setTzSearch(e.target.value)}
-            placeholder="Search timezones..."
-            className="w-full rounded-lg border border-white/10 bg-white/5 py-2 pl-9 pr-3 text-sm text-slate-100 placeholder-slate-600 outline-none transition focus:border-blue-500/50 focus:ring-1 focus:ring-blue-500/25"
-          />
-        </div>
-        <select
-          value={data.TIME_ZONE ?? "auto"}
-          onChange={(e) => onChange("TIME_ZONE", e.target.value)}
-          // Native <select> swallows the change event when the user clicks
-          // an option whose value already matches `value` — so after the
-          // search filter narrows the list, clicking the first result was
-          // a no-op when it happened to match the current selection.
-          // Re-fire on every option click so the selection commits even
-          // if the value didn't change.
-          onClick={(e) => {
-            const target = e.target as HTMLOptionElement
-            if (target.tagName === "OPTION" && target.value) {
-              onChange("TIME_ZONE", target.value)
-            }
-          }}
-          size={6}
-          className="w-full rounded-lg border border-white/10 bg-slate-900 px-3 py-2 text-sm text-slate-100 outline-none transition focus:border-blue-500/50 focus:ring-1 focus:ring-blue-500/25 [&>option]:bg-slate-900 [&>option]:text-slate-100 [&>option:checked]:bg-blue-600"
-        >
-          {filteredTz.map(tz => (
-            <option key={tz} value={tz}>{tz === "auto" ? "auto (detect automatically)" : tz}</option>
-          ))}
-        </select>
-        <p className="mt-1 text-xs text-slate-600">
-          Selected: <span className="font-medium text-blue-400">{data.TIME_ZONE || "auto"}</span>
-        </p>
+        <SelectMenu label="Time zone" fullWidth searchable searchPlaceholder="Search time zones…" value={data.TIME_ZONE || "auto"}
+          onChange={value => onChange("TIME_ZONE", value)}
+          options={[
+            ...(data.TIME_ZONE && !TIMEZONES.includes(data.TIME_ZONE) ? [{ value: data.TIME_ZONE, label: `${data.TIME_ZONE} (configured)` }] : []),
+            ...TIMEZONES.map(zone => ({ value: zone, label: zone === "auto" ? "Detect automatically" : zone })),
+          ]} />
       </div>
 
       {/* Archive tuning */}
@@ -453,25 +419,18 @@ export function AdvancedStep({ data, onChange, setupAlreadyFinished }: StepProps
       )}
 
       {/* System tuning */}
-      <div>
-        <div className="mb-3 flex items-center gap-2">
-          <SettingsIcon className="h-4 w-4 text-blue-400" />
-          <h3 className="text-sm font-semibold uppercase tracking-wider text-slate-400">
-            System Tuning
-          </h3>
-        </div>
-        <div className="mb-3">
+      <details className="settings-details rounded-xl border border-white/10 px-4 py-2">
+        <summary className="font-medium">Expert system settings</summary>
+        <p className="mb-4 text-xs text-slate-400">Optional overrides. Leave empty to use device defaults.</p>
+        {!setupAlreadyFinished && <div className="mb-3">
           <SizeInput
             label="Increase Root Size"
             field="INCREASE_ROOT_SIZE"
             data={data} onChange={onChange}
             defaultVal=""
-            hint={setupAlreadyFinished
-              ? "Locked. Applied during the root-shrink phase only; once shrink completes, changing this requires a reflash."
-              : "Extra space for packages. Applied during the root-shrink phase only; once shrink completes, changing this requires a reflash."}
-            disabled={setupAlreadyFinished}
+            hint="Extra space for packages. This can only be set before initial setup."
           />
-        </div>
+        </div>}
         <div className="grid gap-3 sm:grid-cols-2">
           <Field label="Additional Packages" field="INSTALL_USER_REQUESTED_PACKAGES" placeholder="iftop mosh sysstat"
             data={data} onChange={onChange} hint="Space-separated list of apt packages" />
@@ -480,7 +439,7 @@ export function AdvancedStep({ data, onChange, setupAlreadyFinished }: StepProps
           <Field label="Dirty Background Bytes" field="DIRTY_BACKGROUND_BYTES" placeholder="65536"
             data={data} onChange={onChange} hint="VM write-back tuning. Leave empty for defaults." />
         </div>
-      </div>
+      </details>
 
       {/* Drive Map */}
       <div>

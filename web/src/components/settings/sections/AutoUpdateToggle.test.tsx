@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { act, createElement } from 'react'
+import { act, createElement, StrictMode } from 'react'
 import { Window } from 'happy-dom'
 import { AutoUpdateToggle } from './AutoUpdateToggle.tsx'
 
@@ -22,11 +22,21 @@ test('auto install is opt-in and a failed save never appears enabled', async () 
   }
   const { createRoot } = await import('react-dom/client')
   const container = win.document.createElement('div')
+  win.document.body.append(container)
   const root = createRoot(container)
   try {
-    await act(async () => root.render(createElement(AutoUpdateToggle)))
+    await act(async () => root.render(createElement(StrictMode, {}, createElement(AutoUpdateToggle))))
     const toggle = container.querySelector('input')!
     assert.equal(toggle.checked, false)
+    assert.ok(!container.textContent.includes('Park and Sentry Mode off'))
+    const help = container.querySelector('button[aria-label="About automatic updates"]')!
+    help.focus()
+    await act(async () => help.click())
+    assert.ok(win.document.querySelector('[role="dialog"]')?.textContent.includes('Park and Sentry Mode off'))
+    assert.ok(win.document.querySelector('[role="dialog"]')?.textContent.includes('briefly disconnects the USB drive'))
+    assert.equal(writes.length, 0, 'Info must not change the setting')
+    await act(async () => win.dispatchEvent(new win.KeyboardEvent('keydown', { key: 'Escape', bubbles: true })))
+    assert.equal(win.document.activeElement, help)
     await act(async () => toggle.click())
     assert.equal(toggle.checked, false)
     assert.ok(container.querySelector('[role="alert"]'))

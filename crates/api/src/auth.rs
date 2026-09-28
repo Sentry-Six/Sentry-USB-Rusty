@@ -255,6 +255,7 @@ pub async fn auth_middleware(
     // The frontend needs these endpoints before it can choose login or setup.
     const EXEMPT_ALWAYS: &[&str] = &[
         "/api/status",
+        "/api/health",
         "/api/setup/status",
         "/api/auth/login",
         "/api/auth/logout",

@@ -32,7 +32,7 @@ export function DriveRow({
       onToggleSelected(drive.id)
       return
     }
-    navigate(`/drives/${drive.id}`)
+    navigate(`/drives/${encodeURIComponent(drive.startTime)}`)
   }
 
   const originLabel = drive.startLocation ?? formatGps(drive.startPoint) ?? "Unknown origin"
