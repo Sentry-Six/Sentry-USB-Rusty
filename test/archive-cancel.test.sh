@@ -36,9 +36,10 @@ archive_run_command bash -c 'echo completed' > "$work/result"
 [[ $(cat "$work/result") == completed ]]
 
 # Exercise the real pipeline with hardware/network boundaries replaced.
-eval "$(awk '/^function archive_wait_for_processor / {keep=1} /^function slowblink / {exit} keep {print}' "$root/run/archiveloop" | sed "s@/root/bin/@$work/bin/@g")"
+eval "$(awk '/^function archive_wait_for_processor / {keep=1} /^function slowblink / {exit} keep {print}' "$root/run/archiveloop" | sed "s@/root/bin/@$work/bin/@g; s@/mutable/@$work/mutable/@g")"
 real_wait_source=$(declare -f archive_wait_for_processor)
-mkdir "$work/bin"
+mkdir "$work/bin" "$work/mutable"
+touch "$work/mutable/archive_in_progress.json"
 for cmd in connect-archive.sh disconnect-archive.sh post-archive-process.sh send-live-activity; do
   printf '#!/bin/bash\necho %s >> "%s"\n' "$cmd" "$work/calls" > "$work/bin/$cmd"
   chmod +x "$work/bin/$cmd"
@@ -59,6 +60,7 @@ rc=0
 archive_clips || rc=$?
 [[ $rc == 125 ]] || { echo "pipeline treated cancellation as failure/success ($rc)"; exit 1; }
 grep -q disconnect-archive.sh "$work/calls"
+[[ ! -e "$work/mutable/archive_in_progress.json" ]] || { echo 'cancel retained old resume checkpoint'; exit 1; }
 ! grep -Eq 'post-archive-process|cloud|complete' "$work/calls" || { echo 'cancelled pipeline continued'; exit 1; }
 
 # Cancellation during post-processing must also skip cloud and final success.

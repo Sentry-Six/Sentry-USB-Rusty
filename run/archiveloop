@@ -1038,11 +1038,56 @@ function notification_duration {
 }
 
 function archive_start_summary {
-  local noun=files
-  if [[ $1 -eq 1 ]]; then noun=file; fi
-  # Candidate counts already exclude archived files. A prior progress marker
-  # cannot prove continuity of the batch and must never be subtracted again.
-  printf 'Archiving %d %s.' "$1" "$noun"
+  local total=$1 completed=${2:-0} original_total=${3:-$1} noun=files
+  if [[ $completed -gt 0 ]]; then
+    printf '%d/%d Archived, resuming archive after reconnect.' "$completed" "$original_total"
+    return
+  fi
+  if [[ $total -eq 1 ]]; then noun=file; fi
+  printf 'Archiving %d %s.' "$total" "$noun"
+}
+
+function archive_resume_context () {
+  python3 - "$1" "$2" "${3:-/mutable/archive_in_progress.json}" <<'PYRESUME'
+import hashlib, json, sys
+from pathlib import Path
+
+entries = Path(sys.argv[1]).read_bytes().splitlines()
+fingerprint = hashlib.sha256(b"\n".join(sorted(entries))).hexdigest()
+total = int(sys.argv[2])
+completed, offset, original_total = 0, 0, total
+try:
+    saved = json.loads(Path(sys.argv[3]).read_text())
+    current, previous, original = saved["current"], saved["resume_offset"], saved["resume_total"]
+    if (saved["candidate_hash"] == fingerprint and saved["total"] == total == len(entries)
+            and all(type(n) is int for n in (saved["total"], current, previous, original))
+            and 0 <= current <= total and 0 <= previous <= original <= 2**63 - 1
+            and original == previous + total):
+        completed, offset, original_total = previous + current, previous, original
+except (OSError, ValueError, KeyError, TypeError):
+    pass
+print(fingerprint, completed, offset, original_total)
+PYRESUME
+}
+
+function write_archive_checkpoint () {
+  local progress="$1" fingerprint="$2" offset="$3" total="$4"
+  local checkpoint="${5:-/mutable/archive_in_progress.json}"
+  printf '%s,"candidate_hash":"%s","resume_offset":%s,"resume_total":%s}\n' \
+    "${progress%\}}" "$fingerprint" "$offset" "$total" > "$checkpoint.tmp" && mv "$checkpoint.tmp" "$checkpoint"
+}
+
+function finish_archive_checkpoint () {
+  local success="$1" cancelled="$2" remaining_list="$3" remaining="$4" offset="$5" total="$6"
+  local checkpoint="${7:-/mutable/archive_in_progress.json}" fingerprint
+  if [[ "$success" == true || "$cancelled" == true || "$remaining" -eq 0 ]]; then
+    rm -f "$checkpoint"
+    return
+  fi
+  read -r fingerprint _ < <(archive_resume_context "$remaining_list" "$remaining" /dev/null)
+  [[ -n "$fingerprint" ]] || return 1
+  write_archive_checkpoint "{\"phase\":\"archiving\",\"current\":0,\"total\":$remaining}" \
+    "$fingerprint" "$offset" "$total" "$checkpoint"
 }
 
 function archive_finish_summary {
@@ -1193,6 +1238,7 @@ function archive_eta_sample () {
 
 function archive_progress_monitor () {
   local total="$1" listfile="$2" overlay="$3" push_counter=0
+  local resume_hash="${4:-}" resume_offset="${5:-0}" resume_total="${6:-$1}"
   local start_time sampled_at start_tick now_tick done=0 last_done=0 last_change=0
   local RATE_MILLI=0 ETA_SECONDS=null ETA_STATE=estimating
   local -a pending remaining sample_times=(0) sample_counts=(0)
@@ -1221,7 +1267,7 @@ function archive_progress_monitor () {
     archive_eta_sample "$done" "$total" "$now_tick" "$((done - sample_counts[0]))" "$((now_tick - sample_times[0]))" "$((now_tick - last_change))"
     local progress="{\"phase\":\"archiving\",\"job_id\":\"${ARCHIVE_CYCLE_ID:-$start_time}\",\"current\":$done,\"total\":$total,\"started_at\":$start_time,\"sampled_at\":$sampled_at,\"eta_seconds\":$ETA_SECONDS,\"eta_state\":\"$ETA_STATE\"}"
     write_archive_status "$progress"
-    echo "$progress" > /mutable/archive_in_progress.json.tmp && mv /mutable/archive_in_progress.json.tmp /mutable/archive_in_progress.json
+    write_archive_checkpoint "$progress" "$resume_hash" "$resume_offset" "$resume_total" || true
 
     push_counter=$((push_counter + 1))
     if [ $((push_counter % 6)) -eq 0 ]; then
@@ -1564,15 +1610,12 @@ function archive_teslacam_clips () {
       message+="$trackmode_count track mode file(s)"
     fi
 
-    # If a prior archive run was interrupted (e.g. reboot), surface how many
-    # files it completed before dying. The monitor persists this every 5s.
-    local prior_done=0
-    if [ -r /mutable/archive_in_progress.json ]; then
-      prior_done=$(sed -n 's/.*"current":\([0-9]\+\).*/\1/p' /mutable/archive_in_progress.json)
-      prior_done=${prior_done:-0}
-    fi
+    # Only carry progress across attempts when their candidate lists match.
+    local resume_hash prior_done resume_offset resume_total
+    read -r resume_hash prior_done resume_offset resume_total <<< \
+      "$(archive_resume_context "$sentrylist" "$total_count" || printf 'unknown 0 0 %s' "$total_count")"
     if [[ $prior_done -gt 0 ]]; then
-      message+=" (prior progress checkpoint: $prior_done completed; may refer to an earlier batch)"
+      message+=" ($prior_done/$resume_total archived, resuming archive after reconnect)"
     fi
 
     message+=" starting at $(date)"
@@ -1581,7 +1624,7 @@ function archive_teslacam_clips () {
       # failure push; don't re-announce the start every minute.
       log "Fast retry attempt: suppressing archive-start notification"
     else
-      ARCHIVE_TOTAL_COUNT=$total_count /root/bin/send-push-message "$NOTIFICATION_TITLE:" "$message" start archive_start "$(archive_start_summary "$total_count")" || log "failed to send mobile app notification"
+      ARCHIVE_TOTAL_COUNT=$total_count /root/bin/send-push-message "$NOTIFICATION_TITLE:" "$message" start archive_start "$(archive_start_summary "$total_count" "$prior_done" "$resume_total")" || log "failed to send mobile app notification"
       /root/bin/send-live-activity start "$total_count" || true
     fi
 
@@ -1614,8 +1657,8 @@ function archive_teslacam_clips () {
       echo "${TRIGGER_FILE_ANY}" >> "${triggerlist}"
     fi
 
-    write_archive_status "{\"phase\":\"archiving\",\"current\":0,\"total\":$total_count}"
-    archive_progress_monitor "$total_count" "${sentrylist}" "$overlaymerged" &
+    write_archive_status "{\"phase\":\"archiving\",\"job_id\":\"${ARCHIVE_CYCLE_ID:-$start_ts}\",\"current\":0,\"total\":$total_count,\"started_at\":$start_ts,\"sampled_at\":$start_ts,\"eta_seconds\":null,\"eta_state\":\"estimating\"}"
+    archive_progress_monitor "$total_count" "${sentrylist}" "$overlaymerged" "$resume_hash" "$resume_offset" "$resume_total" &
     local progress_pid=$!
 
     local travel_active=0
@@ -1656,6 +1699,9 @@ function archive_teslacam_clips () {
 
     local -i sentry_archived=0
     local -i trackmode_archived=0
+    local -r remaining_list=/tmp/sentry_files_remaining
+    local remaining_list_valid=true
+    if ! true > "$remaining_list"; then remaining_list_valid=false; fi
 
     while read -r line
     do
@@ -1670,6 +1716,8 @@ function archive_teslacam_clips () {
             ;;
         esac
         echo "$line" >> "${sentrylist_archived}"
+      elif [[ "$remaining_list_valid" == true ]] && ! printf '%s\n' "$line" >> "$remaining_list"; then
+        remaining_list_valid=false
       fi
     done < ${sentrylist}
 
@@ -1689,9 +1737,16 @@ function archive_teslacam_clips () {
         mv "${sentrylist_previously_archived}.new" "${sentrylist_previously_archived}"
     fi
 
-    # Batch reached its end (success or failure) — clear the in-progress marker
-    # so the next run's start notification doesn't claim a stale "prior run" count.
-    rm -f /mutable/archive_in_progress.json
+    local cancelled=false
+    if archive_cancel_requested; then cancelled=true; fi
+    if [[ "$remaining_list_valid" == true ]]; then
+      finish_archive_checkpoint "$archive_success" "$cancelled" "$remaining_list" \
+        "$((total_count - ARCHIVE_NEW_FILES))" "$((resume_offset + ARCHIVE_NEW_FILES))" "$resume_total" \
+        || log "Unable to save archive resume checkpoint"
+    else
+      rm -f /mutable/archive_in_progress.json || true
+      log "Unable to save archive resume checkpoint"
+    fi
 
     message+="Archived "
     if [[ $sentry_count -gt 0 && $trackmode_count -gt 0 ]]
@@ -1916,6 +1971,7 @@ function archive_wait_for_processor () {
 
 function archive_cancel_cleanup () {
   log "Archive cycle skipped by user; skipping footage cleanup and remaining stages"
+  rm -f /mutable/archive_in_progress.json || true
   if ! printf 'deferred until successful archive\n' > "$CAM_CLEANUP_DEFERRED"; then
     log "ERROR: could not persist cam cleanup deferral"
   fi
