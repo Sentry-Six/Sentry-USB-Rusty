@@ -25,7 +25,7 @@ jobs:
     name: Golden-image integration test (Linux)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: Swatinem/rust-cache@v2
         with:
@@ -80,7 +80,7 @@ jobs:
           - { runs_on: windows-latest, target: x86_64-pc-windows-msvc }
     runs-on: ${{ matrix.runs_on }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: Swatinem/rust-cache@v2
         with:
           key: disk-reader-${{ matrix.target }}

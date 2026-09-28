@@ -24,11 +24,27 @@ BF="$WORK/backingfiles"
 CM="$WORK/cam"
 mkdir -p "$BF" "$CM"
 LOOPS=()
+detach_loop() {
+    local device=$1 candidate
+    local keep=()
+    losetup -d "$device" || return
+    # Detach is asynchronous; release backing-file references before parent unmount.
+    udevadm settle --timeout=30 || return
+    for candidate in "${LOOPS[@]}"; do
+        if [ "$candidate" != "$device" ]; then keep+=("$candidate"); fi
+    done
+    LOOPS=("${keep[@]}")
+}
+
 cleanup() {
     set +e
-    mountpoint -q "$CM" && umount "$CM"
-    mountpoint -q "$BF" && umount "$BF"
-    for l in "${LOOPS[@]:-}"; do [ -n "$l" ] && losetup -d "$l" 2>/dev/null; done
+    if mountpoint -q "$CM" && ! umount "$CM"; then return 1; fi
+    for device in "${LOOPS[@]}"; do
+        if [ "$device" != "${LOOP:-}" ]; then detach_loop "$device" || return 1; fi
+    done
+    if mountpoint -q "$BF" && ! umount "$BF"; then return 1; fi
+    for device in "${LOOPS[@]}"; do detach_loop "$device" || return 1; done
+    if mountpoint -q "$CM" || mountpoint -q "$BF"; then return 1; fi
     rm -rf "$WORK"
 }
 trap cleanup EXIT
@@ -53,8 +69,9 @@ make_cam_image() { # $1 = image path
     echo 'type=c' | sfdisk -q "$1"
     local cl
     cl=$(losetup -f --show -P "$1")
+    LOOPS+=("$cl")
     mkfs.vfat -F 32 -n CAM "${cl}p1" >/dev/null
-    losetup -d "$cl"
+    detach_loop "$cl"
 }
 
 mount_cam() { # $1 = image path
@@ -65,8 +82,7 @@ mount_cam() { # $1 = image path
 
 umount_cam() {
     umount "$CM"
-    losetup -d "$CAMLOOP"
-    LOOPS=("${LOOPS[@]/$CAMLOOP/}")
+    detach_loop "$CAMLOOP"
 }
 
 add_clip() { # $1 = dir under CAM root, $2 = filename, $3 = KiB
@@ -125,8 +141,7 @@ mount_cam "$BF/cam_disk.bin"
 umount_cam
 
 umount "$BF"
-losetup -d "$LOOP"
-LOOPS=()
+detach_loop "$LOOP"
 trap - EXIT
 rm -rf "$WORK"
 echo "built $OUT ($(du -h --apparent-size "$OUT" | cut -f1) apparent, $(du -h "$OUT" | cut -f1) real)"
