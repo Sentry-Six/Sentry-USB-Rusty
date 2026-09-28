@@ -47,4 +47,4 @@ libc = "0.2"
 
 [dev-dependencies]
 # The vendored libxfuse sources carry their upstream rstest test suite.
-rstest = "0.26"
+rstest = "0.27"
