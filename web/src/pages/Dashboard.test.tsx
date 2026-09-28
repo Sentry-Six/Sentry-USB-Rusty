@@ -41,6 +41,21 @@ test('dashboard keeps its last data on failure, reads server ETA, and never load
     assert.match(container.textContent, /985/)
     assert.ok(container.querySelector('[role="progressbar"]'))
     assert.equal(requested.includes('/api/drives'), false)
+    fixtures['/api/drives/status'] = { running: false, phase: 'archiving', current: 99, total: 174 }
+    await act(async () => win.document.dispatchEvent(new win.Event('visibilitychange')))
+    assert.match(container.textContent, /99 \/ 174/)
+    assert.match(container.textContent, /Estimate unavailable/)
+    assert.doesNotMatch(container.textContent, /Estimating…/)
+    let cancel = [...container.querySelectorAll('button')].find(button => button.textContent === 'Cancel Archive')!
+    assert.ok(cancel)
+    assert.equal(cancel.disabled, true)
+    assert.ok(container.querySelector('[aria-label="About archive controls unavailable"]'))
+    fixtures['/api/drives/status'] = { running: false, phase: 'archiving', current: 1, total: 174, eta_state: 'estimating', eta_seconds: null, sampled_at: Date.now() / 1000, archive_cycle: { id: 'next-cycle', cancelling: false } }
+    await act(async () => win.document.dispatchEvent(new win.Event('visibilitychange')))
+    assert.match(container.textContent, /Estimating…/)
+    cancel = [...container.querySelectorAll('button')].find(button => button.textContent === 'Cancel Archive')!
+    assert.equal(cancel.disabled, false)
+    assert.equal(container.querySelector('[aria-label="About archive controls unavailable"]'), null)
     rejectStatus = true
     await act(async () => win.document.dispatchEvent(new win.Event('visibilitychange')))
     assert.match(container.textContent, /Reconnecting · showing the last update/)

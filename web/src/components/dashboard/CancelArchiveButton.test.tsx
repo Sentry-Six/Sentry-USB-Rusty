@@ -38,6 +38,15 @@ test('cancel targets the displayed cycle, shows failures, and never offers resum
     assert.doesNotMatch(container.textContent, /resume/i)
     await act(async () => root.render(createElement(CancelArchiveButton, { cycle: null })))
     assert.equal(container.querySelector('button'), null)
+    await act(async () => root.render(createElement(CancelArchiveButton, { cycle: null, unavailable: true })))
+    const unavailable = container.querySelector('button')!
+    assert.equal(unavailable.textContent, 'Cancel Archive')
+    assert.equal(unavailable.disabled, true)
+    const before = requests.length
+    await act(async () => unavailable.click())
+    assert.equal(requests.length, before, 'missing cycle IDs must never trigger a cancellation request')
+    await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="About archive controls unavailable"]')!.click())
+    assert.match(win.document.querySelector('[role="dialog"]')!.textContent, /isn’t reporting cancellation support/)
   } finally {
     await act(async () => root.unmount())
     globalThis.fetch = oldFetch

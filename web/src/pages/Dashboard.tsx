@@ -111,7 +111,7 @@ function progressEstimate(progress: ProcessProgress): string {
   if (progress.etaState === "stalled") return "Waiting for progress"
   if (progress.etaState === "finalizing" || progress.etaState === "complete") return "Finishing this phase…"
   const seconds = progress.etaSeconds
-  if (seconds == null || !Number.isFinite(seconds)) return "Estimating…"
+  if (seconds == null || !Number.isFinite(seconds)) return progress.etaState === "estimating" ? "Estimating…" : "Estimate unavailable"
   if (seconds < 60) return "Less than a minute remaining"
   if (seconds < 3600) return `About ${Math.round(seconds / 60)} min remaining`
   return `About ${(seconds / 3600).toFixed(1)} h remaining`
@@ -820,7 +820,7 @@ function ActivityTile({ driveStats, archiveCycle, archiveProgress, processProgre
           {progress && progress.total > 0 ? <ProgressBlock current={progress.current} total={progress.total} eta={progressEstimate(progress)} color={archiveProgress ? "emerald" : "blue"} /> : <p className="text-sm text-slate-400">Preparing the next phase…</p>}
           <div className="flex flex-wrap items-center justify-between gap-3">
             <span className="text-xs text-slate-400">{archiveProgress ? `Upload ${upload} · estimate for transfer` : "Estimates apply to the current phase"}</span>
-            <div className="min-w-40"><CancelArchiveButton key={archiveCycle?.id ?? "idle"} cycle={archiveCycle} /></div>
+            <div className="min-w-40"><CancelArchiveButton key={archiveCycle?.id ?? "idle"} cycle={archiveCycle} unavailable={Boolean(archiveProgress)} /></div>
           </div>
         </div>
       )}
