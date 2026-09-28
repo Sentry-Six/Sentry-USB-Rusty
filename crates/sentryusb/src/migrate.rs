@@ -227,8 +227,10 @@ if [ -d "$TMPDIR/run" ]; then
   for f in "$TMPDIR"/run/*; do
     [ -f "$f" ] || continue
     name=$(basename "$f")
-    cp "$f" "/root/bin/$name"
-    chmod +x "/root/bin/$name"
+    staged=$(mktemp "/root/bin/.$name.XXXXXX")
+    cp "$f" "$staged"
+    chmod +x "$staged"
+    mv -f "$staged" "/root/bin/$name"
   done
 fi
 
@@ -246,8 +248,10 @@ if [ -n "$ARCHIVE_SYSTEM" ]; then
     for f in "$TMPDIR/run/$subdir"/*; do
       [ -f "$f" ] || continue
       name=$(basename "$f")
-      cp "$f" "/root/bin/$name"
-      chmod +x "/root/bin/$name"
+      staged=$(mktemp "/root/bin/.$name.XXXXXX")
+      cp "$f" "$staged"
+      chmod +x "$staged"
+      mv -f "$staged" "/root/bin/$name"
     done
   fi
 fi

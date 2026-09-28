@@ -8,6 +8,17 @@ pub(super) struct Staged {
     binary: PathBuf,
 }
 
+impl Drop for Staged {
+    fn drop(&mut self) {
+        // These files were staged beside their destinations, outside stage-ID.
+        for (source, destination) in &self.files {
+            if source.parent() == destination.parent() {
+                let _ = std::fs::remove_file(source);
+            }
+        }
+    }
+}
+
 pub(super) async fn arm_shutdown_receipt(a: &Attempt) -> Result<()> {
     let dir = PathBuf::from("/opt/sentryusb").join(format!("stage-{}", a.id));
     let script = dir.join("confirm-shutdown.py");
@@ -143,12 +154,54 @@ pub(super) async fn stage(hub: &sentryusb_ws::Hub, a: &Attempt) -> Result<Staged
 
     sentryusb_shell::run_with_timeout(Duration::from_secs(60), "python3", &["-c", EXTRACT_RELEASE,
         source.to_str().context("Invalid staging path")?, dir.to_str().context("Invalid staging path")?]).await?;
+    let (config, _) = sentryusb_config::parse_file(sentryusb_config::find_config_path())?;
+    let system = sentryusb_setup::archive::ArchiveSystem::from_config(
+        config.get("ARCHIVE_SYSTEM").map(String::as_str).unwrap_or("none"))?;
     files.push((source, PathBuf::from("/opt/sentryusb/auto-update-source.tar.gz")));
     let version = dir.join("version");
     std::fs::write(&version, &a.target)?;
     std::fs::File::open(&version)?.sync_all()?;
     files.push((version, PathBuf::from("/opt/sentryusb/version")));
+    stage_archive_runtime(&dir, Path::new("/root/bin"), &a.id, system, &mut files)?;
     Ok(Staged { files, binary })
+}
+
+fn stage_archive_runtime(
+    source: &Path,
+    destination: &Path,
+    id: &str,
+    system: sentryusb_setup::archive::ArchiveSystem,
+    files: &mut Vec<(PathBuf, PathBuf)>,
+) -> Result<()> {
+    use sentryusb_setup::archive::ArchiveSystem;
+    let backend = match system {
+        ArchiveSystem::Cifs => "cifs", ArchiveSystem::Nfs => "nfs",
+        ArchiveSystem::Rsync => "rsync", ArchiveSystem::Rclone => "rclone", ArchiveSystem::None => "none",
+    };
+    let mut staged_paths = Vec::new();
+    let result = (|| -> Result<()> {
+        for name in sentryusb_setup::archive_runtime::script_names(system) {
+            let backend_path = source.join(format!("run/{backend}_archive/{name}"));
+            let path = if backend_path.is_file() { backend_path } else { source.join("run").join(name) };
+            ensure!(path.is_file(), "Release is missing archive runtime script {name}");
+            let staged = destination.join(format!(".{name}-{id}"));
+            let mut output = std::fs::OpenOptions::new().write(true).create_new(true).open(&staged)?;
+            staged_paths.push((staged.clone(), destination.join(name)));
+            std::io::copy(&mut std::fs::File::open(path)?, &mut output)?;
+            #[cfg(unix)] {
+                use std::os::unix::fs::PermissionsExt;
+                output.set_permissions(std::fs::Permissions::from_mode(0o755))?;
+            }
+            output.sync_all()?;
+        }
+        Ok(())
+    })();
+    if result.is_err() {
+        for (path, _) in staged_paths { let _ = std::fs::remove_file(path); }
+        return result;
+    }
+    files.extend(staged_paths);
+    Ok(())
 }
 
 pub(super) async fn commit(staged: &Staged, a: &mut Attempt) -> Result<()> {
@@ -304,6 +357,50 @@ mod tests {
             assert!(elsewhere.path().exists());
         }
     }
+    #[test]
+    fn archive_scripts_join_replacement_transaction_and_roll_back_with_it() {
+        use sentryusb_setup::archive::ArchiveSystem;
+        let directory = tempfile::tempdir().unwrap();
+        let payload = directory.path().join("payload");
+        let live = directory.path().join("bin");
+        std::fs::create_dir_all(payload.join("run/rsync_archive")).unwrap();
+        std::fs::create_dir(&live).unwrap();
+        for name in sentryusb_setup::archive_runtime::script_names(ArchiveSystem::Rsync) {
+            std::fs::write(payload.join("run").join(name), "new common script").unwrap();
+            std::fs::write(live.join(name), "old script").unwrap();
+        }
+        std::fs::write(payload.join("run/rsync_archive/archive-clips.sh"), "new rsync backend").unwrap();
+        let mut files = Vec::new();
+        stage_archive_runtime(&payload, &live, "auto-update-test", ArchiveSystem::Rsync, &mut files).unwrap();
+        assert!(files.iter().all(|(staged, dest)| staged.parent() == dest.parent()));
+        assert_eq!(files.last().unwrap().1.file_name().unwrap(), "archiveloop");
+        assert_eq!(std::fs::read_to_string(live.join("archive-clips.sh")).unwrap(), "old script");
+        files.push((directory.path().join("missing"), directory.path().join("other")));
+        assert!(replace_files(&files).is_err());
+        for name in sentryusb_setup::archive_runtime::script_names(ArchiveSystem::Rsync) {
+            assert_eq!(std::fs::read_to_string(live.join(name)).unwrap(), "old script");
+        }
+        files.clear();
+        stage_archive_runtime(&payload, &live, "auto-update-retry", ArchiveSystem::Rsync, &mut files).unwrap();
+        replace_files(&files).unwrap();
+        assert_eq!(std::fs::read_to_string(live.join("archive-clips.sh")).unwrap(), "new rsync backend");
+        assert_eq!(std::fs::read_to_string(live.join("archiveloop")).unwrap(), "new common script");
+    }
+
+    #[test]
+    fn incomplete_archive_payload_does_not_leave_partial_staging() {
+        let directory = tempfile::tempdir().unwrap();
+        let payload = directory.path().join("payload");
+        let live = directory.path().join("bin");
+        std::fs::create_dir_all(payload.join("run")).unwrap();
+        std::fs::create_dir(&live).unwrap();
+        std::fs::write(payload.join("run/archive-control.sh"), "new script").unwrap();
+        let mut files = Vec::new();
+        assert!(stage_archive_runtime(&payload, &live, "auto-update-test", sentryusb_setup::archive::ArchiveSystem::Rsync, &mut files).is_err());
+        assert!(files.is_empty());
+        assert_eq!(std::fs::read_dir(live).unwrap().count(), 0);
+    }
+
     #[test]
     fn github_shaped_source_tarball_with_root_directory_is_accepted() {
         let d = tempfile::tempdir().unwrap(); let tar = d.path().join("source.tar.gz");

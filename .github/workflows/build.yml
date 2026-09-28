@@ -341,6 +341,14 @@ jobs:
           echo '<!DOCTYPE html><html><body>test</body></html>' > crates/sentryusb/static/index.html
       - name: Test release artifact extraction
         run: python3 -m unittest discover -s .github/scripts -p test_extract_release_artifacts.py
+      - name: Test archive runtime and notifications
+        run: |
+          bash -n run/archiveloop setup/pi/apply-runtime-patches.sh
+          bash test/archive-runtime-update.test.sh
+          bash test/archive-eta.test.sh
+          bash test/notification-messages.test.sh
+          bash test/notification-dispatch.test.sh
+          bash test/archive-cancel.test.sh
       - name: Run tests
         run: cargo test --workspace
 

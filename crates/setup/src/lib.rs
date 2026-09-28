@@ -16,6 +16,7 @@ pub mod archive;
 pub mod network;
 pub mod readonly;
 pub mod scripts;
+pub mod archive_runtime;
 pub mod automount;
 pub mod teslacam_mount;
 pub mod verify;

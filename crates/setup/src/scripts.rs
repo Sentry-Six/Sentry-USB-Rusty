@@ -176,6 +176,20 @@ const SEND_PUSH_MESSAGE: &str = include_str!("../../../run/send-push-message");
 const TEMPERATURE_MONITOR: &str = include_str!("../../../run/temperature_monitor");
 const WAITFORIDLE: &str = include_str!("../../../run/waitforidle");
 
+pub(crate) fn archive_runtime_scripts() -> &'static [(&'static str, &'static str)] {
+    &[
+        ("archive-control.sh", ARCHIVE_CONTROL),
+        ("post-archive-process.sh", POST_ARCHIVE_PROCESS),
+        ("awake_start", AWAKE_START),
+        ("awake_stop", AWAKE_STOP),
+        ("send-live-activity", SEND_LIVE_ACTIVITY),
+        ("send-push-message", SEND_PUSH_MESSAGE),
+        ("temperature_monitor", TEMPERATURE_MONITOR),
+        ("waitforidle", WAITFORIDLE),
+        ("archiveloop", ARCHIVELOOP),
+    ]
+}
+
 /// Install all runtime helper scripts to /root/bin/.
 ///
 /// Only announces a phase if at least one script is missing or has changed —

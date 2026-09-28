@@ -492,11 +492,8 @@ const NONE_CONNECT_ARCHIVE: &str = include_str!("../../../run/none_archive/conne
 const NONE_DISCONNECT_ARCHIVE: &str = include_str!("../../../run/none_archive/disconnect-archive.sh");
 const NONE_VERIFY_CONFIGURE: &str = include_str!("../../../run/none_archive/verify-and-configure-archive.sh");
 
-/// Installs the selected backend's helpers with mode 0755.
-fn install_archive_scripts(system: ArchiveSystem, emitter: &SetupEmitter) -> Result<()> {
-    let _ = std::fs::create_dir_all("/root/bin");
-
-    let scripts: &[(&str, &str)] = match system {
+pub(crate) fn archive_scripts(system: ArchiveSystem) -> &'static [(&'static str, &'static str)] {
+    match system {
         ArchiveSystem::Cifs => &[
             ("archive-clips.sh", CIFS_ARCHIVE_CLIPS),
             ("mounted-archive-monitor.sh", MOUNTED_ARCHIVE_MONITOR),
@@ -537,7 +534,14 @@ fn install_archive_scripts(system: ArchiveSystem, emitter: &SetupEmitter) -> Res
             ("disconnect-archive.sh", NONE_DISCONNECT_ARCHIVE),
             ("verify-and-configure-archive.sh", NONE_VERIFY_CONFIGURE),
         ],
-    };
+    }
+}
+
+/// Installs the selected backend's helpers with mode 0755.
+fn install_archive_scripts(system: ArchiveSystem, emitter: &SetupEmitter) -> Result<()> {
+    let _ = std::fs::create_dir_all("/root/bin");
+
+    let scripts = archive_scripts(system);
 
     for (name, content) in scripts {
         let path = format!("/root/bin/{}", name);

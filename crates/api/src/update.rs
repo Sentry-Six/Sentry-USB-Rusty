@@ -379,6 +379,10 @@ async fn self_update(
         &serde_json::json!({"status": "installing", "message": "Installing update…"}),
     );
     sentryusb_shell::run("chmod", &["+x", tmp]).await?;
+    // Check the staged executable before replacing the working binary.
+    let target_help = sentryusb_shell::run_with_timeout(
+        std::time::Duration::from_secs(15), tmp, &["--help"],
+    ).await?;
 
     // Preserve the picker's multi-binary layout:
     //   /opt/sentryusb/sentryusb-{suffix}            ← we write here
@@ -393,6 +397,22 @@ async fn self_update(
     };
     sentryusb_shell::run("mv", &[tmp, &dest]).await?;
 
+    // Activate the target's bundled archive scripts for the next boot without
+    // depending on GitHub again or restarting the currently running archive.
+    let mut install_warnings: Vec<String> = Vec::new();
+    if target_help.contains("refresh-archive-scripts") {
+        hub.broadcast("update_status", &serde_json::json!({
+            "status": "updating_scripts", "message": "Updating archive scripts…"
+        }));
+        if let Err(error) = sentryusb_shell::run_with_timeout(
+            std::time::Duration::from_secs(30), &dest, &["refresh-archive-scripts"],
+        ).await {
+            // Finish recording the installed release so startup migration can
+            // retry its scripts; do not leave a new binary with the old tag.
+            install_warnings.push(format!("Bundled archive-script refresh failed: {error}; runtime patches and startup migration will retry."));
+        }
+    }
+
     // Keep the optional telemetry sampler on the main binary's release and ABI.
     let telemetry_url = if let Some(v) = &target_version {
         format!(
@@ -405,8 +425,6 @@ async fn self_update(
             repo, suffix
         )
     };
-    // Auxiliary failures must remain visible even when the core update succeeds.
-    let mut install_warnings: Vec<String> = Vec::new();
     hub.broadcast(
         "update_status",
         &serde_json::json!({"status": "installing", "message": "Installing components…"}),

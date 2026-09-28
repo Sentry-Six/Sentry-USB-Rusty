@@ -42,6 +42,11 @@ struct Args {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Refresh only bundled archive scripts; does not restart services or run setup.
+    RefreshArchiveScripts {
+        #[arg(long, default_value = "/root/bin")]
+        directory: std::path::PathBuf,
+    },
     /// USB gadget control (configfs + UDC bind/unbind).
     Gadget {
         #[command(subcommand)]
@@ -524,6 +529,13 @@ async fn shutdown_signal() {
 /// existing `ERROR: make_snapshot.sh failed (exit $?)` log lines stay useful.
 async fn run_subcommand(cmd: Command) -> i32 {
     match cmd {
+        Command::RefreshArchiveScripts { directory } => {
+            let result = sentryusb_setup::archive_runtime::refresh_configured(&directory);
+            match result {
+                Ok(()) => 0,
+                Err(error) => { eprintln!("archive runtime refresh: {error:#}"); 1 },
+            }
+        }
         Command::Gadget { action } => run_gadget(action).await,
         Command::Snapshot { action } => run_snapshot(action).await,
         Command::Space { action } => run_space(action).await,

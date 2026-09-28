@@ -1609,13 +1609,33 @@ apply_malloc_arena_cap() {
     fi
 }
 
+# The updater has already swapped the binary. Refresh its bundled scripts
+# before reboot so the early-starting archive service cannot load the old loop.
+apply_archive_runtime() {
+    local binary=/opt/sentryusb/sentryusb
+    [ -f /root/bin/archiveloop ] || { log "archive-runtime: new install — setup will install its scripts"; return 0; }
+    [ -x "$binary" ] || { log "archive-runtime: no installed binary — skipping"; return 0; }
+    # Older release binaries do not provide the offline refresh command.
+    if ! "$binary" --help 2>/dev/null | grep -q 'refresh-archive-scripts'; then
+        log "archive-runtime: older binary — using startup migration"
+        return 0
+    fi
+    "$binary" refresh-archive-scripts || {
+        err "archive-runtime: bundled scripts could not be refreshed"
+        return 1
+    }
+    log "archive-runtime: installed matching archive scripts for the next boot"
+}
+
 # ── Run all patches ─────────────────────────────────────────────────────
 
-# FIRST: this one prevents active data loss on single-disk installs
+# The offline refresh comes first; then cap inode reserves to prevent data loss
+# on single-disk installs
 # running v3.20.0-v3.20.8, and the updater bounds this whole script
 # with a 30s timeout. A patch that starves behind slower ones would
 # let the device reboot onto the uncapped scripts and keep deleting
 # snapshots. It is two small awk passes, so it costs nothing here.
+run_patch apply_archive_runtime
 run_patch apply_inode_reserve_cap
 run_patch apply_ble_nonfatal_adv
 run_patch apply_ble_adv_helper
