@@ -44,6 +44,15 @@ pub(crate) fn load_prefs() -> serde_json::Map<String, serde_json::Value> {
         .unwrap_or_default()
 }
 
+pub(crate) fn analytics_opted_in() -> bool {
+    let _guard = PREFS_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    analytics_opted_in_at(std::path::Path::new(&prefs_file()), std::path::Path::new(&legacy_prefs_file()))
+}
+
+fn analytics_opted_in_at(primary: &std::path::Path, legacy: &std::path::Path) -> bool {
+    file_store::load(primary, legacy).ok().and_then(|prefs| prefs.get("analytics_opt_in").and_then(|v| v.as_bool())) == Some(true)
+}
+
 pub(crate) fn load_prefs_checked(store:&sentryusb_drives::DriveStore) -> anyhow::Result<serde_json::Map<String, serde_json::Value>> {
     let _guard=PREFS_LOCK.lock().unwrap_or_else(|poisoned|poisoned.into_inner());
     journal::recover(std::path::Path::new(&prefs_file()),std::path::Path::new(&legacy_prefs_file()),store)
@@ -102,7 +111,7 @@ pub async fn get_preference(
     };
     if let Some(key) = &params.key {
         let val = prefs.get(key).cloned().unwrap_or(serde_json::Value::Null);
-        (StatusCode::OK, Json(serde_json::json!({"key": key, "value": val})))
+        (StatusCode::OK, Json(serde_json::json!({"key": key, "value": val, "is_set": prefs.contains_key(key)})))
     } else {
         (StatusCode::OK, Json(serde_json::Value::Object(prefs)))
     }
@@ -117,6 +126,8 @@ pub async fn set_preference(
     struct SetReq {
         key: String,
         value: serde_json::Value,
+        #[serde(default)]
+        only_if_unset: bool,
     }
 
     let req: SetReq = match serde_json::from_str(&body) {
@@ -124,6 +135,33 @@ pub async fn set_preference(
         Err(_) => return crate::json_error(StatusCode::BAD_REQUEST, "invalid request body"),
     };
     let key = req.key.clone();
+
+    if req.only_if_unset {
+        if key != "analytics_opt_in" || req.value != serde_json::Value::Bool(true) {
+            return crate::json_error(StatusCode::BAD_REQUEST,
+                "The new-install default applies only to analytics reporting.");
+        }
+        let store = s.drives.store.clone();
+        let saved = tokio::task::spawn_blocking(move || save_analytics_default_at(
+            std::path::Path::new(&prefs_file()), std::path::Path::new(&legacy_prefs_file()),
+            &store, crate::setup::setup_finished_checked,
+        )).await.map_err(anyhow::Error::from).and_then(|result| result);
+        return match saved {
+            Ok(AnalyticsDefault::Applied) => {
+                crate::device_reporting::nudge();
+                (StatusCode::OK, Json(serde_json::json!({"success": true, "applied": true, "value": true, "is_set": true})))
+            }
+            Ok(AnalyticsDefault::Existing(value)) =>
+                (StatusCode::OK, Json(serde_json::json!({"success": true, "applied": false, "value": value, "is_set": true}))),
+            Ok(AnalyticsDefault::SetupFinished) => crate::json_error(StatusCode::CONFLICT,
+                "Setup is already complete. Reload your privacy choice."),
+            Err(error) => {
+                tracing::warn!("[preferences] new-install reporting default not saved: {error}");
+                crate::json_error(StatusCode::INTERNAL_SERVER_ERROR,
+                    "Unable to confirm your privacy choice. Reload and try again.")
+            }
+        };
+    }
 
     let store=s.drives.store.clone();
     let saved=tokio::task::spawn_blocking(move||edit_prefs_at(std::path::Path::new(&prefs_file()),std::path::Path::new(&legacy_prefs_file()),
@@ -137,7 +175,34 @@ pub async fn set_preference(
         return crate::json_error(StatusCode::INTERNAL_SERVER_ERROR,
             "Unable to confirm preference save. Reload and try again.");
     }
+    if key == "analytics_opt_in" { crate::device_reporting::nudge(); }
     crate::json_ok()
+}
+
+#[derive(Debug, PartialEq)]
+enum AnalyticsDefault {
+    Applied,
+    Existing(serde_json::Value),
+    SetupFinished,
+}
+
+fn save_analytics_default_at<F>(primary: &std::path::Path, legacy: &std::path::Path,
+    store: &sentryusb_drives::DriveStore, setup_finished: F) -> anyhow::Result<AnalyticsDefault>
+where F: FnOnce() -> std::io::Result<bool> {
+    let mut outcome = AnalyticsDefault::SetupFinished;
+    edit_prefs_at(primary, legacy, store, false, |prefs| {
+        // Preserve any existing entry, including old backup strings or invalid
+        // values. A delayed wizard must never replace another tab's opt-out.
+        if let Some(value) = prefs.get("analytics_opt_in") {
+            outcome = AnalyticsDefault::Existing(value.clone());
+            return Ok(false);
+        }
+        if setup_finished()? { return Ok(false); }
+        prefs.insert("analytics_opt_in".into(), serde_json::Value::Bool(true));
+        outcome = AnalyticsDefault::Applied;
+        Ok(true)
+    })?;
+    Ok(outcome)
 }
 
 /// The preference keys that make up the per-Pi charging rate-config
@@ -429,5 +494,110 @@ mod required_plan_tests {
         file_store::save(&file,json!({"charging_currency":"CAD"}).as_object().unwrap()).unwrap();
         edit_prefs_at(&file,&legacy,&store,false,|prefs| {prefs.insert("charging_currency".into(),json!("CAD"));Ok(true)}).unwrap();
         assert!(store.dirty_mutables().unwrap().is_empty());
+    }
+}
+
+#[cfg(test)]
+mod analytics_consent_tests {
+    use super::*;
+
+    #[test]
+    fn missing_invalid_or_declined_consent_never_falls_back_to_a_legacy_opt_in() {
+        let dir = tempfile::tempdir().unwrap();
+        let primary = dir.path().join("current.json");
+        let legacy = dir.path().join("legacy.json");
+        assert!(!analytics_opted_in_at(&primary, &legacy));
+        std::fs::write(&legacy, br#"{"analytics_opt_in":true}"#).unwrap();
+        assert!(analytics_opted_in_at(&primary, &legacy));
+        for value in [r#"{"analytics_opt_in":false}"#, r#"{"analytics_opt_in":null}"#,
+            r#"{"analytics_opt_in":"true"}"#, "{}", "broken"] {
+            std::fs::write(&primary, value).unwrap();
+            assert!(!analytics_opted_in_at(&primary, &legacy), "{value}");
+        }
+        std::fs::write(&primary, br#"{"analytics_opt_in":true}"#).unwrap();
+        assert!(analytics_opted_in_at(&primary, &legacy));
+    }
+
+    #[test]
+    fn new_install_default_is_saved_once_and_preserves_every_existing_value() {
+        let dir = tempfile::tempdir().unwrap();
+        let primary = dir.path().join("current.json");
+        let legacy = dir.path().join("legacy.json");
+        let store = sentryusb_drives::DriveStore::open_memory().unwrap();
+        assert_eq!(save_analytics_default_at(&primary, &legacy, &store, || Ok(false)).unwrap(), AnalyticsDefault::Applied);
+        assert!(analytics_opted_in_at(&primary, &legacy));
+        for value in [serde_json::json!(false), serde_json::json!(true), serde_json::Value::Null,
+            serde_json::json!("false"), serde_json::json!("true")] {
+            let prefs = serde_json::json!({"analytics_opt_in": value, "unrelated": "keep"});
+            std::fs::write(&primary, serde_json::to_vec(&prefs).unwrap()).unwrap();
+            let before = std::fs::read(&primary).unwrap();
+            assert_eq!(save_analytics_default_at(&primary, &legacy, &store,
+                || panic!("an existing preference must not be treated as a default")).unwrap(),
+                AnalyticsDefault::Existing(value.clone()));
+            assert_eq!(std::fs::read(&primary).unwrap(), before);
+            assert_eq!(analytics_opted_in_at(&primary, &legacy), value == serde_json::json!(true));
+        }
+    }
+
+    #[test]
+    fn completed_or_unreadable_setup_state_cannot_enable_a_missing_choice() {
+        let dir = tempfile::tempdir().unwrap();
+        let primary = dir.path().join("current.json");
+        let legacy = dir.path().join("legacy.json");
+        let store = sentryusb_drives::DriveStore::open_memory().unwrap();
+        assert_eq!(save_analytics_default_at(&primary, &legacy, &store, || Ok(true)).unwrap(), AnalyticsDefault::SetupFinished);
+        assert!(!primary.exists());
+        let parent_file = dir.path().join("not-a-directory");
+        std::fs::write(&parent_file, "keep").unwrap();
+        assert!(save_analytics_default_at(&primary, &legacy, &store,
+            || parent_file.join("setup-finished").try_exists()).is_err());
+        assert!(!primary.exists());
+        assert!(!analytics_opted_in_at(&primary, &legacy));
+    }
+
+    #[test]
+    fn default_save_preserves_legacy_opt_out_and_fails_on_invalid_primary_preferences() {
+        let dir = tempfile::tempdir().unwrap();
+        let primary = dir.path().join("current.json");
+        let legacy = dir.path().join("legacy.json");
+        let store = sentryusb_drives::DriveStore::open_memory().unwrap();
+        std::fs::write(&legacy, br#"{"analytics_opt_in":false}"#).unwrap();
+        assert_eq!(save_analytics_default_at(&primary, &legacy, &store, || Ok(false)).unwrap(),
+            AnalyticsDefault::Existing(serde_json::json!(false)));
+        assert!(!primary.exists());
+        std::fs::write(&primary, "broken").unwrap();
+        std::fs::write(&legacy, br#"{"analytics_opt_in":true}"#).unwrap();
+        assert!(save_analytics_default_at(&primary, &legacy, &store, || Ok(false)).is_err());
+        assert_eq!(std::fs::read_to_string(&primary).unwrap(), "broken");
+        assert!(!analytics_opted_in_at(&primary, &legacy));
+    }
+
+    #[test]
+    fn explicit_opt_out_wins_a_race_with_the_preselected_default() {
+        use std::sync::{Arc, Barrier};
+        for _ in 0..8 {
+            let dir = tempfile::tempdir().unwrap();
+            let primary = dir.path().join("current.json");
+            let legacy = dir.path().join("legacy.json");
+            let store = Arc::new(sentryusb_drives::DriveStore::open_memory().unwrap());
+            let start = Arc::new(Barrier::new(2));
+            let default_file = primary.clone();
+            let default_legacy = legacy.clone();
+            let default_store = store.clone();
+            let default_start = start.clone();
+            let default = std::thread::spawn(move || {
+                default_start.wait();
+                save_analytics_default_at(&default_file, &default_legacy, &default_store, || Ok(false)).unwrap()
+            });
+            start.wait();
+            edit_prefs_at(&primary, &legacy, &store, false, |prefs| {
+                prefs.insert("analytics_opt_in".into(), serde_json::json!(false));
+                Ok(true)
+            }).unwrap();
+            let result = default.join().unwrap();
+            assert!(matches!(result, AnalyticsDefault::Applied | AnalyticsDefault::Existing(_)));
+            assert_eq!(file_store::load(&primary, &legacy).unwrap()["analytics_opt_in"], false);
+            assert!(!analytics_opted_in_at(&primary, &legacy));
+        }
     }
 }

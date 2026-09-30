@@ -30,6 +30,14 @@ fn is_setup_finished() -> bool {
     SETUP_FINISHED_PATHS.iter().any(|p| std::path::Path::new(p).exists())
 }
 
+/// An unreadable completion marker must not enable a new-install privacy default.
+pub(crate) fn setup_finished_checked() -> std::io::Result<bool> {
+    for path in SETUP_FINISHED_PATHS {
+        if std::path::Path::new(path).try_exists()? { return Ok(true); }
+    }
+    Ok(false)
+}
+
 fn is_setup_started() -> bool {
     SETUP_STARTED_PATHS.iter().any(|p| std::path::Path::new(p).exists())
 }
@@ -117,7 +125,14 @@ pub fn auto_resume_setup(hub: sentryusb_ws::Hub) {
 /// GET /api/setup/status
 pub async fn get_setup_status() -> (StatusCode, Json<serde_json::Value>) {
     let running = SETUP_RUNNING.load(Ordering::Relaxed);
-    let finished = is_setup_finished();
+    let finished = match setup_finished_checked() {
+        Ok(finished) => finished,
+        Err(error) => {
+            tracing::warn!("[setup] completion status could not be read: {error}");
+            return crate::json_error(StatusCode::INTERNAL_SERVER_ERROR,
+                "Setup status could not be read. Try again.");
+        }
+    };
 
     // An active retry supersedes the prior failure marker.
     let failure = if running { None } else { read_setup_failure() };

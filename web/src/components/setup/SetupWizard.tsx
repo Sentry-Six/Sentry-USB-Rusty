@@ -39,6 +39,8 @@ export interface StepProps {
   onChange: (key: string, value: string) => void
   onBatchChange: (updates: Record<string, string>) => void
   setupAlreadyFinished: boolean
+  setupStatusKnown?: boolean
+  registerBeforeContinue?: (callback: (() => Promise<boolean>) | null) => void
 }
 
 function networkError(data: SetupFormData): string | null {
@@ -158,14 +160,15 @@ function securityError(data: SetupFormData): string | null {
   return null
 }
 
-function getStepError(stepIdx: number, data: SetupFormData, setupAlreadyFinished: boolean): string | null {
+function getStepError(stepIdx: number, data: SetupFormData, setupAlreadyFinished: boolean, setupStatusKnown: boolean): string | null {
   // Indices shifted by +1 from the original because the Privacy step was
   // inserted at index 1 (between Welcome and Network).
   switch (stepIdx) {
     case 1:
-      if (!setupAlreadyFinished && data._analytics_saving === "true") return "Saving your privacy choice…"
-      return !setupAlreadyFinished && data._analytics_choice !== "true" && data._analytics_choice !== "false"
-        ? "Choose Yes, count me or No thanks to continue."
+      if (!setupStatusKnown) return "Confirming this device's setup status…"
+      if (data._analytics_saving === "true") return "Saving your privacy choice…"
+      return !setupAlreadyFinished && data._analytics_ready !== "true"
+        ? "Load your privacy settings to continue."
         : null
     case 2: return networkError(data)
     case 3: return storageError(data)
@@ -344,6 +347,16 @@ export function SetupWizard({ initialData, initialStepId, onClose }: SetupWizard
   // is staged, and (b) phrase apply-time copy as a re-configuration
   // rather than a fresh install.
   const [setupAlreadyFinished, setSetupAlreadyFinished] = useState(false)
+  const [setupStatusKnown, setSetupStatusKnown] = useState(false)
+  const [setupStatusError, setSetupStatusError] = useState<string | null>(null)
+  const [setupStatusReload, setSetupStatusReload] = useState(0)
+  const [privacyReviewed, setPrivacyReviewed] = useState(false)
+  const [navigating, setNavigating] = useState(false)
+  const navigationPending = useRef(false)
+  const beforeContinue = useRef<(() => Promise<boolean>) | null>(null)
+  const registerBeforeContinue = useCallback((callback: (() => Promise<boolean>) | null) => {
+    beforeContinue.current = callback
+  }, [])
   // Pre-flight space check: when the user proposes drive sizes that
   // exceed available backingfiles space, the server returns the gap
   // and we surface it inline (with a deep-link to the snapshot UI)
@@ -362,6 +375,7 @@ export function SetupWizard({ initialData, initialStepId, onClose }: SetupWizard
   const handleChange = useCallback((key: string, value: string) => {
     setFormData((prev) => ({ ...prev, [key]: value }))
     if (key === "_analytics_choice" && (value === "true" || value === "false")) setSaveError(null)
+    if (key === "_analytics_draft" && value !== "") setPrivacyReviewed(false)
   }, [])
 
   const handleBatchChange = useCallback((updates: Record<string, string>) => {
@@ -385,16 +399,23 @@ export function SetupWizard({ initialData, initialStepId, onClose }: SetupWizard
   // will format anything (it won't, after the partition.rs idempotency
   // fix and the runner's already_finished guard).
   useEffect(() => {
+    const controller = new AbortController()
     let cancelled = false
-    fetch("/api/setup/status")
-      .then((r) => r.json())
-      .then((data) => {
-        if (cancelled) return
-        setSetupAlreadyFinished(Boolean(data?.setup_finished))
+    const timeout = setTimeout(() => controller.abort(), 10_000)
+    fetch("/api/setup/status", { signal: controller.signal })
+      .then(async response => {
+        if (!response.ok) throw new Error("Setup status unavailable")
+        const data = await response.json()
+        if (typeof data?.setup_finished !== "boolean") throw new Error("Invalid setup status")
+        if (controller.signal.aborted) return
+        setSetupAlreadyFinished(data.setup_finished)
+        setSetupStatusKnown(true)
+        setSetupStatusError(null)
       })
-      .catch(() => { /* status endpoint flake → assume fresh install */ })
-    return () => { cancelled = true }
-  }, [])
+      .catch(() => { if (!cancelled) setSetupStatusError("Couldn't confirm this device's setup status.") })
+      .finally(() => clearTimeout(timeout))
+    return () => { cancelled = true; clearTimeout(timeout); controller.abort() }
+  }, [setupStatusReload])
 
   // Hydrate Community Features prefs from the preference store on mount.
   // initialData (passed by callers) only carries sentryusb.conf keys, so the
@@ -568,7 +589,7 @@ export function SetupWizard({ initialData, initialStepId, onClose }: SetupWizard
   }, [phase])
 
   const StepComponent = steps[currentStep].component
-  const currentStepError = getStepError(currentStep, formData, setupAlreadyFinished)
+  const currentStepError = getStepError(currentStep, formData, setupAlreadyFinished, setupStatusKnown)
 
   // Core apply logic — sends the given data to the server and triggers setup.
   async function doApply(dataToSave: SetupFormData) {
@@ -713,11 +734,15 @@ export function SetupWizard({ initialData, initialStepId, onClose }: SetupWizard
     }
     await new Promise<void>((r) => requestAnimationFrame(() => r()))
     const data = formDataRef.current
+    if (!setupStatusKnown || (!setupAlreadyFinished && !privacyReviewed)) {
+      setCurrentStep(1)
+      return
+    }
 
-    const firstInvalidIdx = steps.findIndex((_, i) => getStepError(i, data, setupAlreadyFinished) !== null)
+    const firstInvalidIdx = steps.findIndex((_, i) => getStepError(i, data, setupAlreadyFinished, setupStatusKnown) !== null)
     if (firstInvalidIdx !== -1) {
       setCurrentStep(firstInvalidIdx)
-      setSaveError(getStepError(firstInvalidIdx, data, setupAlreadyFinished))
+      setSaveError(getStepError(firstInvalidIdx, data, setupAlreadyFinished, setupStatusKnown))
       return
     }
 
@@ -754,13 +779,31 @@ export function SetupWizard({ initialData, initialStepId, onClose }: SetupWizard
 
   const isLast = currentStep === steps.length - 1
   const isFirst = currentStep === 0
-  function selectStep(index: number) {
-    if (index > currentStep) {
-      for (let step = 0; step < index; step++) {
-        if (getStepError(step, formData, setupAlreadyFinished) !== null) { setCurrentStep(step); return }
-      }
+  async function selectStep(index: number) {
+    if (navigationPending.current) return
+    if (index <= currentStep) { setCurrentStep(index); return }
+    if (index > 1 && (!setupStatusKnown || (!setupAlreadyFinished && !privacyReviewed)) && currentStep !== 1) {
+      setCurrentStep(1)
+      return
     }
-    setCurrentStep(index)
+    navigationPending.current = true
+    setNavigating(true)
+    try {
+      if (beforeContinue.current && !await beforeContinue.current()) return
+      if (currentStep === 1) {
+        if (!setupStatusKnown || !beforeContinue.current) return
+        setPrivacyReviewed(true)
+      }
+      for (let step = 0; step < index; step++) {
+        if (step === 1 && currentStep === 1) continue
+        if (getStepError(step, formDataRef.current, setupAlreadyFinished, setupStatusKnown) !== null) { setCurrentStep(step); return }
+      }
+      setSaveError(null)
+      setCurrentStep(index)
+    } finally {
+      navigationPending.current = false
+      setNavigating(false)
+    }
   }
 
   // ── Destructive change warning dialog ──
@@ -907,7 +950,7 @@ export function SetupWizard({ initialData, initialStepId, onClose }: SetupWizard
 
   // ── Wizard steps ──
   return (
-    <DialogLayer label="Setup Wizard" onClose={onClose}>
+    <DialogLayer label="Setup Wizard" onClose={onClose} dismissable={!navigating}>
       <div className="glass-card setup-wizard-glass relative flex h-[min(90vh,900px)] w-full max-w-5xl flex-col overflow-hidden">
         {/* Header with step indicator */}
         <div className="shrink-0 border-b border-white/5 px-6 py-4">
@@ -917,6 +960,7 @@ export function SetupWizard({ initialData, initialStepId, onClose }: SetupWizard
             </h2>
             <button
               onClick={onClose}
+              disabled={navigating}
               className="rounded-lg px-3 py-1 text-sm text-slate-500 hover:bg-white/5 hover:text-slate-300"
             >
               Cancel
@@ -925,7 +969,7 @@ export function SetupWizard({ initialData, initialStepId, onClose }: SetupWizard
 
           {/* Step progress bar */}
           <p className="mb-2 text-sm text-slate-300" aria-live="polite">Step {currentStep + 1} of {steps.length} · {steps[currentStep].title}</p>
-          <div className="mb-2 sm:hidden"><SelectMenu label="Go to setup step" fullWidth value={String(currentStep)}
+          <div className="mb-2 sm:hidden"><SelectMenu label="Go to setup step" fullWidth disabled={navigating} value={String(currentStep)}
             onChange={value => selectStep(Number(value))}
             options={steps.map((step, index) => ({ value: String(index), label: `${index + 1}. ${step.title}` }))} /></div>
           <div className="setup-stepper hidden sm:flex" aria-label="Setup steps">
@@ -933,6 +977,7 @@ export function SetupWizard({ initialData, initialStepId, onClose }: SetupWizard
               <button
                 key={step.id}
                 onClick={() => selectStep(i)}
+                disabled={navigating}
                 className="setup-step group"
                 aria-current={i === currentStep ? "step" : undefined}
                 aria-label={`Step ${i + 1}: ${step.title}`}
@@ -943,7 +988,7 @@ export function SetupWizard({ initialData, initialStepId, onClose }: SetupWizard
                     "h-1 w-full rounded-full transition-all",
                     i === currentStep
                       ? "bg-blue-400"
-                      : i < currentStep && getStepError(i, formData, setupAlreadyFinished) !== null
+                      : i < currentStep && getStepError(i, formData, setupAlreadyFinished, setupStatusKnown) !== null
                         ? "bg-red-500/70"
                         : i < currentStep
                           ? "bg-blue-500"
@@ -970,6 +1015,8 @@ export function SetupWizard({ initialData, initialStepId, onClose }: SetupWizard
             onChange={handleChange}
             onBatchChange={handleBatchChange}
             setupAlreadyFinished={setupAlreadyFinished}
+            setupStatusKnown={setupStatusKnown}
+            registerBeforeContinue={registerBeforeContinue}
           />
         </div>
 
@@ -1013,6 +1060,16 @@ export function SetupWizard({ initialData, initialStepId, onClose }: SetupWizard
               </a>
             </div>
           )}
+          {setupStatusError && (
+            <div className="mb-2 flex items-center gap-2 text-sm text-red-400" role="alert">
+              <span>{setupStatusError}</span>
+              <button type="button" className="underline" onClick={() => {
+                setSetupStatusError(null)
+                setSetupStatusKnown(false)
+                setSetupStatusReload(value => value + 1)
+              }}>Retry setup status</button>
+            </div>
+          )}
           {saveError && (
             <p className="mb-2 text-sm text-red-400">{saveError}</p>
           )}
@@ -1021,8 +1078,8 @@ export function SetupWizard({ initialData, initialStepId, onClose }: SetupWizard
           )}
           <div className="flex items-center justify-between">
             <button
-              onClick={() => setCurrentStep((s) => s - 1)}
-              disabled={isFirst}
+              onClick={() => selectStep(currentStep - 1)}
+              disabled={isFirst || navigating}
               className={cn(
                 "flex items-center gap-1.5 rounded-lg px-4 py-2 text-sm font-medium transition-colors",
                 isFirst
@@ -1054,7 +1111,7 @@ export function SetupWizard({ initialData, initialStepId, onClose }: SetupWizard
             ) : (
               <button
                 onClick={() => selectStep(currentStep + 1)}
-                disabled={!!currentStepError}
+                disabled={!!currentStepError || navigating}
                 className="flex items-center gap-1.5 rounded-lg bg-blue-500/20 px-4 py-2 text-sm font-medium text-blue-400 transition-colors hover:bg-blue-500/30 disabled:opacity-40 disabled:cursor-not-allowed"
               >
                 Next

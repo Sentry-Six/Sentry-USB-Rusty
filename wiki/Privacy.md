@@ -1,66 +1,62 @@
 # Privacy
 
 This page documents every outbound data flow from a SentryUSB device,
-the legal basis it relies on under GDPR, how long the data is retained,
+the reporting controls, how long the data is retained,
 and how to disable it. If anything you observe on the wire doesn't
 match what's listed here, it's a bug — please open an issue.
 
 ## Summary
 
-By default, SentryUSB sends **no device identifier** to our servers.
-The "opt-in for analytics" toggle in the setup wizard and in
-`Settings → System` is the only switch that controls whether a
-device-derived identifier ever leaves your Pi.
+New installations preselect **Yes, count me** on the Privacy step for minimal
+device statistics. No reporting starts from that default until the user
+continues past the step and the choice is saved. **No thanks** prevents the
+first report. Cancelling or going Back does not save the draft selection.
+
+Existing installations keep their saved choice. Existing opt-outs and existing
+installations without a recorded choice remain off. The reporting setting in
+`Settings → System → Device counting` controls later changes. Read the
+[Privacy Policy](https://sentry-six.com/privacy) for the legal disclosures.
 
 ## Per-flow disclosure
 
-### 1. Daily update check
+### 1. Device count and current version (optional)
 
-- **Endpoint:** `POST https://api.sentry-six.com/sentryusb/telemetry`
-- **Sent:** `current_version`, `arch`, `model`, `update_available` flag,
-  `new_version` (when relevant)
-- **Identifier:** None by default. **If you have opted in** to the
-  analytics toggle, a one-way salted SHA-256 of your board's serial
-  number is included as `fingerprint`.
-- **Purpose:** Detect vulnerable builds, ship compatible binaries,
-  and (for opted-in devices) count unique installs without double-
-  counting reinstalls.
-- **Legal basis:** Legitimate interest under Art. 6(1)(f) for the
-  default (no fingerprint) version — Recital 49 explicitly recognizes
-  security as a legitimate-interest purpose. For the opted-in
-  fingerprinted variant, consent under Art. 6(1)(a).
-- **Retention:** Opted-in rows remain until they are manually purged or you
-  request deletion. Opting out stops the fingerprint from being sent on
-  future checks, but does not automatically delete an existing row.
-  Non-fingerprinted calls are not stored — only rate-limit counters survive
-  briefly in RAM.
-- **How to disable:** `Settings → System → Analytics opt-in → Opted
-  out`. The toggle immediately stops future identified checks. To request
-  deletion of a previously stored analytics row, contact
-  `privacy@sentry-six.com`.
+- **Endpoint:** `POST https://api.sentry-six.com/sentryusb-rusty/telemetry`
+- **When:** After startup, after enabling analytics, and daily while enabled.
+  Offline attempts retry with bounded backoff. Repeat reports update the same
+  device record.
+- **Sent:** `fingerprint` (salted SHA-256 device ID), `current_version`, and
+  `report_kind: running_version` (protocol label).
+  No raw hardware serial, board model, boot ID, architecture, files, locations,
+  or update download/availability data is included. Normal source-IP connection metadata
+  is visible to the server and briefly used for rate limiting.
+- **Identity:** The ID derives from the board serial and is stable across
+  reinstalls on Raspberry Pi. Devices without a readable hardware serial are
+  not counted; an installation ID is never used as a substitute.
+- **Purpose:** Count known and recently active devices and show their latest
+  reported running versions. The server keeps just the device ID, latest
+  version, and first/last report times. It does not store version history or
+  send automatic per-device notifications to Discord. Authorized maintainers
+  can view the minimal records through restricted administrative tools,
+  including Discord commands. Reports describe the running version,
+  not an offered or downloaded update.
+- **Control:** New installations show Yes preselected on the Privacy step,
+  with an equally accessible No. The selection is saved only when continuing
+  past that step. Existing settings are preserved; existing installations with
+  no choice stay off. Both options provide the same core features and updates.
+- **Retention:** The four-field device summary remains until deleted or
+  deletion is requested. Opting out stops future reports; it does not erase
+  the existing summary. No report-ID receipts or version-history rows are kept.
+- **How to disable:** `Settings → System → Device counting`. To request
+  deletion of stored analytics, contact `privacy@sentry-six.com`.
 
-### 2. Aggregate install beacon (no payload or device ID)
+### 2. Update checks and retired install reporting
 
-- **Endpoint:** `POST https://api.sentry-six.com/sentryusb/install-beacon`
-- **Sent:** An empty request body with no custom identifier. As with any
-  internet request, the server necessarily sees normal connection metadata,
-  including the source IP.
-- **Identifier:** No device or hardware fingerprint. The application uses the
-  source IP only in a short-lived in-memory rate-limit bucket and persists
-  only a daily aggregate count.
-- **Purpose:** Tell us gross install volume independent of the opt-in
-  cohort — i.e. so we can see if a release attracted new installs at
-  all without knowing anything about anyone.
-- **Legal basis:** Legitimate interests under Art. 6(1)(f) to measure
-  aggregate install volume and protect the counter from abuse, balanced by
-  sending no payload or device identifier and retaining no per-install row.
-- **Retention:** Daily counts are kept indefinitely as aggregate
-  numbers. The application rate-limit bucket remains only in memory for up
-  to about two hours; no per-install application record is retained.
-- **How to disable:** Fires exactly once per install (gated by a
-  `/mutable/.beaconed` marker). To suppress entirely, create that file
-  before first boot: `sudo touch /mutable/.beaconed`. Network-block
-  `api.sentry-six.com` if you want to be sure.
+GitHub release checks still work with reporting disabled. Current Rusty
+versions do not send update-check telemetry or anonymous install beacons to
+Sentry Six. The legacy `/sentryusb/telemetry` and `/sentryusb/install-beacon`
+endpoints discard reports from old clients; they do not feed the new Rusty
+device count.
 
 ### 3. Wraps / lock chime submissions
 
@@ -228,28 +224,27 @@ separate disclosure to Discord and is governed by Discord's policies.
 
 ## Things SentryUSB does **not** do
 
-- Send a hardware fingerprint without explicit opt-in.
-- Phone home on every boot. (The old `spawn_startup_telemetry` was
-  removed entirely in the privacy overhaul.)
+- Enable reporting on an existing installation merely because it updates.
+- Send the first report for a preselected new-install choice before it is saved by continuing past Privacy.
+- Send device analytics at startup or in the background when opted out.
 - Send "diagnostics" or "crash reports" in the background. If a crash
   reporter is ever added, it will be its own opt-in.
 - Let AI Support browse files or treat one approval as permission for a
   later upload.
 - Let the Rusty UI choose another product's AI prompt or knowledge base.
-- Bundle optional consents under one button. Each optional consent, including
-  a diagnostic-file upload, requires its own affirmative action; acknowledging
-  the pre-chat disclosure is not bundled consent for security or quality review.
-- Use pre-ticked checkboxes — explicit click required.
+- Treat the device-statistics setting as permission to upload diagnostics or
+  files. Each such upload still requires its own affirmative approval.
 
 ## Source code references
 
 If you want to verify any of the above against the source:
 
-- Update-check telemetry: `crates/api/src/update.rs` → `send_telemetry()`.
-  Look for the `analytics_opt_in` read and confirm the `fingerprint`
-  key is only inserted when that pref is `true`.
-- Install beacon: same file → `spawn_install_beacon()`. The POST is
-  bodyless.
+- Device analytics: `crates/api/src/device_reporting.rs`. The saved reporting setting is checked
+  before creating or sending reports; the startup version is captured before
+  the updater or API starts. Only tagged release builds embed a release tag;
+  other builds capture the installed version once at startup.
+- Preference wake-up: `crates/api/src/preferences.rs`. Reporting is nudged only
+  after a privacy choice is successfully saved.
 - Wraps/chimes header forwarding: `crates/api/src/community.rs` →
   `forward_headers()`. Should only forward `x-passcode`, never
   `x-fingerprint`.

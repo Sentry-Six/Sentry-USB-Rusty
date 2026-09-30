@@ -35,43 +35,42 @@ pub(crate) async fn acquire_update() -> anyhow::Result<UpdateGuard> {
 /// Keep fixed to preserve pseudonymous fingerprint continuity.
 const TELEMETRY_SALT: &str = "SENTRYUSB_2026_PROD";
 
-/// Cached SHA-256 hash of the SBC serial, falling back to machine-id.
+/// Cached hardware identity; installation IDs would double-count reinstalls.
 pub(crate) fn get_fingerprint() -> &'static str {
     static CACHED: OnceLock<String> = OnceLock::new();
     CACHED.get_or_init(|| {
-        use ring::digest::{SHA256, digest};
-        let mut id = String::new();
-        for p in [
-            "/sys/firmware/devicetree/base/serial-number",
-            "/proc/device-tree/serial-number",
-        ] {
-            if let Ok(raw) = std::fs::read_to_string(p) {
-                let trimmed = raw.trim_matches(|c: char| c == '\0' || c.is_whitespace());
-                if !trimmed.is_empty() {
-                    id = trimmed.to_string();
-                    break;
-                }
+        let device_tree: Vec<_> = ["/sys/firmware/devicetree/base/serial-number", "/proc/device-tree/serial-number"]
+            .iter().filter_map(|path| std::fs::read_to_string(path).ok()).collect();
+        let cpuinfo = std::fs::read_to_string("/proc/cpuinfo").unwrap_or_default();
+        let serial = hardware_serial(device_tree.iter().map(String::as_str), &cpuinfo);
+        match serial {
+            Some(serial) => hash_serial(&serial),
+            None => {
+                tracing::warn!("[device-report] no stable hardware serial; device analytics skipped");
+                String::new()
             }
         }
-        if id.is_empty() {
-            for p in ["/etc/machine-id", "/var/lib/dbus/machine-id"] {
-                if let Ok(raw) = std::fs::read_to_string(p) {
-                    let trimmed = raw.trim();
-                    if !trimmed.is_empty() {
-                        id = trimmed.to_string();
-                        break;
-                    }
-                }
-            }
-        }
-        if id.is_empty() {
-            tracing::warn!("[telemetry] no fingerprint source available");
-            return String::new();
-        }
-        let h = digest(&SHA256, format!("{}{}", id, TELEMETRY_SALT).as_bytes());
-        hex::encode(h.as_ref())
-    })
-    .as_str()
+    }).as_str()
+}
+
+fn hardware_serial<'a>(device_tree: impl IntoIterator<Item = &'a str>, cpuinfo: &'a str) -> Option<String> {
+    let cpu_serial = cpuinfo.lines().filter_map(|line| {
+        let (key, value) = line.split_once(':')?;
+        (key.trim() == "Serial").then_some(value)
+    });
+    device_tree.into_iter().chain(cpu_serial).map(|value| value.trim_matches(|c: char| c == '\0' || c.is_whitespace()))
+        .find(|value| {
+            let digits = value.strip_prefix("0x").or_else(|| value.strip_prefix("0X")).unwrap_or(value);
+            !value.is_empty() && !digits.chars().all(|c| c == '0')
+                && !value.eq_ignore_ascii_case("unknown") && value.len() <= 128
+                && value.chars().all(|c| c.is_ascii_alphanumeric())
+        })
+        .map(str::to_owned)
+}
+
+fn hash_serial(serial: &str) -> String {
+    use ring::digest::{SHA256, digest};
+    hex::encode(digest(&SHA256, format!("{}{}", serial, TELEMETRY_SALT).as_bytes()).as_ref())
 }
 
 /// GET /api/system/check-internet
@@ -932,9 +931,8 @@ pub async fn check_for_update(
     let releases = match fetch_releases().await {
         Ok(rs) => rs,
         Err(msg) => {
-            // Update-check telemetry is independent of GitHub availability.
-            let cur_clone = current.clone();
-            tokio::spawn(async move { send_telemetry(&cur_clone, false, "").await });
+            // Opt-in device reporting is independent of GitHub availability.
+            crate::device_reporting::nudge();
 
             return (
                 StatusCode::OK,
@@ -954,8 +952,6 @@ pub async fn check_for_update(
         "checked_at": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
     });
 
-    let mut new_stable_version = String::new();
-
     // A prerelease installation may always revert to the latest stable.
     let on_prerelease = parse_semver(&current)
         .map(|(_, _, _, pre)| !pre.is_empty())
@@ -973,9 +969,6 @@ pub async fn check_for_update(
             "release_notes": stable.body,
             "available": stable_available,
         });
-        if stable_available {
-            new_stable_version = stable.tag_name.clone();
-        }
 
         if on_prerelease && can_update && !stable_available {
             result["revert_stable"] = serde_json::json!({
@@ -1005,12 +998,7 @@ pub async fn check_for_update(
         let _ = std::fs::write(UPDATE_CHECK_CACHE, data);
     }
 
-    // Report stable update availability only.
-    let cur_clone = current.clone();
-    let new_ver_clone = new_stable_version.clone();
-    tokio::spawn(async move {
-        send_telemetry(&cur_clone, !new_ver_clone.is_empty(), &new_ver_clone).await;
-    });
+    crate::device_reporting::nudge();
 
     (StatusCode::OK, Json(result))
 }
@@ -1097,96 +1085,6 @@ fn find_latest_releases(releases: &[ReleaseInfo]) -> (Option<&ReleaseInfo>, Opti
     (stable, prerelease)
 }
 
-/// Persistent per-install marker for the aggregate install beacon.
-const INSTALL_BEACON_MARKER: &str = "/mutable/.beaconed";
-
-/// Sends best-effort update telemetry. A device fingerprint is included only
-/// when `analytics_opt_in` is true; otherwise the payload is identifier-free.
-pub async fn send_telemetry(current: &str, update_available: bool, new_version: &str) {
-    let opt_in = crate::preferences::load_prefs()
-        .get("analytics_opt_in")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
-
-    let arch = sentryusb_shell::run("uname", &["-m"])
-        .await
-        .ok()
-        .map(|s| s.trim().to_string())
-        .unwrap_or_else(|| std::env::consts::ARCH.to_string());
-
-    let mut payload = serde_json::json!({
-        "current_version": current,
-        "update_available": update_available,
-        "new_version": new_version,
-        "arch": arch,
-        "model": get_sbc_model(),
-    });
-
-    if opt_in {
-        let fp = get_fingerprint();
-        if !fp.is_empty() {
-            payload["fingerprint"] = serde_json::Value::String(fp.to_string());
-        }
-    }
-
-    let url = "https://api.sentry-six.com/sentryusb/telemetry";
-    let client = match reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(10))
-        .build()
-    {
-        Ok(c) => c,
-        Err(_) => return,
-    };
-    match client.post(url).json(&payload).send().await {
-        Ok(r) => tracing::info!(
-            "[telemetry] sent (status {}, mode={})",
-            r.status(),
-            if opt_in { "opt-in" } else { "opted-out" }
-        ),
-        Err(e) => tracing::warn!("[telemetry] failed: {}", e),
-    }
-}
-
-/// Sends one identifier-free install beacon, guarded by a persistent marker.
-pub fn spawn_install_beacon() {
-    tokio::spawn(async move {
-        if std::path::Path::new(INSTALL_BEACON_MARKER).exists() {
-            return;
-        }
-        // Leave the marker absent after transient failure so the next boot retries.
-        let url = "https://api.sentry-six.com/sentryusb/install-beacon";
-        let client = match reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(10))
-            .build()
-        {
-            Ok(c) => c,
-            Err(_) => return,
-        };
-        for attempt in 1..=3 {
-            match client.post(url).send().await {
-                Ok(r) if r.status().is_success() => {
-                    let _ = std::fs::write(INSTALL_BEACON_MARKER, b"1");
-                    tracing::info!("[beacon] install counted");
-                    return;
-                }
-                Ok(r) => {
-                    tracing::warn!("[beacon] non-success status {}", r.status());
-                    // Retry server errors only.
-                    if !r.status().is_server_error() {
-                        return;
-                    }
-                }
-                Err(e) => {
-                    tracing::warn!("[beacon] attempt {} failed: {}", attempt, e);
-                }
-            }
-            if attempt < 3 {
-                tokio::time::sleep(std::time::Duration::from_secs(5 * attempt)).await;
-            }
-        }
-    });
-}
-
 /// Returns the last cached update check; live progress uses the WebSocket channel.
 pub async fn get_update_status(State(_s): State<AppState>) -> (StatusCode, Json<serde_json::Value>) {
     match std::fs::read_to_string(UPDATE_CHECK_CACHE) {
@@ -1204,5 +1102,25 @@ pub async fn get_update_status(State(_s): State<AppState>) -> (StatusCode, Json<
                 "checked_at": "",
             })),
         ),
+    }
+}
+
+#[cfg(test)]
+mod hardware_identity_tests {
+    use super::*;
+
+    #[test]
+    fn board_identity_survives_reinstall_and_matches_existing_hash() {
+        let first = hardware_serial(["10000000abcdef01\0"], "Serial : 10000000abcdef01").unwrap();
+        let reinstalled = hardware_serial([], "Hardware : BCM2712\nSerial : 10000000abcdef01\n").unwrap();
+        assert_eq!(hash_serial(&first), hash_serial(&reinstalled));
+        assert_eq!(hash_serial(&first), "ae2bb2e75d744f73ee3bcd95ac63b5fb70cbbb1cb2f0e69aff5d21c8e41ef841");
+    }
+
+    #[test]
+    fn empty_and_placeholder_serials_are_not_devices() {
+        assert!(hardware_serial(["\0", "0000000000000000"], "Hardware : BCM2712\nSerial : 00000000").is_none());
+        assert!(hardware_serial(["unknown", "0x0000"], "").is_none());
+        assert_eq!(hardware_serial(["0000000000000000"], "Serial : 123456789abcdef0").as_deref(), Some("123456789abcdef0"));
     }
 }

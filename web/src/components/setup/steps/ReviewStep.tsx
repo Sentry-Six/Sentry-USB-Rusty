@@ -152,9 +152,7 @@ export function ReviewStep({ data, setupAlreadyFinished }: StepProps) {
         >
           Privacy Policy
         </a>
-        , including the mandatory security &amp; compatibility reporting sent on
-        update checks (a one-way hashed device ID, software version, architecture,
-        and model).
+        . Device analytics remains optional and follows your Privacy choice.
       </p>
     </div>
   )

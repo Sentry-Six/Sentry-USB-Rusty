@@ -1,63 +1,119 @@
-import { useEffect, useState } from "react"
+import { useCallback, useEffect, useRef, useState } from "react"
 import { CheckIcon, CloseIcon, ProgressActivityIcon, VerifiedUserIcon } from "@/components/icons"
 import type { StepProps } from "../SetupWizard"
 import { cn } from "@/lib/utils"
 
-export function PrivacyStep({ data, onChange, setupAlreadyFinished }: StepProps) {
-  const [choice, setChoice] = useState<boolean | null>(() =>
-    data._analytics_choice === "true" ? true : data._analytics_choice === "false" ? false : null)
-  const [saving, setSaving] = useState<boolean | null>(null)
+export function PrivacyStep({ data, onChange, setupAlreadyFinished, setupStatusKnown = false, registerBeforeContinue }: StepProps) {
+  const [savedChoice, setSavedChoice] = useState<boolean | null | "invalid" | undefined>(undefined)
+  const [unsetConfirmed, setUnsetConfirmed] = useState(false)
+  const [draft, setDraft] = useState<boolean | undefined>(() =>
+    data._analytics_draft === "true" ? true : data._analytics_draft === "false" ? false : undefined)
+  const [saving, setSaving] = useState(false)
   const [loading, setLoading] = useState(true)
   const [reload, setReload] = useState(0)
   const [error, setError] = useState<string | null>(null)
+  const saveController = useRef<AbortController | null>(null)
+  const newInstallation = setupStatusKnown && !setupAlreadyFinished
+  const defaultSelected = !loading && unsetConfirmed && draft === undefined && savedChoice === null && newInstallation
+  const choice = draft ?? (typeof savedChoice === "boolean" ? savedChoice : defaultSelected ? true : null)
 
   useEffect(() => {
     const controller = new AbortController()
     let cancelled = false
     const timeout = setTimeout(() => controller.abort(), 10_000)
+    onChange("_analytics_ready", "false")
     fetch("/api/config/preference?key=analytics_opt_in", { signal: controller.signal })
       .then(async (res) => {
         if (!res.ok) throw new Error(`HTTP ${res.status}`)
         const result = await res.json()
-        if (result?.value !== null && typeof result?.value !== "boolean") throw new Error("Invalid preference response")
+        if (!result || typeof result !== "object" || !Object.hasOwn(result, "value")) throw new Error("Invalid preference response")
         if (controller.signal.aborted) return
-        setChoice(result.value)
-        onChange("_analytics_choice", result.value === null ? "" : String(result.value))
+        const saved = typeof result.value === "boolean" || result.value === null ? result.value : "invalid"
+        setSavedChoice(saved)
+        setUnsetConfirmed(result.value === null && result.is_set === false)
+        setError(saved === "invalid" ? "Your saved privacy choice needs confirmation. Choose either option to replace it." : null)
+        onChange("_analytics_choice", typeof saved === "boolean" ? String(saved) : "")
+        onChange("_analytics_ready", "true")
       })
       .catch(() => {
-        if (!cancelled) setError("Couldn't load your privacy choice. Try again or choose an option below.")
+        if (!cancelled) {
+          setSavedChoice(undefined)
+          setUnsetConfirmed(false)
+          onChange("_analytics_ready", "false")
+          setError("Couldn't load your privacy choice. Reload it to continue.")
+        }
       })
       .finally(() => {
         clearTimeout(timeout)
         if (!cancelled) setLoading(false)
       })
-    return () => {
-      cancelled = true
-      clearTimeout(timeout)
-      controller.abort()
-    }
+    return () => { cancelled = true; clearTimeout(timeout); controller.abort() }
   }, [onChange, reload])
 
-  async function persist(value: boolean) {
-    setSaving(value)
+  useEffect(() => () => saveController.current?.abort(), [])
+
+  const persist = useCallback(async () => {
+    if (loading || saving || !setupStatusKnown || savedChoice === undefined) return false
+    if (choice === null) {
+      if (newInstallation || savedChoice === "invalid") { setError("Choose Yes, count me or No thanks to continue."); return false }
+      return true
+    }
+    if (choice === savedChoice) return true
+    const controller = new AbortController()
+    saveController.current = controller
+    let timedOut = false
+    const timeout = setTimeout(() => { timedOut = true; controller.abort() }, 10_000)
+    setSaving(true)
     onChange("_analytics_saving", "true")
     setError(null)
     try {
       const res = await fetch("/api/config/preference", {
         method: "PUT",
+        signal: controller.signal,
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ key: "analytics_opt_in", value }),
+        body: JSON.stringify({ key: "analytics_opt_in", value: choice, ...(defaultSelected ? { only_if_unset: true } : {}) }),
       })
-      if (!res.ok) throw new Error(`HTTP ${res.status}`)
-      setChoice(value)
-      onChange("_analytics_choice", String(value))
+      if (!res.ok) {
+        const failure = await res.json().catch(() => null)
+        throw new Error(typeof failure?.error === "string" ? failure.error : `HTTP ${res.status}`)
+      }
+      const result = await res.json()
+      if (result?.success !== true) throw new Error("Privacy choice was not confirmed")
+      if (defaultSelected && typeof result.value !== "boolean") {
+        if (result.is_set === true) {
+          setSavedChoice(result.value === null ? null : "invalid")
+          setUnsetConfirmed(false)
+          setDraft(undefined)
+          onChange("_analytics_draft", "")
+          onChange("_analytics_choice", "")
+        }
+        throw new Error("Privacy choice was not confirmed. Choose an option or reload.")
+      }
+      if (controller.signal.aborted) return false
+      const actual = typeof result.value === "boolean" ? result.value : choice
+      setSavedChoice(actual)
+      setDraft(undefined)
+      onChange("_analytics_draft", "")
+      onChange("_analytics_choice", String(actual))
+      return true
     } catch (e) {
-      setError(`Couldn't save preference: ${e instanceof Error ? e.message : String(e)}`)
+      if (timedOut || !controller.signal.aborted) setError(timedOut
+        ? "Couldn't confirm your privacy choice: request timed out. Try again."
+        : `Couldn't save preference: ${e instanceof Error ? e.message : String(e)}`)
+      return false
     } finally {
-      setSaving(null)
-      onChange("_analytics_saving", "false")
+      clearTimeout(timeout)
+      if (timedOut || !controller.signal.aborted) {
+        setSaving(false)
+        onChange("_analytics_saving", "false")
+      }
     }
-  }
+  }, [loading, saving, setupStatusKnown, savedChoice, choice, defaultSelected, newInstallation, onChange])
+
+  useEffect(() => {
+    registerBeforeContinue?.(persist)
+    return () => registerBeforeContinue?.(null)
+  }, [registerBeforeContinue, persist])
 
   return (
     <div className="flex flex-col items-center py-1">
@@ -67,12 +123,12 @@ export function PrivacyStep({ data, onChange, setupAlreadyFinished }: StepProps)
       </div>
       <section aria-labelledby="analytics-choice-title" className="mt-5 w-full max-w-2xl rounded-xl border border-white/10 bg-white/[0.02] p-5">
         <h3 id="analytics-choice-title" className="text-sm font-semibold text-slate-200">
-          Help us count installations?
+          Help us count devices?
         </h3>
         <p className="mt-2 text-xs leading-relaxed text-slate-400">
-          Share a stable, hashed ID derived from your board's serial number in daily update
-          checks. This lets us count unique devices and software versions without counting
-          reinstalls twice. You can change your choice in Settings → System.
+          Share a hashed device ID and running software version so we can count devices
+          without counting reinstalls twice. We keep the first and last report times.
+          You can turn this off in Settings → System.
         </p>
 
         <div className="mt-4 flex flex-col gap-2 sm:flex-row" role="group" aria-label="Share installation analytics">
@@ -81,8 +137,12 @@ export function PrivacyStep({ data, onChange, setupAlreadyFinished }: StepProps)
               key={label}
               type="button"
               aria-pressed={choice === value}
-              disabled={loading || saving !== null}
-              onClick={() => persist(value)}
+              disabled={loading || saving || !setupStatusKnown || savedChoice === undefined}
+              onClick={() => {
+                setDraft(value)
+                onChange("_analytics_draft", String(value))
+                setError(null)
+              }}
               className={cn(
                 "flex flex-1 items-center justify-center gap-2 rounded-lg border px-4 py-3 text-sm font-medium transition-colors disabled:opacity-50",
                 choice === value
@@ -90,7 +150,7 @@ export function PrivacyStep({ data, onChange, setupAlreadyFinished }: StepProps)
                   : "border-white/10 bg-white/[0.02] text-slate-300 hover:border-white/20 hover:bg-white/[0.05]"
               )}
             >
-              {saving === value ? <ProgressActivityIcon className="h-4 w-4 animate-spin" /> : <Icon className="h-4 w-4" />}
+              {saving && choice === value ? <ProgressActivityIcon className="h-4 w-4 animate-spin" /> : <Icon className="h-4 w-4" />}
               {label}
             </button>
           ))}
@@ -98,15 +158,18 @@ export function PrivacyStep({ data, onChange, setupAlreadyFinished }: StepProps)
 
         <p className="mt-3 text-xs text-slate-400" role="status">
           {loading ? "Loading your privacy choice…"
-            : saving !== null ? "Saving your choice…"
-              : choice !== null ? `Saved: ${choice ? "opted in" : "opted out"}.`
-                : setupAlreadyFinished ? "Optional. No choice means the device ID is not shared."
-                  : "Choose either option to continue. Both give you the same features."}
+            : !setupStatusKnown ? "Waiting for this device's setup status."
+              : saving ? "Saving your choice…"
+                : savedChoice === "invalid" && draft === undefined ? "Choose either option to replace the saved value."
+                  : defaultSelected ? "On for new installations when you continue. Choose No thanks to keep it off."
+                    : draft !== undefined && choice !== savedChoice ? "Your choice is saved when you continue."
+                      : typeof savedChoice === "boolean" ? `Saved: ${savedChoice ? "On" : "Off"}.`
+                        : "Off. Continue without enabling device counting."}
         </p>
         {error && (
           <div className="mt-3 text-xs text-rose-400" role="alert">
             <p>{error}</p>
-            <button type="button" disabled={loading || saving !== null} onClick={() => {
+            <button type="button" disabled={loading || saving} onClick={() => {
               setLoading(true)
               setError(null)
               setReload(value => value + 1)
@@ -121,16 +184,10 @@ export function PrivacyStep({ data, onChange, setupAlreadyFinished }: StepProps)
         </summary>
         <div className="divide-y divide-white/5">
           <FlowRow
-            when="Daily update check"
-            what="Software version, CPU architecture, board model"
-            why="Detect vulnerable builds, ship compatible binaries"
-            note="No device identifier unless you opt in above; the source IP is briefly used for rate limiting."
-          />
-          <FlowRow
-            when="Once per install"
-            what="Empty ping with no payload or device identifier"
-            why="Count gross install volume on the server"
-            note="The source IP is briefly rate-limited; only a daily aggregate count is stored. See the privacy wiki to suppress it."
+            when="Device counting (when enabled)"
+            what="Hashed device ID and running software version"
+            why="Count unique devices and show their latest reported versions"
+            note="Reports run after startup, when enabled, and daily, with retries if offline. The server keeps the latest version and first/last report times until deletion. Turning this off stops future reports."
           />
           <FlowRow
             when="When you use Sentry Cloud"

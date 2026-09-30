@@ -24,7 +24,7 @@
 - **Enriches drives with Tesla BLE telemetry** — battery, HVAC, cabin and exterior temps, TPMS, odometer, and location — pulled over Bluetooth and layered onto each trip for a much fuller picture than the dashcam metadata gives you on its own.
 - **Archives clips automatically** to your NAS, cloud, or wherever — over WiFi, in the background.
 - **Keeps the car awake** (and the dashcam recording) via the same BLE link — no Tesla API subscription needed.
-- **Privacy-first.** No fingerprinting by default; everything sensitive is opt-in.
+- **Privacy controls.** Minimal device reporting with a visible setup choice and an easy opt-out.
 
 The Rust rewrite of the original Go version. Same `sentryusb.conf`, faster server, more reliable.
 
@@ -77,7 +77,7 @@ Sentry USB is one of the free tools for Tesla owners from the [Sentry Six](https
 | **Keep awake** | BLE (free, same link as telemetry), TeslaFi, Tessie, or generic webhook |
 | **Sentry Cloud (beta)** | Encrypted cloud sync — drives are encrypted on the Pi before they leave your network |
 | **Notifications** | Pushover, ntfy, Gotify, Discord, Telegram, Slack, Signal, Matrix, AWS SNS, IFTTT, Webhook, iOS app |
-| **Privacy-first** | No device fingerprint by default. Opt-in analytics, full per-flow disclosure |
+| **Privacy controls** | Minimal device statistics, a visible setup choice, and full per-flow disclosure |
 
 ---
 
@@ -118,14 +118,13 @@ By default, Sentry USB sends **no device identifier** to our servers. Here's eve
 
 | When | What | Identifier? |
 |---|---|---|
-| Daily update check | Software version, CPU arch, board model | No device ID by default; source IP briefly rate-limited |
-| Once per install | Empty ping; the source IP is briefly used for rate-limiting | No payload or device ID; only a daily aggregate count is stored |
+| Device statistics (when enabled) | Running version; after startup, enabling reporting, and daily. Server keeps first/last report times. | Stable hashed device ID; no raw serial or boot ID |
 | Wraps / lock chime submissions | The file + your IP for rate-limiting and abuse handling | No device or hardware fingerprint; the IP may be retained with the submission |
 | Sentry Cloud (if signed in) | Your account + synced files | Account credentials |
 | iOS push pairing (if enabled) | Random pairing ID | Not tied to hardware |
 | AI Support & Help (if used) | Chat messages, product/software version, and the Pi connection's public IP for abuse prevention; diagnostics only after a separate one-time approval | Random conversation ID and access token; no hardware fingerprint |
 
-The only way a device fingerprint is sent is if you explicitly opt in to **Settings → System → Analytics opt-in** (default: off). Full disclosure including legal basis, retention, and how to disable each flow lives in [`wiki/Privacy.md`](wiki/Privacy.md).
+New installations preselect **Yes, count me** on the Privacy step. Reporting begins only after you continue past that step; choose **No thanks** first to prevent it. Existing installations keep their saved choice, and an existing installation without a choice stays off. Change reporting later under **Settings → System → Device counting**. Full disclosure, retention, and controls for each flow are documented in [`wiki/Privacy.md`](wiki/Privacy.md).
 
 ---
 

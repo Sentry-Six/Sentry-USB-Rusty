@@ -194,26 +194,22 @@ function PrivacyCards() {
   }, [])
 
   return <PrefCard icon={<VerifiedUserIcon className="h-3.5 w-3.5" />} halo="accent" title="Privacy">
-    <Toggle label="Usage analytics" checked={choice === true} disabled={!loaded || saving} onChange={persist}
-      sub={loaded ? choice === null ? "Off by default" : choice ? "Opted in" : "Opted out" : error ? "Unavailable" : "Loading…"}
-      help={<InfoButton title="Usage analytics">
-        <p>Optional: include a one-way hashed device identifier in daily update checks to count installations.</p>
-        <p>The identifier is derived from your board serial, so reinstalling does not count as another device. When opted out, future update checks do not send it. Normal connection metadata such as the source IP is briefly used for rate limiting.</p>
-        <p>Opting out does not erase data sent earlier. Email <a href="mailto:privacy@sentry-six.com" className="text-blue-400 underline">privacy@sentry-six.com</a> to request deletion.</p>
+    <Toggle label="Device counting" checked={choice === true} disabled={!loaded || saving} onChange={persist}
+      sub={loaded ? choice === null ? "Off by default" : choice ? "On" : "Off" : error ? "Unavailable" : "Loading…"}
+      help={<InfoButton title="Device counting">
+        <p>Optional: share a hashed device ID and running software version to count devices and show their latest reported versions.</p>
+        <p>Reports run after startup, when enabled, and daily, with retries if offline. The board serial keeps the ID stable across reinstalls. Devices without a readable hardware serial are not counted.</p>
+        <p>The server keeps the latest version and first/last report times until deletion. Turning this off stops future reports.</p>
+        <p>Turning this off does not erase data sent earlier. Email <a href="mailto:privacy@sentry-six.com" className="text-blue-400 underline">privacy@sentry-six.com</a> to request deletion.</p>
       </InfoButton>} />
     <div className="flex items-center justify-between gap-2 border-t border-white/10 pt-2">
       <span className="t-md">Data we send</span>
       <InfoButton title="Data we send, and when">
           <div className="divide-y divide-white/5">
             <FlowRow
-              when="Daily update check"
-              what="Version, architecture, board model"
-              note="Device identifier only if opted in above."
-            />
-            <FlowRow
-              when="Once per install"
-              what="Empty ping with no payload or device identifier"
-              note="The source IP is briefly rate-limited; only a daily aggregate count is stored."
+              when="Device counting (when enabled)"
+              what="Hashed device ID and running version"
+              note="After startup, when enabled, and daily. Stores the latest version and first/last report times; retries if offline."
             />
             <FlowRow
               when="Sentry Cloud (if signed in)"

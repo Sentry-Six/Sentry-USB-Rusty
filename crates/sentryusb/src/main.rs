@@ -151,6 +151,8 @@ async fn main() {
 
     info!("SentryUSB server starting on port {}", args.port);
 
+    sentryusb_api::device_reporting::spawn();
+
     // Run startup migration in background
     tokio::spawn(async {
         let migration_ok = migrate::run_startup_migration().await;
@@ -331,12 +333,6 @@ async fn main() {
 
     // Resume setup if it was interrupted by a reboot (e.g. dwc2 overlay, root shrink)
     sentryusb_api::setup::auto_resume_setup(hub.clone());
-
-    // Fire the anonymous install beacon once per install (gated by
-    // /mutable/.beaconed). No fingerprint, no identifier — just an
-    // incrementing counter on the support server. The opted-in update-
-    // check telemetry is handled separately in check_for_update().
-    sentryusb_api::update::spawn_install_beacon();
 
     // Resume Away Mode if the flag file still has time remaining.
     sentryusb_api::away_mode::restore_from_file();

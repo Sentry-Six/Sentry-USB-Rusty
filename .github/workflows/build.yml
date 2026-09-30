@@ -284,6 +284,7 @@ jobs:
           # One-shot BLE keep-awake CLI used by run/awake_start.
           $BUILD_WRAPPER cargo build --release --target ${{ matrix.target }} -p sentryusb-tesla-ble --bin sentryusb-ble-action
         env:
+          SENTRYUSB_RELEASE_VERSION: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || '' }}
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: ${{ matrix.linker }}
           CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABIHF_LINKER: ${{ matrix.linker }}
 
