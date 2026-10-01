@@ -22,12 +22,18 @@ jobs:
           node-version: '22'
           cache: npm
           cache-dependency-path: web/package-lock.json
-      - name: Lint
-        # Match the release workflow’s zero-warning check.
+      - name: Install web dependencies
         run: |
           cd web
           npm ci
+      - name: Test web
+        run: |
+          cd web
           npm test
+      - name: Lint web
+        # Match the release workflow’s zero-warning check.
+        run: |
+          cd web
           npx eslint . --max-warnings 0
       - name: Production build
         # Direct pushes otherwise receive no production bundle check.

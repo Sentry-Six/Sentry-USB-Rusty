@@ -590,6 +590,7 @@ function SystemTile({
   keepAwakeIdle: boolean
 }) {
   const cpuTemp = parseInt(status.cpu_temp)
+  const supplyVoltage = status.supply_voltage
   return (
     <StatusTile
       icon={<VitalSignsIcon className="h-4 w-4" />}
@@ -612,6 +613,13 @@ function SystemTile({
           icon={<AirIcon className="h-3.5 w-3.5" />}
           label="Fan"
           value={`${status.fan_speed} RPM`}
+        />
+      )}
+      {typeof supplyVoltage === "number" && Number.isFinite(supplyVoltage) && supplyVoltage > 0 && (
+        <Row
+          icon={<BoltIcon className="h-3.5 w-3.5" />}
+          label="5V supply"
+          value={`${supplyVoltage.toFixed(2)} V`}
         />
       )}
       {/* Three-state: "Connected" needs the host link up ("configured"),

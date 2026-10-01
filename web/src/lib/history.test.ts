@@ -11,14 +11,21 @@ test("inclusive local date ranges include same-day records through DST", () => {
   try {
     for (const zone of ["America/Edmonton", "Asia/Tokyo", "UTC"]) {
       process.env.TZ = zone
-      const bounds = rangeBounds({ kind: "custom", start: "2026-11-01", end: "2026-11-01" }, new Date())
-      assert.equal(bounds.from!.getHours(), 0)
-      assert.equal(bounds.from!.getDate(), 1)
-      assert.equal(bounds.to!.getHours(), 0)
-      assert.equal(bounds.to!.getDate(), 2)
-      const noon = new Date(2026,10,1,12)
-      assert.ok(noon >= bounds.from! && noon < bounds.to!)
-      if (zone === "America/Edmonton") assert.equal((+bounds.to! - +bounds.from!) / 3600000, 25)
+      // Use completed DST transitions: future clock rules can change with tzdata updates.
+      for (const [date, nextDate, dstHours] of [
+        ["2024-03-10", "2024-03-11", 23],
+        ["2024-11-03", "2024-11-04", 25],
+      ] as const) {
+        const bounds = rangeBounds({ kind: "custom", start: date, end: date }, new Date())
+        assert.equal(calendarDateText(bounds.from!), date)
+        assert.equal(calendarDateText(bounds.to!), nextDate)
+        assert.equal(bounds.from!.getHours(), 0)
+        assert.equal(bounds.to!.getHours(), 0)
+        const noon = parseLocalDate(date)!
+        noon.setHours(12)
+        assert.ok(noon >= bounds.from! && noon < bounds.to!)
+        assert.equal((+bounds.to! - +bounds.from!) / 3600000, zone === "America/Edmonton" ? dstHours : 24)
+      }
     }
     assert.equal(validDateRange("2026-09-27", "2026-09-26"), false)
     assert.equal(validDateRange("2026-02-30", "2026-03-01"), false)

@@ -11,6 +11,8 @@ use std::time::{Duration, Instant};
 
 use crate::router::AppState;
 
+mod supply_voltage;
+
 // Shared status snapshots keep UI polling independent of archive I/O.
 
 #[derive(Clone, Default)]
@@ -195,6 +197,9 @@ struct PiStatus {
     ether_speed: String,
     sbc_model: String,
     fan_speed: String,
+    /// Measured 5 V input rail, omitted when the board/firmware cannot report it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    supply_voltage: Option<f64>,
     wifi_rx_bps: u64,
     wifi_tx_bps: u64,
     ether_rx_bps: u64,
@@ -251,6 +256,10 @@ pub async fn get_status(
         s.ether_sample_age_ms = age;
     }
 
+    // This cache is separate from filesystem status: a stalled archive must not
+    // keep an old voltage reading alive, and status requests never wait for PMIC I/O.
+    s.supply_voltage = supply_voltage::get();
+
     (StatusCode::OK, Json(serde_json::to_value(s).unwrap_or_default()))
 }
 
@@ -276,6 +285,7 @@ fn status_fs_snapshot() -> PiStatus {
         ether_speed: String::new(),
         sbc_model: String::new(),
         fan_speed: String::new(),
+        supply_voltage: None,
         wifi_rx_bps: 0,
         wifi_tx_bps: 0,
         ether_rx_bps: 0,

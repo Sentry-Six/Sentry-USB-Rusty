@@ -43,6 +43,8 @@ export interface PiStatus {
   ether_ip: string
   ether_speed: string
   fan_speed: string
+  /** Measured incoming 5V rail, in volts; absent when the sensor is unavailable. */
+  supply_voltage?: number | null
   sbc_model?: string
   /** Negative dBm value parsed from iwconfig. */
   wifi_signal_dbm?: number

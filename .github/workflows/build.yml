@@ -363,12 +363,18 @@ jobs:
           node-version: '22'
           cache: npm
           cache-dependency-path: web/package-lock.json
-      - name: Lint
-        # Keep lint warnings out of release builds.
+      - name: Install web dependencies
         run: |
           cd web
           npm ci
+      - name: Test web
+        run: |
+          cd web
           npm test
+      - name: Lint web
+        # Keep lint warnings out of release builds.
+        run: |
+          cd web
           npx eslint . --max-warnings 0
       - name: Production build
         # Exercise Vite/Rolldown on PRs; release slices cover tags/manual runs.
