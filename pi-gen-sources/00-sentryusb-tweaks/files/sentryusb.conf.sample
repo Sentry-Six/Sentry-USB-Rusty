@@ -191,6 +191,18 @@ export CAM_SIZE=40G
 # export PUSHOVER_USER_KEY=user_key
 # export PUSHOVER_APP_KEY=app_key
 
+# Optional SentryUSB Event Processor add-on configuration.
+# See run/teslabox_processor/README.md before enabling it. Use S3 credentials
+# restricted to this bucket and prefix.
+# export SENTRYUSB_VEHICLE_LABEL='Family Tesla'
+# export SENTRYUSB_INSTANT_ALERTS_ENABLED=true
+# export SENTRYUSB_VIDEO_NOTIFICATIONS_ENABLED=true
+# export S3_ENDPOINT_URL='https://s3.example.net'
+# export S3_BUCKET='sentry-events'
+# export S3_PREFIX='vehicle-name'
+# AWS_REGION, AWS_ACCESS_KEY_ID, and AWS_SECRET_ACCESS_KEY are shown in the
+# AWS SNS section below and are shared through the standard environment.
+
 # Uncomment if setting up Gotify push notifications
 # export GOTIFY_ENABLED=true
 # export GOTIFY_DOMAIN=https://gotify.domain.com

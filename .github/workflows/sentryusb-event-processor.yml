@@ -1,0 +1,42 @@
+name: SentryUSB event processor
+
+on:
+  pull_request:
+    paths:
+      - "run/teslabox_processor/**"
+      - "test/teslabox_processor*_test.py"
+      - "test/teslabox_processor_ffmpeg_integration.py"
+      - ".github/workflows/sentryusb-event-processor.yml"
+  push:
+    branches: [main, main-dev]
+    paths:
+      - "run/teslabox_processor/**"
+      - "test/teslabox_processor*_test.py"
+      - "test/teslabox_processor_ffmpeg_integration.py"
+      - ".github/workflows/sentryusb-event-processor.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Validate shell and Python syntax
+        run: |
+          bash -n run/teslabox_processor/install.sh
+          python -m py_compile \
+            run/teslabox_processor/processor.py \
+            run/teslabox_processor/service.py \
+            run/teslabox_processor/build_package.py
+      - name: Run unit and package tests
+        run: python -m unittest discover -s test -p 'teslabox_processor*_test.py' -v
+      - name: Run ffmpeg integration
+        run: python test/teslabox_processor_ffmpeg_integration.py
+      - name: Check patch whitespace
+        run: git diff --check

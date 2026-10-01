@@ -6,7 +6,8 @@
 Thumbs.db
 Sentry-USB-OLD
 .cursorignore
-server/ble/__pycache__
+__pycache__/
+*.py[cod]
 .claude
 .codex
 docs/superpowers
