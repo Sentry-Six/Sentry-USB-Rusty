@@ -690,9 +690,10 @@ async fn tick(
     // session is alive at the moment we send the action — the verb call
     // reuses the same warm GATT link instead of triggering a fresh
     // scan/connect that races the chip-firmware HCI gaps.
-    if !keep_awake_active {
-        // Reset cycle state once the keep-awake reason clears so the next
-        // archive starts at a clean 0/3, immediate-fire baseline.
+    if !keep_awake_active || !cfg.keep_awake_enabled {
+        // Reset cycle state once the keep-awake reason clears OR the master
+        // switch is off, so a live toggle-off drops retry/timer state and the
+        // next enabled archive starts at a clean 0/3, immediate-fire baseline.
         *next_nudge_due_at = None;
         *nudge_retry_count = 0;
     }
@@ -1407,7 +1408,11 @@ async fn tick(
         // push notification + 60 s back-off. Matches the legacy bash
         // path's user-visible behavior so SC's notification regex still
         // matches.
-        if keep_awake_active {
+        // Gate the nudge on the master switch: `BLE_KEEP_AWAKE_ENABLED=no`
+        // must stop the CPC dispatch (the bug was the sampler ignoring it).
+        // keep_awake_active still pins the sampler Active above, so archives
+        // complete; this only suppresses holding the CAR awake.
+        if keep_awake_active && cfg.keep_awake_enabled {
             let now = Instant::now();
             let due = next_nudge_due_at.map(|t| now >= t).unwrap_or(true);
             if due {
