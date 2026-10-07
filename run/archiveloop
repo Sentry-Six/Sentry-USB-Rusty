@@ -68,6 +68,7 @@ export MUSIC_MOUNT=/mnt/music
 # read the setup variables and define other environment variables and functions
 source /root/bin/envsetup.sh
 source /root/bin/archive-control.sh
+source /root/bin/system-temperature.sh
 
 # Make sure awake_stop runs no matter how this script exits — set -e
 # is on (bash -eu above), so any unhandled error in archive_clips or
@@ -1441,14 +1442,15 @@ function retire_short_recording_links () {
 # temperature *before* the chip cools: overheating (WiFi drop / throttling) is a
 # common cause of archive failures, and the periodic monitor only samples once a
 # minute, so by the time it logs the chip has already cooled.
-# Respects TEMPERATURE_UNIT (from sentryusb.conf): "F" → Fahrenheit, else Celsius.
+# Matches the dashboard's saved system-temperature override, falling back to
+# the main temperature unit when no override is set.
 function soc_temperature () {
   local zone=/sys/class/thermal/thermal_zone0/temp
   [ -e "$zone" ] || return 0
   local raw
   raw=$(cat "$zone" 2>/dev/null) || return 0
   [ -n "$raw" ] || return 0
-  if [ "${TEMPERATURE_UNIT:-C}" = "F" ]; then
+  if [ "$(system_temperature_unit)" = "F" ]; then
     awk -v r="$raw" 'BEGIN { printf "%.1f°F", r/1000 * 9/5 + 32 }'
   else
     awk -v r="$raw" 'BEGIN { printf "%.1f°C", r/1000 }'

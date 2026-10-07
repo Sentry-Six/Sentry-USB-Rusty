@@ -7,15 +7,25 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 static BACKGROUND_WORK: AtomicUsize = AtomicUsize::new(0);
 const UPDATE_EXCLUSIVE: usize = usize::MAX;
 
+fn try_begin_work(work: &AtomicUsize) -> bool {
+    let mut current = work.load(Ordering::SeqCst);
+    loop {
+        // Keep the exclusive-update sentinel unreachable by worker counts.
+        if current >= UPDATE_EXCLUSIVE - 1 { return false; }
+        match work.compare_exchange_weak(current, current + 1, Ordering::SeqCst, Ordering::SeqCst) {
+            Ok(_) => return true,
+            Err(observed) => current = observed,
+        }
+    }
+}
+
 /// Detached export/upload workers retain this guard until their writes stop.
 /// Dropping an HTTP request must not falsely report the archive as quiescent.
 pub struct ArchiveWorkGuard;
 
 impl ArchiveWorkGuard {
     pub fn try_begin() -> Option<Self> {
-        BACKGROUND_WORK.fetch_update(Ordering::SeqCst, Ordering::SeqCst,
-            |n| if n < UPDATE_EXCLUSIVE - 1 { Some(n + 1) } else { None }).ok()?;
-        Some(Self)
+        if try_begin_work(&BACKGROUND_WORK) { Some(Self) } else { None }
     }
 
     pub fn is_running() -> bool {
@@ -130,6 +140,36 @@ impl ArchiveControl {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn worker_count_never_overflows_or_enters_update_exclusive_state() {
+        let work = AtomicUsize::new(UPDATE_EXCLUSIVE - 2);
+        assert!(try_begin_work(&work));
+        assert_eq!(work.load(Ordering::SeqCst), UPDATE_EXCLUSIVE - 1);
+        assert!(!try_begin_work(&work));
+        assert_eq!(work.load(Ordering::SeqCst), UPDATE_EXCLUSIVE - 1);
+        work.store(UPDATE_EXCLUSIVE, Ordering::SeqCst);
+        assert!(!try_begin_work(&work));
+        assert_eq!(work.load(Ordering::SeqCst), UPDATE_EXCLUSIVE);
+        work.store(0, Ordering::SeqCst);
+        assert!(try_begin_work(&work));
+        assert_eq!(work.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn concurrent_workers_cannot_overbook_remaining_count_capacity() {
+        let work = AtomicUsize::new(UPDATE_EXCLUSIVE - 9);
+        let start = std::sync::Barrier::new(32);
+        let admitted = std::thread::scope(|scope| {
+            let workers: Vec<_> = (0..32).map(|_| scope.spawn(|| {
+                start.wait();
+                try_begin_work(&work)
+            })).collect();
+            workers.into_iter().map(|worker| usize::from(worker.join().unwrap())).sum::<usize>()
+        });
+        assert_eq!(admitted, 8);
+        assert_eq!(work.load(Ordering::SeqCst), UPDATE_EXCLUSIVE - 1);
+    }
 
     #[cfg(unix)]
     #[test]

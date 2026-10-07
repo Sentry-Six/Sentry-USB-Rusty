@@ -33,6 +33,14 @@ fn item(name: &str, status: &'static str, detail: Option<String>) -> HealthItem 
     HealthItem { name: name.to_string(), status, detail }
 }
 
+fn system_temperature_is_fahrenheit(config: &sentryusb_config::SetupConfig) -> bool {
+    config
+        .get("SYSTEM_TEMPERATURE_UNIT")
+        .filter(|unit| !unit.is_empty())
+        .or_else(|| config.get("TEMPERATURE_UNIT"))
+        .is_some_and(|unit| unit.eq_ignore_ascii_case("F"))
+}
+
 /// GET /api/system/health-check
 pub async fn health_check(State(_s): State<AppState>) -> (StatusCode, Json<serde_json::Value>) {
     let mut categories: Vec<HealthCategory> = Vec::new();
@@ -43,9 +51,7 @@ pub async fn health_check(State(_s): State<AppState>) -> (StatusCode, Json<serde
             .map(|(active, _commented)| active)
             .unwrap_or_default();
 
-    let use_f = active_cfg
-        .get("TEMPERATURE_UNIT")
-        .map_or(false, |v| v.eq_ignore_ascii_case("F"));
+    let use_f = system_temperature_is_fahrenheit(&active_cfg);
     let fmt_temp = |celsius: f64| -> String {
         if use_f {
             format!("{:.1}°F", celsius * 9.0 / 5.0 + 32.0)
@@ -676,4 +682,39 @@ fn sanitize_diagnostics(raw: &str) -> String {
         .chars()
         .filter(|&c| c == '\t' || c == '\n' || c == '\r' || c >= '\x20')
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::system_temperature_is_fahrenheit;
+
+    #[test]
+    fn system_temperature_override_takes_priority_over_measurement_system() {
+        for (overall, system, expected_fahrenheit) in [("F", "C", false), ("C", "F", true)] {
+            let config = sentryusb_config::SetupConfig::from([
+                ("TEMPERATURE_UNIT".into(), overall.into()),
+                ("SYSTEM_TEMPERATURE_UNIT".into(), system.into()),
+            ]);
+            assert_eq!(system_temperature_is_fahrenheit(&config), expected_fahrenheit);
+        }
+    }
+
+    #[test]
+    fn unset_system_temperature_inherits_overall_unit_or_celsius_default() {
+        let mut config = sentryusb_config::SetupConfig::new();
+        assert!(!system_temperature_is_fahrenheit(&config));
+        config.insert("TEMPERATURE_UNIT".into(), "F".into());
+        assert!(system_temperature_is_fahrenheit(&config));
+        config.insert("SYSTEM_TEMPERATURE_UNIT".into(), String::new());
+        assert!(system_temperature_is_fahrenheit(&config));
+    }
+
+    #[test]
+    fn commented_system_temperature_does_not_override_active_unit() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("sentryusb.conf");
+        std::fs::write(&path, "export TEMPERATURE_UNIT=F\n#export SYSTEM_TEMPERATURE_UNIT=C\n").unwrap();
+        let (active, _) = sentryusb_config::parse_file(path.to_str().unwrap()).unwrap();
+        assert!(system_temperature_is_fahrenheit(&active));
+    }
 }

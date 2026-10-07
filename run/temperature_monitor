@@ -1,7 +1,10 @@
 #!/bin/bash -eu
 
+source "$(dirname "${BASH_SOURCE[0]}")/system-temperature.sh"
+
 function temperature_summary {
-  local current peak unit="${TEMPERATURE_UNIT:-C}"
+  local current peak unit
+  unit=$(system_temperature_unit)
   if [[ "$unit" == F ]]; then
     current=$(awk -v r="$1" 'BEGIN { printf "%.0f", r/1000 * 9/5 + 32 }')
     peak=$(awk -v r="$2" 'BEGIN { printf "%.0f", r/1000 * 9/5 + 32 }')
@@ -24,7 +27,7 @@ then
 fi
 
 function readable() {
-  if [ "${TEMPERATURE_UNIT:-C}" = "F" ]; then
+  if [ "$(system_temperature_unit)" = "F" ]; then
     awk -v r="$1" 'BEGIN { printf "%.1f°F", r/1000 * 9/5 + 32 }'
   else
     awk -v r="$1" 'BEGIN { printf "%.1f°C", r/1000 }'
