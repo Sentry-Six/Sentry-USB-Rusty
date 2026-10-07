@@ -55,7 +55,7 @@ export function DisplayUnitsSection() {
         checked={isMetric ? systemTempF : !systemTempF}
         onChange={(next) => setSystemTempF(isMetric ? next : !next)}
         label={isMetric ? "System temperatures in °F" : "System temperatures in °C"}
-        sub="Pi CPU temperature on the System tile"
+        sub="Pi temperatures on the System tile, in alerts and health checks"
       />
       <Toggle
         checked={isMetric ? !km : km}

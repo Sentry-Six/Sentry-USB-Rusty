@@ -168,6 +168,7 @@ cat "$optfile"
 
 const ARCHIVELOOP: &str = include_str!("../../../run/archiveloop");
 const ARCHIVE_CONTROL: &str = include_str!("../../../run/archive-control.sh");
+const SYSTEM_TEMPERATURE: &str = include_str!("../../../run/system-temperature.sh");
 const POST_ARCHIVE_PROCESS: &str = include_str!("../../../run/post-archive-process.sh");
 const AWAKE_START: &str = include_str!("../../../run/awake_start");
 const AWAKE_STOP: &str = include_str!("../../../run/awake_stop");
@@ -179,6 +180,7 @@ const WAITFORIDLE: &str = include_str!("../../../run/waitforidle");
 pub(crate) fn archive_runtime_scripts() -> &'static [(&'static str, &'static str)] {
     &[
         ("archive-control.sh", ARCHIVE_CONTROL),
+        ("system-temperature.sh", SYSTEM_TEMPERATURE),
         ("post-archive-process.sh", POST_ARCHIVE_PROCESS),
         ("awake_start", AWAKE_START),
         ("awake_stop", AWAKE_STOP),
@@ -216,6 +218,7 @@ pub async fn install_runtime_scripts(emitter: &crate::SetupEmitter) -> Result<bo
         // archive.sh) are installed by `archive::install_archive_scripts`
         // based on ARCHIVE_SYSTEM, since each system has its own copy.
         ("archive-control.sh", ARCHIVE_CONTROL),
+        ("system-temperature.sh", SYSTEM_TEMPERATURE),
         ("archiveloop", ARCHIVELOOP),
         ("post-archive-process.sh", POST_ARCHIVE_PROCESS),
         ("awake_start", AWAKE_START),
