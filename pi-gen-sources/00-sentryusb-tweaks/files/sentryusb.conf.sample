@@ -498,15 +498,15 @@ export CAM_SIZE=40G
 #   hotter, making it an ideal time to capture temperature.
 export TEMPERATURE_POSTARCHIVE=true
 #
-#   Display unit for temperature readouts (push notifications, health-check API,
-#   archive-failure log entries). "C" = Celsius, "F" = Fahrenheit. Defaults to
-#   Celsius if unset. The web UI's Display & Units toggle writes this value.
+#   Default display unit for temperature readouts. "C" = Celsius,
+#   "F" = Fahrenheit. Defaults to Celsius if unset. The web UI's
+#   Metric/Imperial selector writes this value; car temperatures use it.
 #export TEMPERATURE_UNIT=C
 #
-#   Display unit for the dashboard System tile's CPU temperature only,
-#   independent of TEMPERATURE_UNIT above. "C" = Celsius, "F" = Fahrenheit.
-#   Defaults to Celsius if unset. The web UI's Display & Units sub-toggle
-#   writes this value.
+#   Override for Pi temperature readouts on the dashboard System tile,
+#   in notifications, health checks, and archive-failure logs.
+#   "C" = Celsius, "F" = Fahrenheit. Inherits TEMPERATURE_UNIT if unset.
+#   The web UI's system-temperature sub-toggle writes this value.
 #export SYSTEM_TEMPERATURE_UNIT=C
 #
 #   Display unit for the tire-pressure history chart. "psi" or "bar".

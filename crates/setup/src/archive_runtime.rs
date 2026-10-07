@@ -122,6 +122,7 @@ mod tests {
                 assert_eq!(fs::read_to_string(directory.join(name)).unwrap(), *content);
             }
             assert!(fs::read_to_string(directory.join("archiveloop")).unwrap().contains("archive_cycle_begin"));
+            assert!(fs::read_to_string(directory.join("system-temperature.sh")).unwrap().contains("function system_temperature_unit"));
             assert_eq!(fs::read_to_string(directory.join("sentryusb.conf")).unwrap(), "unchanged settings");
             #[cfg(unix)] {
                 use std::os::unix::fs::PermissionsExt;

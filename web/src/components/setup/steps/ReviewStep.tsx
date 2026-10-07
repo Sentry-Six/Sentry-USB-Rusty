@@ -43,7 +43,7 @@ const sections = [
     title: "Advanced",
     fields: [
       "TIME_ZONE", "ARCHIVE_DELAY", "SNAPSHOT_INTERVAL",
-      "TEMPERATURE_UNIT", "TEMPERATURE_WARNING", "TEMPERATURE_CAUTION", "TEMPERATURE_INTERVAL", "TEMPERATURE_POSTARCHIVE",
+      "TEMPERATURE_UNIT", "SYSTEM_TEMPERATURE_UNIT", "TEMPERATURE_WARNING", "TEMPERATURE_CAUTION", "TEMPERATURE_INTERVAL", "TEMPERATURE_POSTARCHIVE",
       "RTC_BATTERY_ENABLED", "RTC_TRICKLE_CHARGE",
       "INCREASE_ROOT_SIZE", "CPU_GOVERNOR", "REPO", "BRANCH",
     ],
@@ -61,13 +61,14 @@ function formatReviewValue(key: string, value: string, data: StepProps["data"]):
   if ((key === "TEMPERATURE_WARNING" || key === "TEMPERATURE_CAUTION") && value) {
     const num = parseFloat(value)
     if (!isNaN(num)) {
-      if (data.TEMPERATURE_UNIT === "F") {
-        return ((num * 9) / 5 + 32).toFixed(1) + "°F"
+      const celsius = Math.abs(num) >= 1000 ? num / 1000 : num
+      if ((data.SYSTEM_TEMPERATURE_UNIT || data.TEMPERATURE_UNIT) === "F") {
+        return ((celsius * 9) / 5 + 32).toFixed(1) + "°F"
       }
-      return num.toFixed(1) + "°C"
+      return celsius.toFixed(1) + "°C"
     }
   }
-  if (key === "TEMPERATURE_UNIT") {
+  if (key === "TEMPERATURE_UNIT" || key === "SYSTEM_TEMPERATURE_UNIT") {
     return value === "F" ? "Fahrenheit" : "Celsius"
   }
   if (key === "RTC_BATTERY_ENABLED" || key === "RTC_TRICKLE_CHARGE") {

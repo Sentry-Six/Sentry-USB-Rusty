@@ -381,6 +381,7 @@ function check_and_install_temperature_monitor () {
   fi
 
   log_progress 'Installing temperature monitor script'
+  copy_script run/system-temperature.sh "$install_path"
   copy_script run/temperature_monitor "$install_path"
 
   return 0
@@ -393,6 +394,7 @@ function install_archive_scripts () {
   log_progress "Installing base archive scripts into $install_path"
   copy_script setup/pi/envsetup.sh "$install_path"
   copy_script run/archive-control.sh "$install_path"
+  copy_script run/system-temperature.sh "$install_path"
   copy_script run/archiveloop "$install_path"
   copy_script run/waitforidle "$install_path"
   copy_script run/remountfs_rw "$install_path"

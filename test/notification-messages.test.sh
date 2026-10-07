@@ -101,21 +101,74 @@ from pathlib import Path
 root = Path(sys.argv[1])
 pairs = [("run/post-archive-process.sh", "drive_mapping_summary"),
          ("run/temperature_monitor", "temperature_summary"),
+         ("run/temperature_monitor", "readable"),
+         ("run/archiveloop", "soc_temperature"),
          ("run/cifs_archive/copy-music.sh", "music_sync_summary")]
 functions = []
 for file, name in pairs:
     match = re.search(r"^function " + name + r"\b[^\n]*\n.*?^}", (root/file).read_text(), re.M | re.S)
     assert match, f"missing production formatter {name}"
-    functions.append(match[0])
+    functions.append(match[0].replace('/sys/class/thermal/thermal_zone0/temp', str(Path(sys.argv[2]).parent/'cpu-temperature')))
 Path(sys.argv[2]).write_text("\n".join(functions))
+# Redirect the real resolver's config paths into fixtures; never read or modify
+# the host's configuration, start a monitor, or send a real notification.
+helper = (root/'run/system-temperature.sh').read_text()
+for original, fixture in [('/root/sentryusb.conf', 'root.conf'),
+                          ('/boot/firmware/sentryusb.conf', 'boot-firmware.conf'),
+                          ('/boot/sentryusb.conf', 'boot.conf')]:
+    helper = helper.replace(original, str(Path(sys.argv[2]).parent/fixture))
+(Path(sys.argv[2]).parent/'temperature-helper').write_text(helper)
 PY
+source "$work/temperature-helper"
 source "$work/other-functions"
 [[ "$(drive_mapping_summary 3 12.02 0 0.00 miles)" == 'Mapped 3 drives since your last archive · 12.02 miles.' ]]
 [[ "$(drive_mapping_summary 0 0.00 1 1.50 km)" == 'Mapped 1 drive · 1.50 km.' ]]
 [[ "$(drive_mapping_summary 3 12.02 2 8.00 miles)" == 'Mapped 5 drives · 20.02 miles. 3 mapped earlier · 2 mapped now.' ]]
 [[ -z "$(drive_mapping_summary 0 0 0 0 miles)" ]]
-[[ "$(TEMPERATURE_UNIT=C temperature_summary 41400 42800)" == 'Device temperature: 41°C · Recent peak: 43°C.' ]]
-[[ "$(TEMPERATURE_UNIT=F temperature_summary 41400 42800)" == 'Device temperature: 107°F · Recent peak: 109°F.' ]]
+(
+  unset TEMPERATURE_UNIT SYSTEM_TEMPERATURE_UNIT
+  printf '41400\n' > "$work/cpu-temperature"
+  check_temperature_unit() {
+    local unit="$1" summary current threshold
+    if [[ "$unit" == F ]]; then
+      summary='Device temperature: 107°F · Recent peak: 109°F.'
+      current='106.5°F'; threshold='154.4°F'
+    else
+      summary='Device temperature: 41°C · Recent peak: 43°C.'
+      current='41.4°C'; threshold='68.0°C'
+    fi
+    [[ "$(temperature_summary 41400 42800)" == "$summary" ]]
+    [[ "$(readable 68000)" == "$threshold" ]]
+    [[ "$(soc_temperature)" == "$current" ]]
+  }
+  check_temperature_unit C
+  TEMPERATURE_UNIT=F check_temperature_unit F
+  TEMPERATURE_UNIT=F SYSTEM_TEMPERATURE_UNIT=C check_temperature_unit C
+  TEMPERATURE_UNIT=C SYSTEM_TEMPERATURE_UNIT=F check_temperature_unit F
+  TEMPERATURE_UNIT=F SYSTEM_TEMPERATURE_UNIT= check_temperature_unit F
+  # Saved preferences win over the daemon's stale inherited environment.
+  export TEMPERATURE_UNIT=F SYSTEM_TEMPERATURE_UNIT=F
+  printf 'export TEMPERATURE_UNIT="F"\nexport SYSTEM_TEMPERATURE_UNIT=\047C\047 # CPU override\n' > "$work/root.conf"
+  check_temperature_unit C
+  printf 'export TEMPERATURE_UNIT=C\nexport SYSTEM_TEMPERATURE_UNIT=F\n' > "$work/root.conf"
+  check_temperature_unit F
+  printf 'export TEMPERATURE_UNIT=C\n#export SYSTEM_TEMPERATURE_UNIT=F\n' > "$work/root.conf"
+  check_temperature_unit C
+  printf 'export TEMPERATURE_UNIT=F\n' > "$work/root.conf"
+  check_temperature_unit F
+  : > "$work/root.conf"
+  check_temperature_unit C
+  # Quoted shell expressions must never be executed while reading the units.
+  printf 'export SYSTEM_TEMPERATURE_UNIT="$(touch %s)"\n' "$work/units-injected" > "$work/root.conf"
+  check_temperature_unit C
+  [[ ! -e "$work/units-injected" ]]
+  rm "$work/root.conf"
+  printf 'export TEMPERATURE_UNIT=F\nexport SYSTEM_TEMPERATURE_UNIT=C\n' > "$work/boot-firmware.conf"
+  printf 'export TEMPERATURE_UNIT=F\n' > "$work/boot.conf"
+  check_temperature_unit C
+  rm "$work/boot-firmware.conf"
+  check_temperature_unit F
+)
 [[ "$(music_sync_summary 12 2 0)" == 'Music synced: 12 copied, 2 removed.' ]]
 [[ "$(music_sync_summary 12 2 1)" == 'Music sync incomplete: 12 copied, 2 removed, 1 error.' ]]
 echo 'PASS: earlier/current mapping, units, temperature, music deletion and errors'

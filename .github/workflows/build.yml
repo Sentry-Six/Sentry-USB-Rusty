@@ -158,15 +158,15 @@ jobs:
               # Replace runner sources to avoid conflicting architecture filters.
               sudo rm -f /etc/apt/sources.list.d/ubuntu.sources
               sudo tee /etc/apt/sources.list >/dev/null <<EOF
-          deb [arch=amd64,i386] http://archive.ubuntu.com/ubuntu/ ${UBUNTU_CODENAME} main restricted universe multiverse
-          deb [arch=amd64,i386] http://archive.ubuntu.com/ubuntu/ ${UBUNTU_CODENAME}-updates main restricted universe multiverse
-          deb [arch=amd64,i386] http://archive.ubuntu.com/ubuntu/ ${UBUNTU_CODENAME}-backports main restricted universe multiverse
-          deb [arch=amd64,i386] http://security.ubuntu.com/ubuntu/ ${UBUNTU_CODENAME}-security main restricted universe multiverse
+          deb [arch=amd64,i386] https://archive.ubuntu.com/ubuntu/ ${UBUNTU_CODENAME} main restricted universe multiverse
+          deb [arch=amd64,i386] https://archive.ubuntu.com/ubuntu/ ${UBUNTU_CODENAME}-updates main restricted universe multiverse
+          deb [arch=amd64,i386] https://archive.ubuntu.com/ubuntu/ ${UBUNTU_CODENAME}-backports main restricted universe multiverse
+          deb [arch=amd64,i386] https://security.ubuntu.com/ubuntu/ ${UBUNTU_CODENAME}-security main restricted universe multiverse
           EOF
               sudo tee /etc/apt/sources.list.d/ports.list >/dev/null <<EOF
-          deb [arch=arm64,armhf] http://ports.ubuntu.com/ubuntu-ports/ ${UBUNTU_CODENAME} main restricted universe multiverse
-          deb [arch=arm64,armhf] http://ports.ubuntu.com/ubuntu-ports/ ${UBUNTU_CODENAME}-updates main restricted universe multiverse
-          deb [arch=arm64,armhf] http://ports.ubuntu.com/ubuntu-ports/ ${UBUNTU_CODENAME}-security main restricted universe multiverse
+          deb [arch=arm64,armhf] https://ports.ubuntu.com/ubuntu-ports/ ${UBUNTU_CODENAME} main restricted universe multiverse
+          deb [arch=arm64,armhf] https://ports.ubuntu.com/ubuntu-ports/ ${UBUNTU_CODENAME}-updates main restricted universe multiverse
+          deb [arch=arm64,armhf] https://ports.ubuntu.com/ubuntu-ports/ ${UBUNTU_CODENAME}-security main restricted universe multiverse
           EOF
               sudo dpkg --add-architecture armhf
               sudo apt-get update -qq

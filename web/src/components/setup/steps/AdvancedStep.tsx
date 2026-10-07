@@ -228,10 +228,10 @@ function TempInput({
 
 export function AdvancedStep({ data, onChange, setupAlreadyFinished }: StepProps) {
   const [isPi5, setIsPi5] = useState(false)
-  const useFahrenheit = data.TEMPERATURE_UNIT === "F"
+  const useFahrenheit = (data.SYSTEM_TEMPERATURE_UNIT || data.TEMPERATURE_UNIT) === "F"
   // Master measurement-unit selector reflects the temperature choice (the
   // per-unit controls below can still diverge into a mixed set).
-  const isMetric = !useFahrenheit
+  const isMetric = data.TEMPERATURE_UNIT !== "F"
 
   useEffect(() => {
     fetch("/api/status")
@@ -300,8 +300,8 @@ export function AdvancedStep({ data, onChange, setupAlreadyFinished }: StepProps
         </p>
       </div>
 
-      {/* Temperature monitoring — unit follows the Measurement Unit selector
-          above (TEMPERATURE_UNIT); thresholds render in that unit. */}
+      {/* System-temperature overrides apply to monitoring thresholds as well
+          as device readouts. Otherwise inherit the measurement system. */}
       <div>
         <div className="mb-3 flex items-center gap-2">
           <DeviceThermostatIcon className="h-4 w-4 text-blue-400" />
