@@ -40,6 +40,9 @@ pub struct BleConfig {
     pub experimental: bool,
     /// Seconds between keep-awake `charge-port-close` nudges.
     pub keep_awake_interval_secs: u64,
+    /// Master switch (`BLE_KEEP_AWAKE_ENABLED`); when false the sampler skips
+    /// the CPC nudge. Pin/archive behavior is unchanged. Missing key => true.
+    pub keep_awake_enabled: bool,
 }
 
 /// Default keep-awake nudge interval in seconds.
@@ -55,6 +58,7 @@ impl Default for BleConfig {
             away_auto_enabled: false,
             experimental: false,
             keep_awake_interval_secs: DEFAULT_KEEP_AWAKE_INTERVAL_SECS,
+            keep_awake_enabled: true,
         }
     }
 }
@@ -156,6 +160,19 @@ impl BleConfig {
         .filter(|s| (15..=900).contains(s))
         .unwrap_or(DEFAULT_KEEP_AWAKE_INTERVAL_SECS);
 
+        // Sampler must honor the keep-awake master switch; when off it skips
+        // the CPC nudge (the bug was the sampler ignoring this flag). Read it
+        // byte-exact via the same path as api/ble.rs so the sampler and web UI
+        // never disagree on a value. Missing => true (pre-migration boxes).
+        let keep_awake_enabled = parse_keep_awake_enabled(
+            sentryusb_config::get_config_value(
+                &active,
+                &commented,
+                "BLE_KEEP_AWAKE_ENABLED",
+            )
+            .as_deref(),
+        );
+
         Ok(Self {
             enabled,
             vin,
@@ -164,11 +181,52 @@ impl BleConfig {
             away_auto_enabled,
             experimental,
             keep_awake_interval_secs,
+            keep_awake_enabled,
         })
+    }
+}
+
+/// Parses `BLE_KEEP_AWAKE_ENABLED`. Byte-exact `yes`/`true`/`1` => enabled;
+/// any other present value (e.g. `YES`, `On`, `no`, `" yes "`) => disabled;
+/// absent => enabled (pre-migration boxes nudged; migration writes the key).
+/// NO trim/case-fold — identical to api/ble.rs so the sampler and web UI can
+/// never disagree on the same value.
+fn parse_keep_awake_enabled(raw: Option<&str>) -> bool {
+    match raw {
+        Some(v) => matches!(v, "yes" | "true" | "1"),
+        None => true,
     }
 }
 
 /// Checks whether the configured Bluetooth adapter currently exists.
 fn adapter_exists(adapter: &str) -> bool {
     std::path::Path::new(&format!("/sys/class/bluetooth/{adapter}")).exists()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_keep_awake_enabled;
+
+    #[test]
+    fn keep_awake_missing_defaults_enabled() {
+        assert!(parse_keep_awake_enabled(None));
+    }
+
+    #[test]
+    fn keep_awake_affirmative_values_enable() {
+        for v in ["yes", "true", "1"] {
+            assert!(parse_keep_awake_enabled(Some(v)), "{v:?} should enable");
+        }
+    }
+
+    #[test]
+    fn keep_awake_off_and_unrecognized_disable() {
+        // Byte-exact: explicit off, case variants, AND whitespace-padded values
+        // all disable (the parser does not trim; matches api/ble.rs).
+        for v in [
+            "no", "false", "0", "off", "YES", "True", "On", "", " yes ", "true\n", " 1",
+        ] {
+            assert!(!parse_keep_awake_enabled(Some(v)), "{v:?} should disable");
+        }
+    }
 }
