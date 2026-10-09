@@ -41,7 +41,7 @@ pub struct BleConfig {
     /// Seconds between keep-awake `charge-port-close` nudges.
     pub keep_awake_interval_secs: u64,
     /// Master switch (`BLE_KEEP_AWAKE_ENABLED`); when false the sampler skips
-    /// the CPC nudge. Pin/archive behavior is unchanged. Missing key => true.
+    /// the CPC nudge. Pin/archive behavior is unchanged. Missing key => false.
     pub keep_awake_enabled: bool,
 }
 
@@ -58,7 +58,7 @@ impl Default for BleConfig {
             away_auto_enabled: false,
             experimental: false,
             keep_awake_interval_secs: DEFAULT_KEEP_AWAKE_INTERVAL_SECS,
-            keep_awake_enabled: true,
+            keep_awake_enabled: false,
         }
     }
 }
@@ -66,7 +66,10 @@ impl Default for BleConfig {
 impl BleConfig {
     /// Reads the current configuration. BLE is disabled unless explicitly enabled.
     pub fn load() -> Result<Self> {
-        let config_path = sentryusb_config::find_config_path();
+        Self::load_from(sentryusb_config::find_config_path())
+    }
+
+    fn load_from(config_path: &str) -> Result<Self> {
         let (active, commented) = sentryusb_config::parse_file(config_path)?;
 
         // BLE telemetry requires explicit enablement.
@@ -163,7 +166,9 @@ impl BleConfig {
         // Sampler must honor the keep-awake master switch; when off it skips
         // the CPC nudge (the bug was the sampler ignoring this flag). Read it
         // byte-exact via the same path as api/ble.rs so the sampler and web UI
-        // never disagree on a value. Missing => true (pre-migration boxes).
+        // agree, including when the key is missing. Legacy enablement is
+        // materialized by the API startup migration; fresh telemetry-only
+        // configurations must not implicitly enable keep-awake.
         let keep_awake_enabled = parse_keep_awake_enabled(
             sentryusb_config::get_config_value(
                 &active,
@@ -188,13 +193,14 @@ impl BleConfig {
 
 /// Parses `BLE_KEEP_AWAKE_ENABLED`. Byte-exact `yes`/`true`/`1` => enabled;
 /// any other present value (e.g. `YES`, `On`, `no`, `" yes "`) => disabled;
-/// absent => enabled (pre-migration boxes nudged; migration writes the key).
+/// absent => disabled, matching the API and awake_start. API startup migration
+/// writes an explicit value for legacy configurations.
 /// NO trim/case-fold — identical to api/ble.rs so the sampler and web UI can
 /// never disagree on the same value.
 fn parse_keep_awake_enabled(raw: Option<&str>) -> bool {
     match raw {
         Some(v) => matches!(v, "yes" | "true" | "1"),
-        None => true,
+        None => false,
     }
 }
 
@@ -205,11 +211,45 @@ fn adapter_exists(adapter: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_keep_awake_enabled;
+    use super::{BleConfig, parse_keep_awake_enabled};
 
     #[test]
-    fn keep_awake_missing_defaults_enabled() {
-        assert!(parse_keep_awake_enabled(None));
+    fn keep_awake_missing_defaults_disabled() {
+        assert!(!parse_keep_awake_enabled(None));
+        assert!(!BleConfig::default().keep_awake_enabled);
+    }
+
+    #[test]
+    fn enabling_telemetry_on_a_fresh_config_does_not_enable_keep_awake() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("sentryusb.conf");
+        std::fs::write(
+            &path,
+            "export BLE_ENABLED=yes\nexport TESLA_BLE_VIN=5YJ3E1EA0KF000001\n",
+        )
+        .unwrap();
+
+        let cfg = BleConfig::load_from(path.to_str().unwrap()).unwrap();
+        assert!(cfg.enabled);
+        assert_eq!(cfg.vin, "5YJ3E1EA0KF000001");
+        assert!(!cfg.keep_awake_enabled);
+    }
+
+    #[test]
+    fn keep_awake_config_reloads_explicit_values_and_key_removal() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("sentryusb.conf");
+        for (setting, expected) in [
+            ("export BLE_KEEP_AWAKE_ENABLED=yes\n", true),
+            ("export BLE_KEEP_AWAKE_ENABLED=no\n", false),
+            ("export BLE_KEEP_AWAKE_ENABLED=yes\n", true),
+            ("", false),
+        ] {
+            std::fs::write(&path, format!("export BLE_ENABLED=yes\n{setting}")).unwrap();
+            let cfg = BleConfig::load_from(path.to_str().unwrap()).unwrap();
+            assert!(cfg.enabled);
+            assert_eq!(cfg.keep_awake_enabled, expected, "{setting:?}");
+        }
     }
 
     #[test]
