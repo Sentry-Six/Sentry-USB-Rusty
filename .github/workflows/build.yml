@@ -350,6 +350,7 @@ jobs:
           bash test/notification-messages.test.sh
           bash test/notification-dispatch.test.sh
           bash test/archive-cancel.test.sh
+          bash test/diagnostics-capture.test.sh
       - name: Run tests
         run: cargo test --workspace
 

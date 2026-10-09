@@ -89,6 +89,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/logs/{name}", get(crate::logs::get_log))
         // Diagnostics & health
         .route("/api/diagnostics/refresh", post(crate::healthcheck::refresh_diagnostics))
+        .route("/api/diagnostics/download", post(crate::healthcheck::download_diagnostics))
         .route("/api/diagnostics", get(crate::healthcheck::get_diagnostics))
         .route("/api/system/health-check", get(crate::healthcheck::health_check))
         // System

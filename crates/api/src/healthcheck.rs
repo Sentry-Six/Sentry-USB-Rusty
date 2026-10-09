@@ -551,15 +551,53 @@ pub async fn health_check(State(_s): State<AppState>) -> (StatusCode, Json<serde
 }
 
 /// POST /api/diagnostics/refresh
-pub async fn refresh_diagnostics(State(_s): State<AppState>) -> (StatusCode, Json<serde_json::Value>) {
-    match sentryusb_shell::run_with_timeout(
+pub async fn refresh_diagnostics(State(state): State<AppState>) -> (StatusCode, Json<serde_json::Value>) {
+    match gather_diagnostics(state).await {
+        Ok(report) => match tokio::fs::write("/tmp/diagnostics.txt", report).await {
+            Ok(_) => crate::json_ok(),
+            Err(e) => crate::json_error(StatusCode::INTERNAL_SERVER_ERROR, &format!("Failed to save diagnostics: {}", e)),
+        },
+        Err(e) => crate::json_error(StatusCode::INTERNAL_SERVER_ERROR, &format!("Failed to generate diagnostics: {}", e)),
+    }
+}
+
+/// A fresh capture is returned directly so downloads cannot read an older
+/// cached report or another request's partially written file.
+pub async fn download_diagnostics(State(state): State<AppState>) -> axum::response::Response {
+    match gather_diagnostics(state).await {
+        Ok(report) => diagnostics_download_response(report),
+        Err(e) => crate::json_error(StatusCode::INTERNAL_SERVER_ERROR, &format!("Failed to capture diagnostics: {}", e)).into_response(),
+    }
+}
+
+fn diagnostics_download_response(report: String) -> axum::response::Response {
+    let filename = format!("attachment; filename=\"sentryusb-diagnostics-{}.txt\"", chrono::Utc::now().format("%Y%m%d-%H%M%S-UTC"));
+    (
+        [
+            (axum::http::header::CONTENT_TYPE, "text/plain; charset=utf-8".to_string()),
+            (axum::http::header::CONTENT_DISPOSITION, filename),
+            (axum::http::header::CACHE_CONTROL, "no-store".to_string()),
+        ],
+        sanitize_diagnostics(&report),
+    ).into_response()
+}
+
+async fn gather_diagnostics(state: AppState) -> anyhow::Result<String> {
+    let capture_time = chrono::Utc::now().to_rfc3339();
+    let script = sentryusb_shell::run_with_timeout(
         std::time::Duration::from_secs(60),
         "bash",
         &["-c", DIAGNOSTICS_SCRIPT],
-    ).await {
-        Ok(_) => crate::json_ok(),
-        Err(e) => crate::json_error(StatusCode::INTERNAL_SERVER_ERROR, &format!("Failed to generate diagnostics: {}", e)),
-    }
+    );
+    // Include the UI's status sample without relying on a loopback proxy,
+    // configured HTTP port, or auth cookie. Raw USB probes below are live.
+    let status = tokio::time::timeout(std::time::Duration::from_secs(3), crate::status::get_status(State(state)));
+    let (report, status) = tokio::join!(script, status);
+    let status = match status {
+        Ok((code, Json(value))) if code.is_success() => serde_json::to_string_pretty(&value)?,
+        _ => "Status sample unavailable (timed out or device busy)".into(),
+    };
+    Ok(format!("{}\n====== UI status sample (capture started {capture_time}; may be cached) ======\n{status}\n", report?))
 }
 
 /// Inline diagnostics gathering script.
@@ -568,6 +606,8 @@ const DIAGNOSTICS_SCRIPT: &str = r#"{
   echo "Date: $(date)"
   echo "Hostname: $(hostname)"
   echo "Uptime: $(uptime)"
+  echo "Capture started (UTC): $(date -u +%FT%TZ)"
+  echo "Capture is read-only; USB drives are not toggled or mounted."
   echo ""
 
   echo "====== version ======"
@@ -576,27 +616,99 @@ const DIAGNOSTICS_SCRIPT: &str = r#"{
   cat /sys/firmware/devicetree/base/model 2>/dev/null; echo
   echo ""
 
+  # Capture volatile USB/power evidence before slower storage/log probes.
+  echo "====== USB state and recording activity ======"
+  gadget=/sys/kernel/config/usb_gadget/sentryusb
+  if [ -d "$gadget" ]; then
+    for attr in UDC bcdUSB; do
+      echo "$attr: $(cat "$gadget/$attr" 2>/dev/null)"
+    done
+    for cfg in "$gadget"/configs/*; do
+      [ -d "$cfg" ] || continue
+      echo "$cfg/MaxPower (mA): $(cat "$cfg/MaxPower" 2>/dev/null)"
+    done
+    for lun in "$gadget"/functions/mass_storage.*/lun.*; do
+      [ -d "$lun" ] || continue
+      for attr in file ro nofua removable; do
+        echo "$lun/$attr: $(cat "$lun/$attr" 2>/dev/null)"
+      done
+    done
+  else
+    echo "Gadget configuration absent"
+  fi
+  usb_sample() {
+    echo "Sample UTC: $(date -u +%FT%TZ)"
+    for u in /sys/class/udc/*; do
+      [ -d "$u" ] || continue
+      for attr in state current_speed maximum_speed; do
+        echo "$u/$attr: $(cat "$u/$attr" 2>/dev/null)"
+      done
+    done
+    cam=/backingfiles/cam_disk.bin
+    if sample=$(timeout 2 stat -c 'size_bytes=%s mtime_epoch=%Y modified=%y' "$cam" 2>/dev/null); then
+      echo "$cam: $sample"
+      mtime=${sample#*mtime_epoch=}; mtime=${mtime%% *}
+      echo "cam_last_write_secs=$(( $(date +%s) - mtime ))"
+    else
+      echo "cam_disk.bin metadata unavailable"
+    fi
+    for comm in /proc/[0-9]*/comm; do
+      read -r name < "$comm" 2>/dev/null || continue
+      case "$name" in
+        file-storage*|gadgetwatchdog|kmsgmirror)
+          pid=${comm%/comm}; pid=${pid##*/}
+          echo "Thread $name (pid $pid)"
+          cat "/proc/$pid/io" "/proc/$pid/wchan" 2>/dev/null; echo
+          ;;
+      esac
+    done
+  }
+  usb_sample
+  sleep 2
+  usb_sample
+  echo "Two samples show activity only during capture; no writes can also mean recording is paused."
+  echo ""
+
+  echo "====== power / throttling ======"
+  timeout 3 vcgencmd get_throttled 2>&1 || echo "throttling flags unavailable"
+  timeout 3 vcgencmd pmic_read_adc 2>&1 || echo "PMIC rail measurements unavailable on this board"
+  echo ""
+
   echo "====== disk / images ======"
-  df -h /sentryusb/ / /backingfiles/ /mutable/ 2>/dev/null
+  timeout 3 df -h /sentryusb/ / /backingfiles/ /mutable/ 2>&1 || echo "capacity probe unavailable or timed out"
+  timeout 3 df -i /backingfiles/ /mutable/ 2>&1 || echo "inode probe unavailable or timed out"
+  cat /proc/mounts /proc/diskstats 2>/dev/null
+  for scheduler in /sys/block/*/queue/scheduler; do
+    echo "$scheduler: $(cat "$scheduler" 2>/dev/null)"
+  done
   for img in cam music lightshow boombox wraps; do
     f="/backingfiles/${img}_disk.bin"
     if [ -f "$f" ]; then
-      echo "$img disk: $(du -h "$f" | cut -f1)"
+      echo "$img disk: $(timeout 2 du -h "$f" 2>/dev/null | cut -f1)"
     fi
   done
   echo ""
 
-  echo "====== USB gadget ======"
-  if [ -d /sys/kernel/config/usb_gadget/sentryusb ]; then
-    echo "Gadget: active"
-    for i in 0 1 2 3 4 5; do
-      lun="/sys/kernel/config/usb_gadget/sentryusb/functions/mass_storage.0/lun.${i}/file"
-      [ -e "$lun" ] && echo "  lun${i}: $(cat "$lun")"
-    done
-  else
-    echo "Gadget: inactive"
-  fi
-  cat /sys/class/udc/*/state 2>/dev/null || true
+  echo "====== gadget stall evidence (latest 3, up to 200 lines each) ======"
+  # Generated filenames sort chronologically; never scan unrelated files.
+  while IFS= read -r f; do
+    [ -f "$f" ] || continue
+    echo "--- $f ---"
+    timeout 2 tail -200 "$f" 2>&1 || echo "stall evidence unavailable"
+  done < <(printf '%s\n' /mutable/gadget_stall_*.log | sort -r | head -3)
+  echo ""
+
+  echo "====== persistent kernel history (last 500) ======"
+  timeout 2 tail -500 /mutable/kernel.log 2>&1 || echo "no persistent kernel history available"
+  echo ""
+
+  echo "====== BLE heartbeat history (last 120) ======"
+  timeout 2 tail -120 /mutable/sentryusb-ble.log 2>&1 || echo "no BLE heartbeat history available"
+  echo ""
+
+  echo "====== storage cleanup state ======"
+  cat /run/sentryusb_storage_cleanup.json 2>/dev/null || echo "cleanup state unavailable"
+  [ ! -e /run/sentryusb_inode_stall ] || echo "Clip index inode stall flag present"
   echo ""
 
   echo "====== network ======"
@@ -604,7 +716,7 @@ const DIAGNOSTICS_SCRIPT: &str = r#"{
   echo ""
 
   echo "====== services ======"
-  for svc in sentryusb sentryusb-archive sentryusb-ble avahi-daemon bluetooth; do
+  for svc in sentryusb sentryusb-archive sentryusb-telemetry sentryusb-ble avahi-daemon bluetooth; do
     status=$(systemctl is-active "$svc" 2>/dev/null || echo "not found")
     echo "  $svc: $status"
   done
@@ -613,7 +725,7 @@ const DIAGNOSTICS_SCRIPT: &str = r#"{
   echo "====== archiveloop ======"
   # Bounded, but wide enough to show a failure repeating across several
   # archive cycles rather than a single truncated window.
-  tail -1000 /mutable/archiveloop.log 2>/dev/null || echo "no archiveloop log"
+  timeout 2 tail -1000 /mutable/archiveloop.log 2>/dev/null || echo "no archiveloop log"
   echo ""
 
   echo "====== bluetooth / BLE telemetry ======"
@@ -647,12 +759,13 @@ const DIAGNOSTICS_SCRIPT: &str = r#"{
   vcgencmd measure_temp 2>/dev/null || true
   echo ""
 
-  echo "====== dmesg (last 30) ======"
-  dmesg -T 2>/dev/null | tail -30
+  echo "====== dmesg (last 200) ======"
+  dmesg -T 2>/dev/null | tail -200
   echo ""
 
+  echo "Capture completed (UTC): $(date -u +%FT%TZ)"
   echo "====== end of diagnostics ======"
-} &> /tmp/diagnostics.txt"#;
+} 2>&1"#;
 
 /// GET /api/diagnostics
 pub async fn get_diagnostics(State(_s): State<AppState>) -> impl IntoResponse {
@@ -687,6 +800,20 @@ fn sanitize_diagnostics(raw: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::system_temperature_is_fahrenheit;
+
+    #[tokio::test]
+    async fn fresh_download_is_a_timestamped_uncached_text_attachment() {
+        let response = super::diagnostics_download_response("fresh USB capture\n\x1b[31mconfigured\x1b[0m\x00".into());
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        let headers = response.headers();
+        assert_eq!(headers[axum::http::header::CONTENT_TYPE], "text/plain; charset=utf-8");
+        assert_eq!(headers[axum::http::header::CACHE_CONTROL], "no-store");
+        let disposition = headers[axum::http::header::CONTENT_DISPOSITION].to_str().unwrap();
+        assert!(disposition.starts_with("attachment; filename=\"sentryusb-diagnostics-"));
+        assert!(disposition.ends_with("-UTC.txt\""));
+        let body = axum::body::to_bytes(response.into_body(), 1024).await.unwrap();
+        assert_eq!(&body[..], b"fresh USB capture\nconfigured");
+    }
 
     #[test]
     fn system_temperature_override_takes_priority_over_measurement_system() {

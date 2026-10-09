@@ -289,6 +289,7 @@ export default function Logs() {
   const [activeTab, setActiveTabState] = useState(initialTab)
   const [content, setContent] = useState<string>("Loading...")
   const [loading, setLoading] = useState(false)
+  const [capturingDiagnostics, setCapturingDiagnostics] = useState(false)
   const [showScrollBtn, setShowScrollBtn] = useState(false)
   const [live, setLive] = useState(true)
   const [search, setSearch] = useState("")
@@ -455,6 +456,10 @@ export default function Logs() {
   ).join("\n"), [content, search, level])
 
   async function handleDownload() {
+    if (activeTab === "diagnostics") {
+      await handleCaptureDiagnostics()
+      return
+    }
     // Bluetooth tab gets a richer, bundled-on-the-server download —
     // pulls together the full unfiltered journal, sysfs LE params,
     // hciconfig, rfkill, dmesg BLE lines, pairing state, the entire
@@ -486,13 +491,41 @@ export default function Logs() {
       }
     }
     try {
-      const response = await fetch(activeTab === "diagnostics" ? "/api/diagnostics" : activeLog.url, { cache: "no-store" })
+      const response = await fetch(activeLog.url, { cache: "no-store" })
       if (!response.ok) throw new Error("Could not download log")
       const blob = await response.blob()
       const url = URL.createObjectURL(blob)
       const a = document.createElement("a")
       a.href = url; a.download = `${activeTab}.log`; a.click(); URL.revokeObjectURL(url)
     } catch (e) { setError(e instanceof Error ? e.message : "Could not download log") }
+  }
+
+  async function handleCaptureDiagnostics() {
+    setCapturingDiagnostics(true); setError(null)
+    // A pending read of the cached report must not replace this fresh capture.
+    const id = ++generation.current
+    pollRequest.current?.abort()
+    olderRequest.current?.abort()
+    try {
+      const response = await fetch("/api/diagnostics/download", { method: "POST", cache: "no-store" })
+      if (!response.ok || !response.headers.get("Content-Type")?.includes("text/plain")) {
+        throw new Error("Could not capture diagnostics. Retry while the device is connected.")
+      }
+      const text = await response.text()
+      if (generation.current === id) applyWindow(text, 0, "newest", false)
+      const disposition = response.headers.get("Content-Disposition") || ""
+      const filename = disposition.match(/filename="([^"]+)"/)?.[1] || "sentryusb-diagnostics.txt"
+      const url = URL.createObjectURL(new Blob([text], { type: "text/plain;charset=utf-8" }))
+      try {
+        const a = document.createElement("a")
+        a.href = url; a.download = filename; a.click()
+      } finally { URL.revokeObjectURL(url) }
+    } catch (e) {
+      if (generation.current === id) setError(e instanceof Error ? e.message : "Could not capture diagnostics")
+    } finally {
+      if (generation.current === id) setLoading(false)
+      setCapturingDiagnostics(false)
+    }
   }
 
   async function handleRefreshDiagnostics() {
@@ -522,7 +555,7 @@ export default function Logs() {
           {activeTab === "diagnostics" && (
             <button
               onClick={handleRefreshDiagnostics}
-              disabled={loading}
+              disabled={loading || capturingDiagnostics}
               className="glass-card glass-card-hover flex items-center gap-1.5 px-3 py-1.5 text-sm text-slate-400 transition-colors hover:text-slate-200 disabled:opacity-50"
             >
               <CachedIcon
@@ -533,18 +566,29 @@ export default function Logs() {
           )}
           <button
             onClick={handleDownload}
+            disabled={capturingDiagnostics || (activeTab === "diagnostics" && loading)}
             title={
-              activeTab === "bluetooth"
+              activeTab === "diagnostics"
+                ? "Captures current USB, recording, power, storage and BLE evidence with recent logs in one file."
+                : activeTab === "bluetooth"
                 ? "Downloads a comprehensive BLE diagnostic bundle: full journal, sysfs LE params, hciconfig, rfkill, pairing state, dmesg, and the full per-minute history file."
                 : undefined
             }
-            className="glass-card glass-card-hover flex items-center gap-1.5 px-3 py-1.5 text-sm text-slate-400 transition-colors hover:text-slate-200"
+            className="glass-card glass-card-hover flex items-center gap-1.5 px-3 py-1.5 text-sm text-slate-400 transition-colors hover:text-slate-200 disabled:opacity-50"
           >
-            <DownloadIcon className="h-4 w-4" />
-            {activeTab === "bluetooth" ? "Download bundle" : "Download"}
+            {capturingDiagnostics ? <ProgressActivityIcon className="h-4 w-4 animate-spin" /> : <DownloadIcon className="h-4 w-4" />}
+            {capturingDiagnostics ? "Capturing…" : activeTab === "diagnostics" ? "Capture & download" : activeTab === "bluetooth" ? "Download bundle" : "Download"}
           </button>
         </div>
       </div>
+
+      {activeTab === "diagnostics" && (
+        <p className="text-sm text-slate-400">
+          If the car shows a red X or stops recording, use Capture &amp; download before unplugging or rebooting.
+          It saves a fresh report of USB activity, power, storage, Bluetooth and recent logs. Capture can take up to a minute.
+          The file stays on your device until you share it and may include device identifiers, network addresses or location details from logs.
+        </p>
+      )}
 
       {/* Tab bar */}
       <div className="flex flex-wrap gap-1" role="tablist" aria-label="Log source">
