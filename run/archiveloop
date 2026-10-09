@@ -126,7 +126,13 @@ elif [ "${ARCHIVE_SYSTEM:-none}" = "cifs" ] || [ "${ARCHIVE_SYSTEM:-none}" = "nf
 then
   # For CIFS and NFS
   [[ -n "${SHARE_NAME:-}" && -f /backingfiles/cam_disk.bin ]] && export ARCHIVE_MOUNT=/mnt/archive
-  [[ -n "${MUSIC_SHARE_NAME:-}" && -f /backingfiles/music_disk.bin ]] && export MUSIC_ARCHIVE_MOUNT=/mnt/musicarchive
+  # A slash-only MUSIC_SHARE_NAME is an empty CIFS share; treat it as unset.
+  # NFS keeps its raw value ("/" is a valid root export).
+  if [ "${ARCHIVE_SYSTEM:-none}" = "cifs" ]
+  then music_present=$(printf '%s' "${MUSIC_SHARE_NAME:-}" | sed 's#^/*##')
+  else music_present="${MUSIC_SHARE_NAME:-}"
+  fi
+  [[ -n "$music_present" && -f /backingfiles/music_disk.bin ]] && export MUSIC_ARCHIVE_MOUNT=/mnt/musicarchive
 fi
 
 function timestamp () {

@@ -20,6 +20,9 @@
 # and uncomment the rsync or rclone section below.
 export ARCHIVE_SYSTEM=cifs
 export ARCHIVE_SERVER=your_archive_name_or_ip
+# SHARE_NAME is the SMB share name (e.g. TeslaCam), optionally with a subfolder
+# inside that share (TeslaCam/clips). It is NOT a full filesystem path on the
+# NAS: unRAID's /mnt/user/TeslaCam is just the share 'TeslaCam'.
 export SHARE_NAME='your_archive_share/optional_path_on_share'
 export SHARE_USER=username
 export SHARE_PASSWORD='password'

@@ -132,7 +132,8 @@ then
   check_archive_mountable "$ARCHIVE_SERVER" "$SHARE_NAME" rw
 fi
 
-if [ -n "${MUSIC_SHARE_NAME:+x}" ]
+# A slash-only MUSIC_SHARE_NAME normalizes to an empty share; treat it as unset.
+if [ -n "$(printf '%s' "${MUSIC_SHARE_NAME:-}" | sed 's#^/*##')" ]
 then
   if [ "$MUSIC_SIZE" = "0" ]
   then
@@ -170,13 +171,14 @@ function configure_archive () {
     rmdir "$archive_path" || log_progress "failed to remove $archive_path"
   fi
 
-  if [ -n "${MUSIC_SHARE_NAME:+x}" ]
+  local musicsharename; musicsharename=$(printf '%s' "${MUSIC_SHARE_NAME:-}" | sed 's#^/*##')
+  # Skip a slash-only MUSIC_SHARE_NAME (empty after strip); mirror the unset case.
+  if [ -n "$musicsharename" ]
   then
     if [ ! -e "$music_archive_path" ]
     then
       mkdir "$music_archive_path"
     fi
-    local musicsharename; musicsharename=$(printf '%s' "$MUSIC_SHARE_NAME" | sed 's#^/*##')
     local musicsharenameforstab="${musicsharename// /\\040}"
     echo "//$ARCHIVE_SERVER/$musicsharenameforstab $music_archive_path cifs ro,noauto,credentials=${credentials_file_path},iocharset=utf8,file_mode=0777,dir_mode=0777,$VERS_OPT,$SEC_OPT 0" >> /etc/fstab
   elif [ -d "$music_archive_path" ]

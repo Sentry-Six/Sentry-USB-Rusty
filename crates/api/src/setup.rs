@@ -416,6 +416,7 @@ pub async fn test_archive(
             if !cifs_ver.is_empty() {
                 opts.push_str(&format!(",vers={}", cifs_ver));
             }
+            let looks_like_path = sentryusb_setup::archive::cifs_share_looks_like_path(&share);
             // Normalize so the probe mounts the same UNC configure_cifs_mount writes.
             let share = sentryusb_setup::archive::normalize_cifs_share(&share);
             let src = format!("//{}/{}", server, share);
@@ -428,7 +429,15 @@ pub async fn test_archive(
                 ).await;
             }
             let _ = std::fs::remove_dir(tmp_dir);
-            res.map(|_| ()).map_err(|e| e.to_string())
+            res.map(|_| ()).map_err(|e| {
+                // Lead with the hint: the UI clamps this message to two lines, so a
+                // suffix would be pushed off the end past the mount.cifs(8) stderr.
+                if looks_like_path {
+                    format!("Share Name looks like a path; enter just the SMB share name, e.g. TeslaCam. {e}")
+                } else {
+                    e.to_string()
+                }
+            })
         }
         "rsync" => {
             let server = params.get("RSYNC_SERVER").cloned().unwrap_or_default();

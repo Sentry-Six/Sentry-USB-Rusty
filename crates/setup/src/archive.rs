@@ -670,10 +670,21 @@ async fn configure_nfs_mount(env: &SetupEnv, emitter: &SetupEmitter) -> Result<(
     Ok(())
 }
 
-/// Strip leading slashes from a CIFS `SHARE_NAME` so an absolute path doesn't
-/// make a doubled `//server//...` UNC. CIFS only; NFS keeps its leading slash.
+/// Strip a leading slash a user may prefix the SMB share name with
+/// (`/TeslaCam` -> `TeslaCam`) so the CIFS UNC isn't doubled to `//server//...`.
+/// It does not turn a full filesystem path into a share name: SMB wants the
+/// bare share, so `/mnt/user/TeslaCam` stays wrong (it needs to be `TeslaCam`).
+/// CIFS only; NFS keeps its leading slash.
 pub fn normalize_cifs_share(share: &str) -> &str {
     share.trim_start_matches('/')
+}
+
+/// True when a SHARE_NAME looks like a full filesystem path rather than a share:
+/// it starts with a slash and still has a slash left after stripping the leading
+/// one (e.g. /mnt/user/TeslaCam). A bare /TeslaCam or a share subfolder like
+/// TeslaCam/clips is not flagged.
+pub fn cifs_share_looks_like_path(raw: &str) -> bool {
+    raw.trim_start().starts_with('/') && normalize_cifs_share(raw).contains('/')
 }
 
 async fn configure_cifs_mount(env: &SetupEnv, emitter: &SetupEmitter) -> Result<()> {
@@ -988,13 +999,25 @@ mod tests {
 
     #[test]
     fn cifs_share_leading_slash_is_stripped() {
-        assert_eq!(normalize_cifs_share("/mnt/user/sentry"), "mnt/user/sentry");
-        assert_eq!(normalize_cifs_share("/volume1/TeslaCam"), "volume1/TeslaCam");
+        // The real case: a user types the share with an accidental leading slash.
+        assert_eq!(normalize_cifs_share("/TeslaCam"), "TeslaCam");
+        assert_eq!(normalize_cifs_share("/media"), "media");
     }
 
     #[test]
     fn cifs_share_multiple_leading_slashes_collapse() {
         assert_eq!(normalize_cifs_share("//mnt/user"), "mnt/user");
+    }
+
+    #[test]
+    fn cifs_looks_like_path_only_flags_absolute_paths() {
+        // Full NAS paths: flagged.
+        assert!(cifs_share_looks_like_path("/mnt/user/TeslaCam"));
+        assert!(cifs_share_looks_like_path("/volume1/TeslaCam"));
+        // A bare share, a stray-leading-slash share, and a valid subfolder: not flagged.
+        assert!(!cifs_share_looks_like_path("TeslaCam"));
+        assert!(!cifs_share_looks_like_path("/TeslaCam"));
+        assert!(!cifs_share_looks_like_path("TeslaCam/clips"));
     }
 
     #[test]
@@ -1015,10 +1038,12 @@ mod tests {
     }
 
     #[test]
-    fn cifs_validation_accepts_absolute_share() {
+    fn cifs_validation_accepts_share_with_leading_slash() {
+        // Only a slash-only share is rejected; a normal share (optionally with a
+        // stray leading slash) still validates. We don't reinterpret paths here.
         let env = env_with(&[
             ("ARCHIVE_SERVER", "nas.local"),
-            ("SHARE_NAME", "/volume1/TeslaCam"),
+            ("SHARE_NAME", "/TeslaCam"),
             ("SHARE_USER", "u"),
             ("SHARE_PASSWORD", "p"),
         ]);
@@ -1032,17 +1057,17 @@ mod tests {
     }
 
     #[test]
-    fn cifs_fstab_line_has_single_separator_for_absolute_share() {
-        // Full fstab line for an absolute share: must not double the separator.
+    fn cifs_fstab_line_has_single_separator_for_slashed_share() {
+        // Share typed with a leading slash: the UNC must not double the separator.
         let server = "192.168.1.7";
-        let share = "/mnt/user/sentry";
+        let share = "/TeslaCam";
         let share_escaped = normalize_cifs_share(share).replace(' ', "\\040");
         let line = format!(
             "//{}/{} /mnt/archive cifs rw,noauto,credentials={},iocharset=utf8,file_mode=0777,dir_mode=0777,vers={} 0 0",
             server, share_escaped, "/root/.teslaCamArchiveCredentials", "3.0"
         );
         assert!(
-            line.starts_with("//192.168.1.7/mnt/user/sentry "),
+            line.starts_with("//192.168.1.7/TeslaCam "),
             "expected single-slash UNC, got: {line}"
         );
         assert!(!line.contains("//192.168.1.7//"), "no doubled separator");
@@ -1065,5 +1090,21 @@ mod tests {
             nfs_line.contains(":/volume1/TeslaCam "),
             "NFS export path must keep its leading slash"
         );
+    }
+
+    #[test]
+    fn nfs_root_music_share_is_kept_but_cifs_slash_only_is_dropped() {
+        // Mirrors the run/archiveloop presence check: the slash strip is CIFS-only.
+        // A slash-only MUSIC_SHARE_NAME is unset for CIFS, but "/" is a valid NFS
+        // root export and must stay configured.
+        fn music_present(system: &str, raw: &str) -> bool {
+            let effective = if system == "cifs" { normalize_cifs_share(raw) } else { raw };
+            !effective.is_empty()
+        }
+        assert!(!music_present("cifs", "/"), "CIFS slash-only share is unset");
+        assert!(!music_present("cifs", "///"), "CIFS multi-slash share is unset");
+        assert!(music_present("nfs", "/"), "NFS root export must stay configured");
+        assert!(music_present("nfs", "/music"), "NFS export stays configured");
+        assert!(music_present("cifs", "TeslaMusic"), "normal CIFS share stays configured");
     }
 }

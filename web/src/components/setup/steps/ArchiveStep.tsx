@@ -200,7 +200,7 @@ export function ArchiveStep({ data, onChange }: StepProps) {
       {system === "cifs" && (
         <div className="grid gap-3 sm:grid-cols-2">
           <Field label="Archive Server" field="ARCHIVE_SERVER" placeholder="hostname or IP" data={data} onChange={onChange} error={req("ARCHIVE_SERVER", ["cifs"])} />
-          <Field label="Share Name" field="SHARE_NAME" placeholder="share/path" data={data} onChange={onChange} error={req("SHARE_NAME", ["cifs"])} />
+          <Field label="Share Name" field="SHARE_NAME" placeholder="TeslaCam" data={data} onChange={onChange} hint="The SMB share name only (e.g. TeslaCam), not a full path like /mnt/user/TeslaCam" error={req("SHARE_NAME", ["cifs"])} />
           <Field label="Username" field="SHARE_USER" placeholder="username" data={data} onChange={onChange} error={req("SHARE_USER", ["cifs"])} />
           <Field label="Password" field="SHARE_PASSWORD" type="password" placeholder="password" data={data} onChange={onChange} error={req("SHARE_PASSWORD", ["cifs"])} />
           <Field label="Domain" field="SHARE_DOMAIN" placeholder="optional" data={data} onChange={onChange} hint="Usually not needed" />
