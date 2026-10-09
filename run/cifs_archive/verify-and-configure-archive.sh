@@ -43,6 +43,8 @@ function write_archive_configs_to {
 
 function check_archive_mountable () {
   local test_mount_location="/tmp/archivetestmount"
+  # Strip leading slash so an absolute path isn't doubled; matches the fstab write below.
+  local sharepath; sharepath=$(printf '%s' "$2" | sed 's#^/*##')
 
   log_progress "Verifying that the archive share is mountable..."
 
@@ -73,7 +75,7 @@ function check_archive_mountable () {
       then
         secopt="sec=$sec"
       fi
-      local commandline="mount -t cifs '//$1/$2' '$test_mount_location' -o '$3,credentials=${tmp_credentials_file_path},iocharset=utf8,file_mode=0777,dir_mode=0777,$versopt,$secopt'"
+      local commandline="mount -t cifs '//$1/$sharepath' '$test_mount_location' -o '$3,credentials=${tmp_credentials_file_path},iocharset=utf8,file_mode=0777,dir_mode=0777,$versopt,$secopt'"
       log_progress "Trying mount command-line:"
       log_progress "$commandline"
       if eval "$commandline"
@@ -130,7 +132,8 @@ then
   check_archive_mountable "$ARCHIVE_SERVER" "$SHARE_NAME" rw
 fi
 
-if [ -n "${MUSIC_SHARE_NAME:+x}" ]
+# A slash-only MUSIC_SHARE_NAME normalizes to an empty share; treat it as unset.
+if [ -n "$(printf '%s' "${MUSIC_SHARE_NAME:-}" | sed 's#^/*##')" ]
 then
   if [ "$MUSIC_SIZE" = "0" ]
   then
@@ -159,20 +162,24 @@ function configure_archive () {
 
   if [ -e /backingfiles/cam_disk.bin ]
   then
-    local sharenameforstab="${SHARE_NAME// /\\040}"
+    # Strip leading slash so an absolute path isn't doubled (see check_archive_mountable).
+    local sharename; sharename=$(printf '%s' "$SHARE_NAME" | sed 's#^/*##')
+    local sharenameforstab="${sharename// /\\040}"
     echo "//$ARCHIVE_SERVER/$sharenameforstab $archive_path cifs rw,noauto,credentials=${credentials_file_path},iocharset=utf8,file_mode=0777,dir_mode=0777,$VERS_OPT,$SEC_OPT 0" >> /etc/fstab
   elif [ -d "$archive_path" ]
   then
     rmdir "$archive_path" || log_progress "failed to remove $archive_path"
   fi
 
-  if [ -n "${MUSIC_SHARE_NAME:+x}" ]
+  local musicsharename; musicsharename=$(printf '%s' "${MUSIC_SHARE_NAME:-}" | sed 's#^/*##')
+  # Skip a slash-only MUSIC_SHARE_NAME (empty after strip); mirror the unset case.
+  if [ -n "$musicsharename" ]
   then
     if [ ! -e "$music_archive_path" ]
     then
       mkdir "$music_archive_path"
     fi
-    local musicsharenameforstab="${MUSIC_SHARE_NAME// /\\040}"
+    local musicsharenameforstab="${musicsharename// /\\040}"
     echo "//$ARCHIVE_SERVER/$musicsharenameforstab $music_archive_path cifs ro,noauto,credentials=${credentials_file_path},iocharset=utf8,file_mode=0777,dir_mode=0777,$VERS_OPT,$SEC_OPT 0" >> /etc/fstab
   elif [ -d "$music_archive_path" ]
   then

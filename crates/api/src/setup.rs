@@ -393,7 +393,12 @@ pub async fn test_archive(
             let pass = params.get("SHARE_PASSWORD").cloned().unwrap_or_default();
             let domain = params.get("SHARE_DOMAIN").cloned().unwrap_or_default();
             let cifs_ver = params.get("CIFS_VERSION").cloned().unwrap_or_default();
-            if server.is_empty() || share.is_empty() || user.is_empty() || pass.is_empty() {
+            // Slash-only normalizes to empty; reject so the probe matches Apply.
+            if server.is_empty()
+                || sentryusb_setup::archive::normalize_cifs_share(&share).is_empty()
+                || user.is_empty()
+                || pass.is_empty()
+            {
                 return crate::json_error(StatusCode::BAD_REQUEST, "Missing required CIFS fields");
             }
             if let Err(e) = ensure_mount_helper(&s.hub, "cifs-utils", "/sbin/mount.cifs").await {
@@ -411,6 +416,9 @@ pub async fn test_archive(
             if !cifs_ver.is_empty() {
                 opts.push_str(&format!(",vers={}", cifs_ver));
             }
+            let looks_like_path = sentryusb_setup::archive::cifs_share_looks_like_path(&share);
+            // Normalize so the probe mounts the same UNC configure_cifs_mount writes.
+            let share = sentryusb_setup::archive::normalize_cifs_share(&share);
             let src = format!("//{}/{}", server, share);
             let res = sentryusb_shell::run_with_timeout(
                 timeout, "mount", &["-t", "cifs", &src, tmp_dir, "-o", &opts],
@@ -421,7 +429,15 @@ pub async fn test_archive(
                 ).await;
             }
             let _ = std::fs::remove_dir(tmp_dir);
-            res.map(|_| ()).map_err(|e| e.to_string())
+            res.map(|_| ()).map_err(|e| {
+                // Lead with the hint: the UI clamps this message to two lines, so a
+                // suffix would be pushed off the end past the mount.cifs(8) stderr.
+                if looks_like_path {
+                    format!("Share Name looks like a path; enter just the SMB share name, e.g. TeslaCam. {e}")
+                } else {
+                    e.to_string()
+                }
+            })
         }
         "rsync" => {
             let server = params.get("RSYNC_SERVER").cloned().unwrap_or_default();
