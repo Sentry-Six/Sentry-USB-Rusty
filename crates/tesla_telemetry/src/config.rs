@@ -166,9 +166,8 @@ impl BleConfig {
         // Sampler must honor the keep-awake master switch; when off it skips
         // the CPC nudge (the bug was the sampler ignoring this flag). Read it
         // byte-exact via the same path as api/ble.rs so the sampler and web UI
-        // agree, including when the key is missing. Legacy enablement is
-        // materialized by the API startup migration; fresh telemetry-only
-        // configurations must not implicitly enable keep-awake.
+        // agree, including when the key is missing. Startup migration keeps
+        // this default off; telemetry enablement is independent.
         let keep_awake_enabled = parse_keep_awake_enabled(
             sentryusb_config::get_config_value(
                 &active,
@@ -193,8 +192,7 @@ impl BleConfig {
 
 /// Parses `BLE_KEEP_AWAKE_ENABLED`. Byte-exact `yes`/`true`/`1` => enabled;
 /// any other present value (e.g. `YES`, `On`, `no`, `" yes "`) => disabled;
-/// absent => disabled, matching the API and awake_start. API startup migration
-/// writes an explicit value for legacy configurations.
+/// absent => disabled, matching the API, awake_start, and startup migration.
 /// NO trim/case-fold — identical to api/ble.rs so the sampler and web UI can
 /// never disagree on the same value.
 fn parse_keep_awake_enabled(raw: Option<&str>) -> bool {

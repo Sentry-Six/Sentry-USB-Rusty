@@ -337,9 +337,8 @@ async fn main() {
     // Resume Away Mode if the flag file still has time remaining.
     sentryusb_api::away_mode::restore_from_file();
     // One-shot: migrate legacy "VIN implies BLE on" users to explicit
-    // BLE_ENABLED + BLE_KEEP_AWAKE_ENABLED flags so they don't lose
-    // either feature across the decoupling change. Idempotent —
-    // skips if `BLE_KEEP_AWAKE_ENABLED` is already present.
+    // BLE_ENABLED while keeping absent BLE_KEEP_AWAKE_ENABLED off.
+    // Existing explicit keep-awake choices are preserved.
     sentryusb_api::ble::migrate_legacy_ble_flag();
     // Note (#336): the BLE_KEEP_AWAKE_VIA_SAMPLER seed call was removed.
     // The 4-valued flag is no longer read by the sampler — keep-awake

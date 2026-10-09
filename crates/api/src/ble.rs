@@ -100,40 +100,49 @@ fn conflicting_keep_awake_provider(
     }
 }
 
-/// Materialize legacy VIN-implied BLE settings once so telemetry and keep-awake
-/// can be controlled independently without changing existing behavior.
-///
-/// Rules:
-///   * If `BLE_KEEP_AWAKE_ENABLED` already present → skip (migration done)
-///   * If `BLE_ENABLED=no` explicitly → set keep-awake=no (user had BLE off)
-///   * If `BLE_ENABLED=yes` explicitly → set keep-awake=yes (preserve old coupling)
-///   * If `BLE_ENABLED` unset BUT `TESLA_BLE_VIN` set → set both =yes
-///     (preserve the old "implicit yes from VIN" behavior)
-///   * Else → no migration needed (fresh install, user picks both toggles)
+/// Materialize independent BLE flags without enabling keep-awake implicitly.
+/// Existing keep-awake values are preserved. A missing keep-awake setting is
+/// off, including for legacy VIN-only and telemetry-only configurations.
+fn ble_flag_migration(
+    active: &sentryusb_config::SetupConfig,
+    commented: &sentryusb_config::SetupConfig,
+) -> Option<(&'static str, &'static str)> {
+    if active.contains_key("BLE_KEEP_AWAKE_ENABLED") {
+        return None;
+    }
+    let explicit_ble =
+        sentryusb_config::get_config_value(active, commented, "BLE_ENABLED");
+    let telemetry = match explicit_ble.as_deref() {
+        Some("yes" | "true" | "1") => "yes",
+        Some(_) => "no",
+        None if active.contains_key("TESLA_BLE_VIN") => "yes",
+        None => "no",
+    };
+    // Match the API and sampler's existing commented-value fallback, but
+    // never infer keep-awake permission from telemetry enablement or a VIN.
+    let keep_awake = match sentryusb_config::get_config_value(
+        active,
+        commented,
+        "BLE_KEEP_AWAKE_ENABLED",
+    )
+    .as_deref()
+    {
+        Some("yes" | "true" | "1") => "yes",
+        _ => "no",
+    };
+    Some((telemetry, keep_awake))
+}
+
 pub fn migrate_legacy_ble_flag() {
     let config_path = sentryusb_config::find_config_path();
     let Ok((mut active, commented)) = sentryusb_config::parse_file(config_path) else {
         return;
     };
-    if active.contains_key("BLE_KEEP_AWAKE_ENABLED") {
-        return; // already migrated
-    }
-    let explicit_ble =
-        sentryusb_config::get_config_value(&active, &commented, "BLE_ENABLED");
-    let has_vin = active.contains_key("TESLA_BLE_VIN");
-
-    let (telemetry, keep_awake) = match explicit_ble.as_deref() {
-        Some(v) if matches!(v, "yes" | "true" | "1") => ("yes", "yes"),
-        Some(_) => ("no", "no"),
-        None if has_vin => ("yes", "yes"),
-        None => return, // nothing to migrate
+    let Some((telemetry, keep_awake)) = ble_flag_migration(&active, &commented) else {
+        return;
     };
-
     active.insert("BLE_ENABLED".to_string(), telemetry.to_string());
-    active.insert(
-        "BLE_KEEP_AWAKE_ENABLED".to_string(),
-        keep_awake.to_string(),
-    );
+    active.insert("BLE_KEEP_AWAKE_ENABLED".to_string(), keep_awake.to_string());
     let _ = std::process::Command::new("bash")
         .args(["-c", "/root/bin/remountfs_rw"])
         .status();
@@ -1134,6 +1143,48 @@ mod tests {
             .iter()
             .map(|(k, v)| (k.to_string(), v.to_string()))
             .collect()
+    }
+
+    #[test]
+    fn startup_keeps_missing_keep_awake_off() {
+        let commented = cfg(&[]);
+        for (pairs, telemetry) in [
+            (
+                vec![("BLE_ENABLED", "yes"), ("TESLA_BLE_VIN", "5YJ3E1EA4JF000001")],
+                "yes",
+            ),
+            (vec![("BLE_ENABLED", "no")], "no"),
+            (vec![("TESLA_BLE_VIN", "5YJ3E1EA4JF000001")], "yes"),
+            (vec![], "no"),
+        ] {
+            let mut active = cfg(&pairs);
+            assert_eq!(ble_flag_migration(&active, &commented), Some((telemetry, "no")));
+            active.insert("BLE_ENABLED".into(), telemetry.into());
+            active.insert("BLE_KEEP_AWAKE_ENABLED".into(), "no".into());
+            assert_eq!(ble_flag_migration(&active, &commented), None);
+            active.remove("BLE_KEEP_AWAKE_ENABLED");
+            assert_eq!(ble_flag_migration(&active, &commented), Some((telemetry, "no")));
+        }
+    }
+
+    #[test]
+    fn startup_preserves_explicit_keep_awake_choices() {
+        for setting in ["yes", "no", "true", "false", "1", "0"] {
+            let active = cfg(&[
+                ("BLE_ENABLED", "yes"),
+                ("BLE_KEEP_AWAKE_ENABLED", setting),
+            ]);
+            assert_eq!(ble_flag_migration(&active, &cfg(&[])), None);
+        }
+    }
+
+    #[test]
+    fn startup_preserves_commented_keep_awake_values_used_by_readers() {
+        let active = cfg(&[("BLE_ENABLED", "yes")]);
+        for (setting, expected) in [("yes", "yes"), ("no", "no")] {
+            let commented = cfg(&[("BLE_KEEP_AWAKE_ENABLED", setting)]);
+            assert_eq!(ble_flag_migration(&active, &commented), Some(("yes", expected)));
+        }
     }
 
     #[test]
