@@ -393,7 +393,12 @@ pub async fn test_archive(
             let pass = params.get("SHARE_PASSWORD").cloned().unwrap_or_default();
             let domain = params.get("SHARE_DOMAIN").cloned().unwrap_or_default();
             let cifs_ver = params.get("CIFS_VERSION").cloned().unwrap_or_default();
-            if server.is_empty() || share.is_empty() || user.is_empty() || pass.is_empty() {
+            // Slash-only normalizes to empty; reject so the probe matches Apply.
+            if server.is_empty()
+                || sentryusb_setup::archive::normalize_cifs_share(&share).is_empty()
+                || user.is_empty()
+                || pass.is_empty()
+            {
                 return crate::json_error(StatusCode::BAD_REQUEST, "Missing required CIFS fields");
             }
             if let Err(e) = ensure_mount_helper(&s.hub, "cifs-utils", "/sbin/mount.cifs").await {
@@ -411,6 +416,8 @@ pub async fn test_archive(
             if !cifs_ver.is_empty() {
                 opts.push_str(&format!(",vers={}", cifs_ver));
             }
+            // Normalize so the probe mounts the same UNC configure_cifs_mount writes.
+            let share = sentryusb_setup::archive::normalize_cifs_share(&share);
             let src = format!("//{}/{}", server, share);
             let res = sentryusb_shell::run_with_timeout(
                 timeout, "mount", &["-t", "cifs", &src, tmp_dir, "-o", &opts],
