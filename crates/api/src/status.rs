@@ -21,6 +21,8 @@ struct WifiAdapter {
     ssid: String,
     ip: String,
     freq: String,
+    band: Option<&'static str>,
+    channel: Option<u32>,
     connected: bool,
     strength: String,
     signal_dbm: Option<i32>,
@@ -29,6 +31,44 @@ struct WifiAdapter {
     rx_bps: u64,
     tx_bps: u64,
     rate_state: &'static str,
+}
+
+/// `iw link` may report decimal MHz; `iw info` supplies the primary channel.
+fn parse_wifi_radio(link: &str, device_info: &str) -> (String, Option<&'static str>, Option<u32>) {
+    let mhz = link.lines().find_map(|line| {
+        line.trim().strip_prefix("freq:")?.trim().parse::<f64>().ok()
+    }).filter(|value| value.is_finite() && *value > 0.0 && *value < 100_000.0);
+    let band = mhz.and_then(|value| {
+        if (2400.0..2500.0).contains(&value) { Some("2.4 GHz") }
+        else if (4900.0..5925.0).contains(&value) { Some("5 GHz") }
+        else if (5925.0..7125.0).contains(&value) { Some("6 GHz") }
+        else if (57_000.0..71_000.0).contains(&value) { Some("60 GHz") }
+        else { None }
+    });
+    let channel = device_info.lines().find_map(|line| {
+        line.trim().strip_prefix("channel ")?.split_whitespace().next()?.parse::<u32>().ok()
+    }).filter(|channel| *channel > 0);
+    (mhz.map(|value| format!("{:.0}", value * 1_000_000.0)).unwrap_or_default(), band, channel)
+}
+
+#[cfg(test)]
+mod wifi_radio_tests {
+    use super::parse_wifi_radio;
+
+    #[test]
+    fn reads_decimal_frequency_and_driver_primary_channel() {
+        assert_eq!(parse_wifi_radio("freq: 5200.0", "\tchannel 40 (5200 MHz), width: 80 MHz, center1: 5210 MHz"), ("5200000000".into(), Some("5 GHz"), Some(40)));
+        assert_eq!(parse_wifi_radio("freq: 2412", "channel 1 (2412 MHz)"), ("2412000000".into(), Some("2.4 GHz"), Some(1)));
+        assert_eq!(parse_wifi_radio("freq: 5955.0", "channel 1 (5955 MHz)"), ("5955000000".into(), Some("6 GHz"), Some(1)));
+    }
+
+    #[test]
+    fn missing_radio_fields_remain_unavailable() {
+        for link in ["Not connected.", "freq: NaN", "freq: -5200"] {
+            assert_eq!(parse_wifi_radio(link, ""), (String::new(), None, None));
+        }
+        assert_eq!(parse_wifi_radio("freq: 5200.0", ""), ("5200000000".into(), Some("5 GHz"), None));
+    }
 }
 
 /// Keep negotiated radio rates separate from measured traffic counters.
@@ -451,10 +491,12 @@ async fn compute_network_info() -> CachedNetwork {
         let ip_args = ["-4", "addr", "show", wifi_dev.as_str()];
         // `iw` reports frequency in MHz.
         let iw_args = ["dev", wifi_dev.as_str(), "link"];
-        let (ssid_r, ip_r, iw_r) = tokio::join!(
+        let iw_info_args = ["dev", wifi_dev.as_str(), "info"];
+        let (ssid_r, ip_r, iw_r, iw_info_r) = tokio::join!(
             sentryusb_shell::run_with_timeout(Duration::from_secs(2), "iwgetid", &ssid_args),
             sentryusb_shell::run_with_timeout(Duration::from_secs(2), "ip", &ip_args),
             sentryusb_shell::run_with_timeout(Duration::from_secs(2), "iw", &iw_args),
+            sentryusb_shell::run_with_timeout(Duration::from_secs(2), "iw", &iw_info_args),
         );
         if let Ok(out) = ssid_r {
             adapter.ssid = out.trim().to_string();
@@ -471,16 +513,7 @@ async fn compute_network_info() -> CachedNetwork {
         }
         if let Ok(out) = iw_r {
             (adapter.link_rx_mbps, adapter.link_tx_mbps) = parse_wifi_link_rates(&out);
-            for line in out.lines() {
-                let trimmed = line.trim();
-                // Convert MHz to the API's Hz-string format.
-                if let Some(rest) = trimmed.strip_prefix("freq:") {
-                    if let Ok(mhz) = rest.trim().parse::<u64>() {
-                        adapter.freq = (mhz * 1_000_000).to_string();
-                        break;
-                    }
-                }
-            }
+            (adapter.freq, adapter.band, adapter.channel) = parse_wifi_radio(&out, &iw_info_r.unwrap_or_default());
         }
         adapter.connected = !adapter.ssid.is_empty();
         if adapter.connected && info.wifi_dev.is_empty() {

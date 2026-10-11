@@ -700,9 +700,11 @@ function NetworkTile({ status }: { status: PiStatus }) {
             <div key={adapter.device} className="py-1">
               <Row label={`Wi-Fi address (${adapter.device})`} value={adapter.ip || "Unavailable"} />
               {adapter.signal_dbm != null && <Row label={`Signal (${adapter.device})`} value={`${adapter.signal_dbm} dBm`} />}
+              <Row label={`Band (${adapter.device})`} value={adapter.band || "Unavailable"} />
+              <Row label={`Channel (${adapter.device})`} value={adapter.channel != null ? String(adapter.channel) : "Unavailable"} />
               <Row label={`RX link speed (${adapter.device})`} value={adapter.link_rx_mbps != null ? `${adapter.link_rx_mbps} Mbit/s` : "Unavailable"} />
               <Row label={`TX link speed (${adapter.device})`} value={adapter.link_tx_mbps != null ? `${adapter.link_tx_mbps} Mbit/s` : "Unavailable"} />
-              {adapter.freq && <Row label={`Frequency (${adapter.device})`} value={adapter.freq} />}
+              {adapter.freq && <Row label={`Frequency (${adapter.device})`} value={`${Number(adapter.freq) / 1_000_000} MHz`} />}
             </div>
           ))}
           {haveWifi && !adapters && <>

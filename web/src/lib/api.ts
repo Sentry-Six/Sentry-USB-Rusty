@@ -42,6 +42,8 @@ export interface PiStatus {
     ssid: string
     ip: string
     freq: string
+    band?: string | null
+    channel?: number | null
     connected: boolean
     strength: string
     signal_dbm?: number | null
