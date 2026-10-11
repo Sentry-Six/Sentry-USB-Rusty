@@ -680,8 +680,7 @@ function NetworkTile({ status }: { status: PiStatus }) {
         <div key={adapter.device} className="py-1">
           <Row icon={<WifiIcon className="h-3.5 w-3.5" />} label={`${adapter.device === "wlan0" ? "Internal Wi-Fi" : adapter.device === "wlan1" ? "USB Wi-Fi" : "Wi-Fi"} (${adapter.device})`} sub={adapter.connected ? <WifiBars bars={getWifiStrengthBars(adapter.strength)} /> : "Not connected"} />
           {adapter.connected && <>
-            <Row label={adapter.ssid} value={adapter.ip || "Unavailable"} />
-            {adapter.signal_dbm != null && <Row label="Signal" value={`${adapter.signal_dbm} dBm`} />}
+            <Row label={adapter.ssid} />
             <div className="flex flex-wrap gap-x-4 gap-y-1 py-1 text-xs tabular-nums">
               <span className="text-emerald-400">↓ {formatThroughput(adapter.rx_bps, adapter.rate_state)}</span>
               <span className="text-sky-400">↑ {formatThroughput(adapter.tx_bps, adapter.rate_state)}</span>
@@ -697,6 +696,13 @@ function NetworkTile({ status }: { status: PiStatus }) {
       {(haveWifi || haveEth) && (
         <details className="text-xs text-slate-400">
           <summary className="cursor-pointer py-2">Connection details</summary>
+          {adapters?.filter(adapter => adapter.connected).map(adapter => (
+            <div key={adapter.device} className="py-1">
+              <Row label={`Wi-Fi address (${adapter.device})`} value={adapter.ip || "Unavailable"} />
+              {adapter.signal_dbm != null && <Row label={`Signal (${adapter.device})`} value={`${adapter.signal_dbm} dBm`} />}
+              {adapter.freq && <Row label={`Frequency (${adapter.device})`} value={adapter.freq} />}
+            </div>
+          ))}
           {haveWifi && !adapters && <>
             <Row label="Wi-Fi address" value={status.wifi_ip || "Unavailable"} />
             {status.wifi_signal_dbm != null && <Row label="Signal" value={`${status.wifi_signal_dbm} dBm`} />}
