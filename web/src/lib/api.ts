@@ -45,6 +45,8 @@ export interface PiStatus {
     connected: boolean
     strength: string
     signal_dbm?: number | null
+    link_rx_mbps?: number | null
+    link_tx_mbps?: number | null
     rx_bps: number
     tx_bps: number
     rate_state: string

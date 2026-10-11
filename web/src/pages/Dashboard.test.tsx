@@ -43,8 +43,8 @@ test('dashboard keeps its last data on failure, reads server ETA, and never load
     assert.ok(container.querySelector('[role="progressbar"]'))
     assert.equal(requested.includes('/api/drives'), false)
     fixtures['/api/status'] = { ...fixtures['/api/status'] as object, supply_voltage: null, wifi_adapters: [
-      { device: 'wlan0', ssid: 'Internal network', ip: '192.0.2.10', freq: '', connected: true, strength: '40/70', signal_dbm: -75, rx_bps: 0, tx_bps: 0, rate_state: 'live' },
-      { device: 'wlan1', ssid: 'USB network', ip: '192.0.2.11', freq: '', connected: true, strength: '65/70', signal_dbm: -45, rx_bps: 0, tx_bps: 0, rate_state: 'live' },
+      { device: 'wlan0', ssid: 'Internal network', ip: '192.0.2.10', freq: '', connected: true, strength: '40/70', signal_dbm: -75, link_rx_mbps: 292.5, link_tx_mbps: 24, rx_bps: 0, tx_bps: 0, rate_state: 'live' },
+      { device: 'wlan1', ssid: 'USB network', ip: '192.0.2.11', freq: '', connected: true, strength: '65/70', signal_dbm: -45, link_rx_mbps: 526.6, link_tx_mbps: 866.7, rx_bps: 0, tx_bps: 0, rate_state: 'live' },
     ] }
     fixtures['/api/drives/status'] = { running: false, phase: 'archiving', current: 99, total: 174 }
     await act(async () => win.document.dispatchEvent(new win.Event('visibilitychange')))
@@ -57,6 +57,8 @@ test('dashboard keeps its last data on failure, reads server ETA, and never load
     assert.match(connectionDetails.textContent, /Wi-Fi address \(wlan1\)192\.0\.2\.11/)
     assert.match(connectionDetails.textContent, /Signal \(wlan0\)-75 dBm/)
     assert.match(connectionDetails.textContent, /Signal \(wlan1\)-45 dBm/)
+    assert.match(connectionDetails.textContent, /RX link speed \(wlan0\)292\.5 Mbit\/s/)
+    assert.match(connectionDetails.textContent, /TX link speed \(wlan1\)866\.7 Mbit\/s/)
     assert.match(container.textContent, /192\.0\.2\.10/)
     assert.match(container.textContent, /192\.0\.2\.11/)
     assert.match(container.textContent, /-75 dBm/)

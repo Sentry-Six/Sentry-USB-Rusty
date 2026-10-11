@@ -24,9 +24,50 @@ struct WifiAdapter {
     connected: bool,
     strength: String,
     signal_dbm: Option<i32>,
+    link_rx_mbps: Option<f64>,
+    link_tx_mbps: Option<f64>,
     rx_bps: u64,
     tx_bps: u64,
     rate_state: &'static str,
+}
+
+/// Keep negotiated radio rates separate from measured traffic counters.
+fn parse_wifi_link_rates(output: &str) -> (Option<f64>, Option<f64>) {
+    let mut rx = None;
+    let mut tx = None;
+    for line in output.lines() {
+        let line = line.trim();
+        let target = if let Some(rest) = line.strip_prefix("rx bitrate:") {
+            Some((&mut rx, rest))
+        } else if let Some(rest) = line.strip_prefix("tx bitrate:") {
+            Some((&mut tx, rest))
+        } else { None };
+        if let Some((target, rest)) = target {
+            let mut parts = rest.split_whitespace();
+            if let (Some(value), Some("MBit/s")) = (parts.next(), parts.next()) {
+                *target = value.parse::<f64>().ok().filter(|rate| rate.is_finite() && *rate >= 0.0);
+            }
+        }
+    }
+    (rx, tx)
+}
+
+#[cfg(test)]
+mod wifi_link_rate_tests {
+    use super::parse_wifi_link_rates;
+
+    #[test]
+    fn parses_driver_rates_with_optional_radio_metadata() {
+        assert_eq!(parse_wifi_link_rates("\trx bitrate: 526.6 MBit/s VHT-MCS 6 80MHz\n\ttx bitrate:\t866.7 MBit/s short GI"), (Some(526.6), Some(866.7)));
+        assert_eq!(parse_wifi_link_rates("tx bitrate: 24.0 MBit/s"), (None, Some(24.0)));
+    }
+
+    #[test]
+    fn unavailable_or_invalid_rates_are_not_reported_as_zero() {
+        for output in ["Not connected.", "rx bitrate: NaN MBit/s", "tx bitrate: -1 MBit/s", "tx bitrate: 123 unknown"] {
+            assert_eq!(parse_wifi_link_rates(output), (None, None));
+        }
+    }
 }
 
 #[derive(Clone, Default)]
@@ -429,6 +470,7 @@ async fn compute_network_info() -> CachedNetwork {
             }
         }
         if let Ok(out) = iw_r {
+            (adapter.link_rx_mbps, adapter.link_tx_mbps) = parse_wifi_link_rates(&out);
             for line in out.lines() {
                 let trimmed = line.trim();
                 // Convert MHz to the API's Hz-string format.
