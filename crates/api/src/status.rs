@@ -15,8 +15,23 @@ mod supply_voltage;
 
 // Shared status snapshots keep UI polling independent of archive I/O.
 
+#[derive(Clone, Default, Serialize)]
+struct WifiAdapter {
+    device: String,
+    ssid: String,
+    ip: String,
+    freq: String,
+    connected: bool,
+    strength: String,
+    signal_dbm: Option<i32>,
+    rx_bps: u64,
+    tx_bps: u64,
+    rate_state: &'static str,
+}
+
 #[derive(Clone, Default)]
 struct CachedNetwork {
+    wifi_adapters: Vec<WifiAdapter>,
     wifi_ssid: String,
     /// Frequency in Hz, empty when unavailable.
     wifi_freq: String,
@@ -186,6 +201,7 @@ struct PiStatus {
     udc_state: String,
     /// Seconds since the last `cam_disk.bin` write, or -1 when unknown.
     cam_last_write_secs: i64,
+    wifi_adapters: Vec<WifiAdapter>,
     wifi_ssid: String,
     /// Wi-Fi frequency in Hz, empty when unavailable.
     wifi_freq: String,
@@ -232,6 +248,20 @@ pub async fn get_status(
 
     // Cache stable network identity; keep signal and throughput live.
     let net = cached_network().await;
+    s.wifi_adapters = net.wifi_adapters;
+    for adapter in &mut s.wifi_adapters {
+        adapter.rate_state = "disconnected";
+        if adapter.connected {
+            if let Some((strength, dbm)) = read_wireless_quality(&adapter.device) {
+                adapter.strength = strength;
+                adapter.signal_dbm = dbm;
+            }
+            let (rx, tx, quality, _) = latest_throughput(&state.net_sampler, &adapter.device);
+            adapter.rx_bps = rx;
+            adapter.tx_bps = tx;
+            adapter.rate_state = quality;
+        }
+    }
     s.wifi_ssid = net.wifi_ssid;
     s.wifi_freq = net.wifi_freq;
     s.wifi_ip = net.wifi_ip;
@@ -276,6 +306,7 @@ fn status_fs_snapshot() -> PiStatus {
         drives_active: "no".into(),
         udc_state: String::new(),
         cam_last_write_secs: -1,
+        wifi_adapters: Vec::new(),
         wifi_ssid: String::new(),
         wifi_freq: String::new(),
         wifi_strength: String::new(),
@@ -364,9 +395,17 @@ async fn compute_network_info() -> CachedNetwork {
     let mut info = CachedNetwork::default();
 
     // Skip potentially blocking Wi-Fi commands when the interface is down.
-    let wifi_dev = find_net_device("wl*");
-    if !wifi_dev.is_empty() && iface_is_up(&wifi_dev) {
-        info.wifi_dev = wifi_dev.clone();
+    let mut devices: Vec<String> = std::fs::read_dir("/sys/class/net/")
+        .into_iter().flatten().flatten()
+        .filter(|entry| entry.path().join("wireless").exists())
+        .filter_map(|entry| entry.file_name().into_string().ok()).collect();
+    devices.sort();
+    for wifi_dev in devices {
+        let mut adapter = WifiAdapter { device: wifi_dev.clone(), rate_state: "disconnected", ..Default::default() };
+        if !iface_is_up(&wifi_dev) {
+            info.wifi_adapters.push(adapter);
+            continue;
+        }
         let ssid_args = ["-r", wifi_dev.as_str()];
         let ip_args = ["-4", "addr", "show", wifi_dev.as_str()];
         // `iw` reports frequency in MHz.
@@ -377,14 +416,14 @@ async fn compute_network_info() -> CachedNetwork {
             sentryusb_shell::run_with_timeout(Duration::from_secs(2), "iw", &iw_args),
         );
         if let Ok(out) = ssid_r {
-            info.wifi_ssid = out.trim().to_string();
+            adapter.ssid = out.trim().to_string();
         }
         if let Ok(out) = ip_r {
             for line in out.lines() {
                 let trimmed = line.trim();
                 if trimmed.starts_with("inet ") {
                     if let Some(addr) = trimmed.split_whitespace().nth(1) {
-                        info.wifi_ip = addr.split('/').next().unwrap_or("").to_string();
+                        adapter.ip = addr.split('/').next().unwrap_or("").to_string();
                     }
                 }
             }
@@ -395,12 +434,20 @@ async fn compute_network_info() -> CachedNetwork {
                 // Convert MHz to the API's Hz-string format.
                 if let Some(rest) = trimmed.strip_prefix("freq:") {
                     if let Ok(mhz) = rest.trim().parse::<u64>() {
-                        info.wifi_freq = (mhz * 1_000_000).to_string();
+                        adapter.freq = (mhz * 1_000_000).to_string();
                         break;
                     }
                 }
             }
         }
+        adapter.connected = !adapter.ssid.is_empty();
+        if adapter.connected && info.wifi_dev.is_empty() {
+            info.wifi_dev = adapter.device.clone();
+            info.wifi_ssid = adapter.ssid.clone();
+            info.wifi_ip = adapter.ip.clone();
+            info.wifi_freq = adapter.freq.clone();
+        }
+        info.wifi_adapters.push(adapter);
     }
 
     // Apply the same blocking-command guard to Ethernet.

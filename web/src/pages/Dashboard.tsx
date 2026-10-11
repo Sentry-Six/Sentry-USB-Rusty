@@ -665,7 +665,8 @@ function SystemTile({
 }
 
 function NetworkTile({ status }: { status: PiStatus }) {
-  const haveWifi = !!status.wifi_ssid
+  const adapters = status.wifi_adapters
+  const haveWifi = adapters ? adapters.some(adapter => adapter.connected) : !!status.wifi_ssid
   const haveEth = !!status.ether_ip || (!!status.ether_speed && status.ether_speed !== "Unknown!")
   const rates = (kind: "wifi" | "ether") => (
     <div className="flex flex-wrap gap-x-4 gap-y-1 py-1 text-xs tabular-nums">
@@ -675,14 +676,28 @@ function NetworkTile({ status }: { status: PiStatus }) {
   )
   return (
     <StatusTile icon={haveWifi || haveEth ? <WifiIcon className="h-4 w-4" /> : <WifiOffIcon className="h-4 w-4" />} halo={haveWifi || haveEth ? "accent" : "amber"} title="Network">
-      <Row icon={<WifiIcon className="h-3.5 w-3.5" />} label={status.wifi_ssid || "Wi-Fi"} sub={haveWifi ? <WifiBars bars={getWifiStrengthBars(status.wifi_strength)} /> : "Not connected"} />
-      {haveWifi && rates("wifi")}
+      {adapters ? adapters.map(adapter => (
+        <div key={adapter.device} className="py-1">
+          <Row icon={<WifiIcon className="h-3.5 w-3.5" />} label={`${adapter.device === "wlan0" ? "Internal Wi-Fi" : adapter.device === "wlan1" ? "USB Wi-Fi" : "Wi-Fi"} (${adapter.device})`} sub={adapter.connected ? <WifiBars bars={getWifiStrengthBars(adapter.strength)} /> : "Not connected"} />
+          {adapter.connected && <>
+            <Row label={adapter.ssid} value={adapter.ip || "Unavailable"} />
+            {adapter.signal_dbm != null && <Row label="Signal" value={`${adapter.signal_dbm} dBm`} />}
+            <div className="flex flex-wrap gap-x-4 gap-y-1 py-1 text-xs tabular-nums">
+              <span className="text-emerald-400">↓ {formatThroughput(adapter.rx_bps, adapter.rate_state)}</span>
+              <span className="text-sky-400">↑ {formatThroughput(adapter.tx_bps, adapter.rate_state)}</span>
+            </div>
+          </>}
+        </div>
+      )) : <>
+        <Row icon={<WifiIcon className="h-3.5 w-3.5" />} label={status.wifi_ssid || "Wi-Fi"} sub={haveWifi ? <WifiBars bars={getWifiStrengthBars(status.wifi_strength)} /> : "Not connected"} />
+        {haveWifi && rates("wifi")}
+      </>}
       <Row icon={<LanIcon className="h-3.5 w-3.5" />} label="Ethernet" sub={haveEth ? "Connected" : "Not connected"} />
       {haveEth && rates("ether")}
       {(haveWifi || haveEth) && (
         <details className="text-xs text-slate-400">
           <summary className="cursor-pointer py-2">Connection details</summary>
-          {haveWifi && <>
+          {haveWifi && !adapters && <>
             <Row label="Wi-Fi address" value={status.wifi_ip || "Unavailable"} />
             {status.wifi_signal_dbm != null && <Row label="Signal" value={`${status.wifi_signal_dbm} dBm`} />}
           </>}

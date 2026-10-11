@@ -37,6 +37,18 @@ export interface PiStatus {
   udc_state?: string
   /** Seconds since the car last wrote to cam_disk.bin, -1 when unknown. */
   cam_last_write_secs?: number
+  wifi_adapters?: Array<{
+    device: string
+    ssid: string
+    ip: string
+    freq: string
+    connected: boolean
+    strength: string
+    signal_dbm?: number | null
+    rx_bps: number
+    tx_bps: number
+    rate_state: string
+  }>
   wifi_ssid: string
   wifi_strength: string
   wifi_ip: string
