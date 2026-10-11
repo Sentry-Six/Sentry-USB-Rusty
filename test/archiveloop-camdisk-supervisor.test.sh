@@ -15,10 +15,11 @@ script=${1:-run/archiveloop}
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 
-eval "$(awk '/^function camdiskworkers /{keep=1} keep{print} keep && /^}/{exit}' "$script")"
+eval "$(awk '/^function camdiskworkers /{keep=1} keep{print} keep && /^}/{exit}' "$script" | sed "s@/proc/self/comm@$tmp/comm@g")"
 
 function log { echo "$@" >> "$tmp/log"; }
 function has_cam_disk { return 0; }
+function usb_storage_ready { return 0; }
 function snapshotloop { sleep 60; }
 function gadget_stall_watchdog { sleep 60; }
 function freespacemanager {

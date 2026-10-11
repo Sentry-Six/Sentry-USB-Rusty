@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react"
+import { Link } from "react-router-dom"
 import { CloseIcon, ProgressActivityIcon, WifiIcon, WifiOffIcon } from "@/components/icons"
 import { cn } from "@/lib/utils"
 import { useConnectionStatus, type ConnectionState } from "@/hooks/useConnectionStatus"
@@ -17,13 +18,13 @@ export function ConnectionBanner() {
         <div className="flex-1 space-y-1">
           <p className="font-medium">Database unavailable</p>
           <p className="text-xs text-red-400/70">
-            Sentry USB is running but cannot open its drive database, so
-            history cannot be read and recording data is not being saved.
-            Drives, charging, and clips are temporarily unavailable. Check
-            Settings &gt; Storage for repair options, or the logs for
-            details. This page will recover automatically once the
-            database is back.
+            Sentry USB cannot open its drive history database. Recording
+            status must be checked separately. Capture diagnostics before
+            rebooting, or check Settings &gt; Storage for repair options.
           </p>
+          <Link to="/logs?tab=diagnostics" className="inline-block text-xs underline">
+            Open Diagnostics
+          </Link>
         </div>
       </div>
     )

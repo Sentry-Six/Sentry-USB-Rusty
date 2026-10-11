@@ -94,18 +94,75 @@ fn get_machine_serial() -> String {
     format!("SentryUSB-{}", hex::encode(h.as_ref()))
 }
 
-/// True if the mass-storage function has a populated primary LUN.
+/// True if the primary LUN exposes a present, nonempty, writable image.
 fn gadget_dir_is_complete(gadget: &Path) -> bool {
     let func = gadget.join("functions/mass_storage.0");
     let lun0_file = func.join("lun.0/file");
     match fs::read_to_string(&lun0_file) {
-        Ok(s) => !s.trim().is_empty(),
+        Ok(s) => {
+            let path = s.trim();
+            !path.is_empty()
+                && fs::metadata(path).is_ok_and(|m| m.is_file() && m.len() > 0)
+                && fs::read_to_string(func.join("lun.0/ro")).is_ok_and(|ro| ro.trim() == "0")
+        }
         Err(_) => false,
     }
 }
 
+/// Check the real recording mount before publishing any disk. A directory
+/// beneath a failed mount must never be mistaken for available storage.
+pub fn validate_storage() -> Result<()> {
+    let mounts = fs::read_to_string("/proc/self/mounts")
+        .context("cannot check recording storage mount")?;
+    let require_cam = sentryusb_config::parse_file(sentryusb_config::find_config_path())
+        .map(|(config, _)| camera_required(&config)).unwrap_or(true);
+    validate_storage_at(&mounts, Path::new("/backingfiles"), require_cam)
+}
+
+fn camera_required(config: &sentryusb_config::SetupConfig) -> bool {
+    let Some(raw) = config.get("CAM_SIZE").or_else(|| config.get("camsize")) else { return true; };
+    let raw = raw.trim();
+    // Percentage sizes use the setup fallback image, including "0%".
+    !raw.is_empty() && raw.trim_end_matches(|c: char| "kKmMgGbB".contains(c)).parse::<f64>().ok() != Some(0.0)
+}
+
+fn validate_storage_at(mounts: &str, root: &Path, require_cam: bool) -> Result<()> {
+    let mounted_rw = mounts.lines().any(|line| {
+        let fields: Vec<_> = line.split_whitespace().collect();
+        fields.get(1).copied() == root.to_str()
+            && fields.get(3).is_some_and(|options| options.split(',').any(|s| s == "rw"))
+    });
+    if !mounted_rw {
+        bail!("recording storage is not mounted read/write at {}", root.display());
+    }
+    if require_cam && !root.join("cam_disk.bin").is_file() {
+        bail!("configured camera disk is unavailable; refusing to present only optional media");
+    }
+    let mut found = false;
+    for (image, _) in DISK_IMAGES {
+        let path = root.join(Path::new(image).file_name().unwrap());
+        match fs::metadata(&path) {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(e) => return Err(e).context("cannot inspect USB disk image"),
+            Ok(meta) if !meta.is_file() || meta.len() == 0 => {
+                bail!("USB disk image is empty or not a regular file: {}", path.display());
+            }
+            Ok(_) => {}
+        }
+        // Open without creating, truncating, or writing to the live image.
+        fs::OpenOptions::new().read(true).write(true).open(&path)
+            .with_context(|| format!("USB disk image is not readable/writable: {}", path.display()))?;
+        found = true;
+    }
+    if !found {
+        bail!("no usable USB disk images on recording storage; waiting for setup or storage recovery");
+    }
+    Ok(())
+}
+
 /// Enable the USB gadget through configfs.
 pub fn enable() -> Result<()> {
+    validate_storage()?;
     let configfs = find_configfs_root()?;
     let gadget = configfs.join("usb_gadget").join(GADGET_NAME);
 
@@ -131,11 +188,11 @@ pub fn enable() -> Result<()> {
                 if current.is_empty() || !Path::new(&current).exists() {
                     continue;
                 }
-                let _ = fs::write(&lun_file, "\n");
+                write_file(&lun_file, "\n")?;
                 // Apply nofua while the medium is detached.
                 let _ = fs::write(func_dir.join(format!("lun.{}/nofua", i)), "1");
                 std::thread::sleep(std::time::Duration::from_secs(1));
-                let _ = fs::write(&lun_file, &current);
+                write_file(&lun_file, &current)?;
             }
             std::thread::sleep(std::time::Duration::from_secs(3));
             return bind_udc(&gadget);
@@ -214,6 +271,10 @@ pub fn enable() -> Result<()> {
     ensure_symlink(&func_dir, &cfg_dir.join("mass_storage.0"))?;
 
     info!("USB gadget configured with {} LUN(s)", lun);
+
+    if lun == 0 || !gadget_dir_is_complete(&gadget) {
+        bail!("refusing to bind USB gadget without a populated primary disk");
+    }
 
     // Kernel 6.18+ on rockchip64 needs three seconds for LUN attributes to
     // propagate before binding, or mass storage may activate with no medium.
@@ -373,6 +434,54 @@ fn format_size(bytes: u64) -> String {
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
+
+    #[test]
+    fn storage_requires_a_real_writable_mount_and_nonempty_images() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let rw = format!("disk {} xfs rw,noatime 0 0\n", root.display());
+        let ro = rw.replace("rw,noatime", "ro,noatime");
+        assert!(validate_storage_at(&rw, root, true).is_err(), "no media");
+        let image = root.join("cam_disk.bin");
+        fs::write(&image, b"recording image").unwrap();
+        assert!(validate_storage_at("", root, true).is_err(), "stray image below a failed mount");
+        assert!(validate_storage_at(&ro, root, true).is_err(), "read-only recording mount");
+        validate_storage_at(&rw, root, true).unwrap();
+        assert_eq!(fs::read(&image).unwrap(), b"recording image", "probe must not modify footage");
+        fs::write(&image, b"").unwrap();
+        assert!(validate_storage_at(&rw, root, true).is_err(), "empty image");
+        fs::remove_file(&image).unwrap();
+        fs::write(root.join("music_disk.bin"), b"music image").unwrap();
+        assert!(validate_storage_at(&rw, root, true).is_err(), "music cannot stand in for missing camera disk");
+        validate_storage_at(&rw, root, false).unwrap();
+    }
+
+    #[test]
+    fn only_explicitly_disabled_camera_allows_optional_media_alone() {
+        assert!(camera_required(&sentryusb_config::SetupConfig::new()));
+        for (size, expected) in [("", false), ("0", false), ("0G", false), ("0%", true), ("32G", true), ("100%", true)] {
+            let config = sentryusb_config::SetupConfig::from([("CAM_SIZE".into(), size.into())]);
+            assert_eq!(camera_required(&config), expected, "{size}");
+        }
+    }
+
+    #[test]
+    fn complete_gadget_requires_a_present_writable_primary_image() {
+        let dir = tempfile::tempdir().unwrap();
+        let lun = dir.path().join("functions/mass_storage.0/lun.0");
+        fs::create_dir_all(&lun).unwrap();
+        let image = dir.path().join("cam.bin");
+        fs::write(lun.join("file"), image.to_str().unwrap()).unwrap();
+        fs::write(lun.join("ro"), "0\n").unwrap();
+        assert!(!gadget_dir_is_complete(dir.path()));
+        fs::write(&image, b"disk").unwrap();
+        assert!(gadget_dir_is_complete(dir.path()));
+        fs::write(lun.join("ro"), "1\n").unwrap();
+        assert!(!gadget_dir_is_complete(dir.path()));
+        fs::write(lun.join("ro"), "0\n").unwrap();
+        fs::write(lun.join("file"), "\n").unwrap();
+        assert!(!gadget_dir_is_complete(dir.path()));
+    }
 
     #[test]
     fn ensure_symlink_creates_fresh_link() {

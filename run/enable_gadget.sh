@@ -2,6 +2,27 @@
 
 source /root/bin/envsetup.sh
 
+# Never bind an empty gadget after a recording mount failed to come up.
+findmnt -n --mountpoint /backingfiles -O rw >/dev/null || {
+  echo "error: recording storage is not mounted read/write"
+  exit 1
+}
+if [[ ! "${CAM_SIZE:-0}" =~ ^0+([.]0+)?([kKmMgG][bB]?)?$ ]] && [ ! -s /backingfiles/cam_disk.bin ]; then
+  echo "error: configured camera disk is unavailable"
+  exit 1
+fi
+images=0
+for image in cam music lightshow boombox; do
+  path="/backingfiles/${image}_disk.bin"
+  [ -e "$path" ] || continue
+  if [ ! -f "$path" ] || [ ! -s "$path" ] || [ ! -r "$path" ] || [ ! -w "$path" ]; then
+    echo "error: USB disk image is not a usable writable file: $path"
+    exit 1
+  fi
+  images=$((images + 1))
+done
+[ "$images" -gt 0 ] || { echo "error: no USB disk images available"; exit 1; }
+
 if ! configfs_root=$(findmnt -o TARGET -n configfs)
 then
   echo "error: configfs not found"
@@ -18,8 +39,14 @@ readonly cfg=c
 
 if [ -d "$gadget_root" ]
 then
-  echo "already prepared"
-  exit 0
+  primary=$(cat "$gadget_root/functions/mass_storage.0/lun.0/file" 2>/dev/null || true)
+  if [ -n "$(cat "$gadget_root/UDC" 2>/dev/null)" ] && [ -s "$primary" ] &&
+     [ "$(cat "$gadget_root/functions/mass_storage.0/lun.0/ro" 2>/dev/null)" = 0 ]; then
+    echo "already prepared"
+    exit 0
+  fi
+  echo "error: existing USB gadget is incomplete; disable it before retrying"
+  exit 1
 fi
 
 modprobe libcomposite
@@ -103,4 +130,9 @@ fi
 ln -sf "$gadget_root/functions/mass_storage.0" "$gadget_root/configs/$cfg.1"
 
 # activate
-find /sys/class/udc -type l -printf '%P\n' | head -1 > "$gadget_root/UDC"
+primary=$(cat "$gadget_root/functions/mass_storage.0/lun.0/file")
+[ -s "$primary" ] || { echo "error: primary USB disk is missing"; exit 1; }
+udc=$(find /sys/class/udc -type l -printf '%P\n' | head -1)
+[ -n "$udc" ] || { echo "error: no USB device controller available"; exit 1; }
+echo "$udc" > "$gadget_root/UDC"
+[ "$(cat "$gadget_root/UDC")" = "$udc" ] || { echo "error: USB gadget did not bind"; exit 1; }

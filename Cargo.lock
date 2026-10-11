@@ -2627,6 +2627,7 @@ dependencies = [
  "tokio",
  "tokio-stream",
  "tokio-util",
+ "tower",
  "tracing",
  "zip",
 ]
@@ -2710,6 +2711,7 @@ dependencies = [
  "hex",
  "libc",
  "ring",
+ "sentryusb-config",
  "sentryusb-shell",
  "tempfile",
  "tokio",

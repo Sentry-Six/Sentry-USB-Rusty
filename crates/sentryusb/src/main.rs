@@ -240,7 +240,7 @@ async fn main() {
             let degraded = sentryusb_api::degraded::DegradedState {
                 auth: auth.clone(),
                 hub: hub.clone(),
-                reason: std::sync::Arc::new(e.to_string()),
+                reason: std::sync::Arc::new(format!("{e:#}")),
             };
             let app = sentryusb_api::degraded::build_degraded_router(degraded);
             serve_with_common_layers(app, auth, args.port, args.dev, t0).await;

@@ -353,7 +353,18 @@ then
 fi
 
 # K: the connect boundary records only successful watched-media syncs
+connect_usb_drives_to_host_locked_source=${connect_usb_drives_to_host_locked_source//\/root\/bin\/disable_gadget.sh/test_disable_gadget}
+connect_usb_drives_to_host_locked_source=${connect_usb_drives_to_host_locked_source//\/root\/bin\/enable_gadget.sh/test_enable_gadget}
 eval "$connect_usb_drives_to_host_locked_source"
+storage_ready=true
+disable_result=0
+enable_result=0
+disable_calls=0
+enable_calls=0
+usb_active=true
+usb_storage_ready() { [ "$storage_ready" = true ]; }
+test_disable_gadget() { disable_calls=$((disable_calls + 1)); return "$disable_result"; }
+test_enable_gadget() { enable_calls=$((enable_calls + 1)); return "$enable_result"; }
 clear_archive_status() { :; }
 sync_disk_media_to_host() { :; }
 fix_errors_in_images() { :; }
@@ -395,6 +406,64 @@ connect_usb_drives_to_host_locked 2>> "$LOG_FILE" || {
   echo "successful media sync recorded the wrong number of stamps" >&2
   sync_test_failures=$((sync_test_failures + 1))
 }
+
+# L: failed storage/disable/enable/read-back cannot produce a connected log.
+storage_ready=false
+logs=""
+disable_calls=0
+if connect_usb_drives_to_host_locked; then echo 'missing storage reported connected'; exit 1; fi
+[[ $disable_calls == 0 && $logs != *'Connected usb to host.'* ]]
+storage_ready=true
+disable_result=1
+enable_calls=0
+if connect_usb_drives_to_host_locked; then echo 'failed teardown reported connected'; exit 1; fi
+[[ $enable_calls == 0 && $logs != *'Connected usb to host.'* ]]
+disable_result=0
+enable_result=17
+result=0
+connect_usb_drives_to_host_locked || result=$?
+[[ $result == 17 && $logs != *'Connected usb to host.'* ]]
+enable_result=0
+usb_active=false
+if connect_usb_drives_to_host_locked; then echo 'empty gadget reported connected'; exit 1; fi
+[[ $logs != *'Connected usb to host.'* ]]
+usb_active=true
+connect_usb_drives_to_host_locked
+[[ $logs == *'Connected usb to host.'* ]]
+
+# M: a failed archive connection or transfer must leave a healthy USB
+# presentation alone. No optional media changes are pending in this case.
+pipeline=$(awk '/^function archive_clips / {keep=1} /^function slowblink / {exit} keep {print}' "$script")
+pipeline=${pipeline//\/tmp\/flag_post_archive/$workdir/post-archive}
+pipeline=${pipeline//\/root\/bin\/disconnect-archive.sh/test_disconnect_archive}
+pipeline=${pipeline//\/root\/bin\/send-live-activity/test_live_activity}
+eval "$pipeline"
+test_disconnect_archive() { :; }
+test_live_activity() { :; }
+archive_connect_result=0
+archive_run_command() {
+  case "$1" in */connect-archive.sh) return "$archive_connect_result";; *) return 0;; esac
+}
+archive_teslacam_clips() { return 1; } # e.g. destination ENOSPC
+archive_is_reachable() { return 0; }
+travel_mode_active() { return 1; }
+cam_user_media_may_need_sync() { return 1; }
+cloud_upload_step() { :; }
+MUSIC_MOUNT="$workdir/unused-music"
+disable_calls=0
+enable_calls=0
+if archive_clips; then echo 'failed archive transfer reported success'; exit 1; fi
+[[ $usb_active == true && $disable_calls == 0 && $enable_calls == 0 ]]
+archive_connect_result=1
+if archive_clips; then echo 'failed archive connection reported success'; exit 1; fi
+[[ $usb_active == true && $disable_calls == 0 && $enable_calls == 0 ]]
+
+# N: failed USB teardown must not proceed to mounting the camera image.
+eval "$(awk '/^function ensure_cam_file_is_mounted / {keep=1} keep {print} keep && /^}/{exit}' "$script")"
+disconnect_usb_drives_from_host() { return 1; }
+ensure_mountpoint_is_mounted_with_retry() { touch "$workdir/unsafe-mount"; }
+if ensure_cam_file_is_mounted; then echo 'failed teardown allowed maintenance'; exit 1; fi
+[[ ! -e "$workdir/unsafe-mount" ]]
 
 [ "$sync_test_failures" -eq 0 ] || exit 1
 

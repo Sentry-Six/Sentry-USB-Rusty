@@ -50,6 +50,8 @@ uptime() { echo mock-uptime; }
 uname() { echo mock-kernel; }
 df() { echo 'mock capacity and inode headroom'; }
 du() { echo '1G cam_disk.bin'; }
+lsblk() { echo 'sda /dev/sda disk 512G usb SanDisk Ultra_Flair xfs /backingfiles'; }
+findmnt() { echo 'recording mount probe'; }
 ip() { echo 'inet 192.0.2.1'; }
 systemctl() { echo active; }
 journalctl() { echo 'mock drive cache: journal'; }
@@ -70,6 +72,7 @@ capture() { (set +e; source "$scratch/collector.sh") > "$scratch/report"; }
 capture
 report=$(cat "$scratch/report")
 [[ $report == *'test-version'* && $report == *'mock-kernel'* ]]
+[[ $report == *'SanDisk Ultra_Flair'* && $report == *'recording mount probe'* ]]
 [[ $report == *'state: configured'* && $report == *'current_speed: high-speed'* ]]
 [[ $report == *'/nofua: 1'* && $report == *'/ro: 0'* ]]
 [[ $report == *'cam_last_write_secs=36'* && $report == *'write_bytes: 4096'* ]]

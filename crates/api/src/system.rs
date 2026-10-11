@@ -60,11 +60,11 @@ pub async fn toggle_drives(State(_s): State<AppState>, _body: String) -> (Status
 }
 
 /// Idempotently enables the gadget without reacquiring archiveloop's cycle lock.
-pub async fn gadget_enable(State(_s): State<AppState>) -> (StatusCode, Json<serde_json::Value>) {
-    if sentryusb_gadget::is_active() {
-        return crate::json_ok();
-    }
-    match tokio::task::spawn_blocking(sentryusb_gadget::enable).await {
+pub async fn gadget_enable() -> (StatusCode, Json<serde_json::Value>) {
+    match tokio::task::spawn_blocking(|| {
+        sentryusb_gadget::validate_storage()?;
+        if sentryusb_gadget::is_active() { Ok(()) } else { sentryusb_gadget::enable() }
+    }).await {
         Ok(Ok(())) => crate::json_ok(),
         Ok(Err(e)) => crate::json_error(
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -78,7 +78,7 @@ pub async fn gadget_enable(State(_s): State<AppState>) -> (StatusCode, Json<serd
 }
 
 /// POST /api/system/gadget-disable — idempotent set-to-inactive.
-pub async fn gadget_disable(State(_s): State<AppState>) -> (StatusCode, Json<serde_json::Value>) {
+pub async fn gadget_disable() -> (StatusCode, Json<serde_json::Value>) {
     if !sentryusb_gadget::is_active() {
         return crate::json_ok();
     }

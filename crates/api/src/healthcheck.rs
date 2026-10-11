@@ -1,7 +1,7 @@
 //! System health check and diagnostics.
 
 use axum::Json;
-use axum::extract::State;
+use axum::extract::{FromRef, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use serde::Serialize;
@@ -550,8 +550,27 @@ pub async fn health_check(State(_s): State<AppState>) -> (StatusCode, Json<serde
     (StatusCode::OK, Json(serde_json::to_value(report).unwrap_or_default()))
 }
 
+/// Diagnostic collection remains available without a working history DB.
+#[derive(Clone)]
+pub struct DiagnosticsState {
+    app: Option<AppState>,
+    database_error: Option<String>,
+}
+
+impl FromRef<AppState> for DiagnosticsState {
+    fn from_ref(state: &AppState) -> Self {
+        Self { app: Some(state.clone()), database_error: None }
+    }
+}
+
+impl FromRef<crate::degraded::DegradedState> for DiagnosticsState {
+    fn from_ref(state: &crate::degraded::DegradedState) -> Self {
+        Self { app: None, database_error: Some((*state.reason).clone()) }
+    }
+}
+
 /// POST /api/diagnostics/refresh
-pub async fn refresh_diagnostics(State(state): State<AppState>) -> (StatusCode, Json<serde_json::Value>) {
+pub async fn refresh_diagnostics(State(state): State<DiagnosticsState>) -> (StatusCode, Json<serde_json::Value>) {
     match gather_diagnostics(state).await {
         Ok(report) => match tokio::fs::write("/tmp/diagnostics.txt", report).await {
             Ok(_) => crate::json_ok(),
@@ -563,7 +582,7 @@ pub async fn refresh_diagnostics(State(state): State<AppState>) -> (StatusCode, 
 
 /// A fresh capture is returned directly so downloads cannot read an older
 /// cached report or another request's partially written file.
-pub async fn download_diagnostics(State(state): State<AppState>) -> axum::response::Response {
+pub async fn download_diagnostics(State(state): State<DiagnosticsState>) -> axum::response::Response {
     match gather_diagnostics(state).await {
         Ok(report) => diagnostics_download_response(report),
         Err(e) => crate::json_error(StatusCode::INTERNAL_SERVER_ERROR, &format!("Failed to capture diagnostics: {}", e)).into_response(),
@@ -582,7 +601,7 @@ fn diagnostics_download_response(report: String) -> axum::response::Response {
     ).into_response()
 }
 
-async fn gather_diagnostics(state: AppState) -> anyhow::Result<String> {
+async fn gather_diagnostics(state: DiagnosticsState) -> anyhow::Result<String> {
     let capture_time = chrono::Utc::now().to_rfc3339();
     let script = sentryusb_shell::run_with_timeout(
         std::time::Duration::from_secs(60),
@@ -591,12 +610,21 @@ async fn gather_diagnostics(state: AppState) -> anyhow::Result<String> {
     );
     // Include the UI's status sample without relying on a loopback proxy,
     // configured HTTP port, or auth cookie. Raw USB probes below are live.
-    let status = tokio::time::timeout(std::time::Duration::from_secs(3), crate::status::get_status(State(state)));
-    let (report, status) = tokio::join!(script, status);
-    let status = match status {
-        Ok((code, Json(value))) if code.is_success() => serde_json::to_string_pretty(&value)?,
-        _ => "Status sample unavailable (timed out or device busy)".into(),
+    let status = async {
+        if let Some(app) = state.app {
+            match tokio::time::timeout(std::time::Duration::from_secs(3), crate::status::get_status(State(app))).await {
+                Ok((code, Json(value))) if code.is_success() => serde_json::to_string_pretty(&value).unwrap_or_default(),
+                _ => "Status sample unavailable (timed out or device busy)".into(),
+            }
+        } else {
+            serde_json::to_string_pretty(&serde_json::json!({
+                "degraded": "database_unavailable",
+                "degraded_reason": state.database_error,
+                "recording_status": "unknown; inspect live USB and storage probes above",
+            })).unwrap_or_default()
+        }
     };
+    let (report, status) = tokio::join!(script, status);
     Ok(format!("{}\n====== UI status sample (capture started {capture_time}; may be cached) ======\n{status}\n", report?))
 }
 
@@ -612,6 +640,7 @@ const DIAGNOSTICS_SCRIPT: &str = r#"{
 
   echo "====== version ======"
   cat /opt/sentryusb/version 2>/dev/null || echo "unknown"
+  echo ""
   uname -a
   cat /sys/firmware/devicetree/base/model 2>/dev/null; echo
   echo ""
@@ -675,6 +704,7 @@ const DIAGNOSTICS_SCRIPT: &str = r#"{
   echo ""
 
   echo "====== disk / images ======"
+  timeout 3 lsblk -o NAME,PATH,TYPE,SIZE,TRAN,VENDOR,MODEL,FSTYPE,MOUNTPOINTS 2>&1 || echo "disk identity unavailable"
   timeout 3 df -h /sentryusb/ / /backingfiles/ /mutable/ 2>&1 || echo "capacity probe unavailable or timed out"
   timeout 3 df -i /backingfiles/ /mutable/ 2>&1 || echo "inode probe unavailable or timed out"
   cat /proc/mounts /proc/diskstats 2>/dev/null
@@ -709,6 +739,12 @@ const DIAGNOSTICS_SCRIPT: &str = r#"{
   echo "====== storage cleanup state ======"
   cat /run/sentryusb_storage_cleanup.json 2>/dev/null || echo "cleanup state unavailable"
   [ ! -e /run/sentryusb_inode_stall ] || echo "Clip index inode stall flag present"
+  echo ""
+
+  echo "====== recording mount startup ======"
+  timeout 3 findmnt --mountpoint /backingfiles -o TARGET,SOURCE,FSTYPE,OPTIONS 2>&1 || echo "recording storage is not mounted"
+  timeout 3 systemctl --no-pager --full status backingfiles.mount mutable.mount 2>&1 || true
+  timeout 3 journalctl -b -u backingfiles.mount -u mutable.mount -n 100 --no-pager 2>&1 || echo "mount journal unavailable"
   echo ""
 
   echo "====== network ======"
@@ -768,7 +804,7 @@ const DIAGNOSTICS_SCRIPT: &str = r#"{
 } 2>&1"#;
 
 /// GET /api/diagnostics
-pub async fn get_diagnostics(State(_s): State<AppState>) -> impl IntoResponse {
+pub async fn get_diagnostics() -> impl IntoResponse {
     match std::fs::read_to_string("/tmp/diagnostics.txt") {
         Ok(data) => {
             let cleaned = sanitize_diagnostics(&data);

@@ -345,6 +345,10 @@ function connect_usb_drives_to_host() {
 
 function connect_usb_drives_to_host_locked() {
   clear_archive_status
+  if ! usb_storage_ready; then
+    log "ERROR: USB storage is not ready; not presenting an empty drive"
+    return 1
+  fi
   log "Connecting usb to host..."
   # Always ensure the USB gadget is fully torn down before touching the cam
   # disk image.  If clean_cam_mount was skipped (e.g. archive became
@@ -355,6 +359,9 @@ function connect_usb_drives_to_host_locked() {
   if /root/bin/disable_gadget.sh 2>/dev/null; then
     log "Disabled stale USB gadget before sync"
     fix_errors_in_images
+  else
+    log "ERROR: could not release USB gadget; skipping disk maintenance and reconnect"
+    return 1
   fi
   sync_disk_media_to_host
   # Randomize lock chime BEFORE sync_user_media_to_cam so the fresh random pick
@@ -376,8 +383,15 @@ function connect_usb_drives_to_host_locked() {
   do
     ls "/var/www/html/fs/$d" > /dev/null 2>&1 || true
   done
-  if ! /root/bin/enable_gadget.sh; then
-    log "ERROR: enable_gadget.sh failed (exit $?)"
+  if /root/bin/enable_gadget.sh; then
+    if ! usb_gadget_is_active; then
+      log "ERROR: USB enable completed without a bound disk; drive was not presented"
+      return 1
+    fi
+  else
+    local result=$?
+    log "ERROR: enable_gadget.sh failed (exit $result); drive was not presented"
+    return "$result"
   fi
   log "Connected usb to host."
   sleep 5
@@ -892,8 +906,8 @@ function ensure_mountpoint_is_mounted_with_retry () {
 
 function ensure_cam_file_is_mounted () {
   log "Ensuring cam file is mounted..."
-  disconnect_usb_drives_from_host
-  ensure_mountpoint_is_mounted_with_retry "$CAM_MOUNT"
+  disconnect_usb_drives_from_host || return 1
+  ensure_mountpoint_is_mounted_with_retry "$CAM_MOUNT" || return 1
   log "Ensured cam file is mounted."
 }
 
@@ -1009,6 +1023,7 @@ function disconnect_usb_drives_from_host_locked () {
     fix_errors_in_images
   else
     log "ERROR: disable_gadget.sh failed (exit $?), skipping fsck"
+    return 1
   fi
   log "Disconnected usb from host."
 }
@@ -1320,7 +1335,7 @@ function clean_cam_mount {
   fi
 
   log "cleaning cam mount"
-  ensure_cam_file_is_mounted
+  ensure_cam_file_is_mounted || return 1
 
   # Delete the files that fsck "recovered". These are generally files
   # that were deleted previously by the car or teslausb
@@ -1882,6 +1897,51 @@ function copy_music_files () {
 
 function has_cam_disk () {
   [ -f /backingfiles/cam_disk.bin ]
+}
+
+# Local recording readiness is independent of the archive destination.
+# Keep optional music-only layouts working, but never publish zero media.
+function usb_storage_ready () {
+  findmnt -n --mountpoint /backingfiles -O rw >/dev/null 2>&1 || return 1
+  if [[ ! "${CAM_SIZE:-0}" =~ ^0+([.]0+)?([kKmMgG][bB]?)?$ ]]; then
+    [ -s /backingfiles/cam_disk.bin ] || return 1
+  fi
+  local image
+  for image in cam music lightshow boombox; do
+    if [ -f "/backingfiles/${image}_disk.bin" ] &&
+       [ -s "/backingfiles/${image}_disk.bin" ] &&
+       [ -r "/backingfiles/${image}_disk.bin" ] &&
+       [ -w "/backingfiles/${image}_disk.bin" ]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+function wait_for_usb_storage () {
+  local waited=0
+  until usb_storage_ready; do
+    if (( waited % 60 == 0 )); then
+      log "USB storage unavailable: waiting for writable /backingfiles and a usable disk image (${waited}s)"
+    fi
+    sleep 10
+    waited=$((waited + 10))
+  done
+  if (( waited > 0 )); then log "USB storage ready after ${waited}s; continuing startup"; fi
+}
+
+function connect_usb_at_startup () {
+  until connect_usb_drives_to_host; do
+    log "USB startup did not complete; retrying in 10 seconds"
+    sleep 10
+    wait_for_usb_storage
+    # An API request may have timed out after successfully binding. Do not
+    # interrupt that restored recording connection with another full cycle.
+    if usb_gadget_is_active; then
+      log "USB startup binding verified after retry"
+      return 0
+    fi
+  done
 }
 
 function cloud_upload_step () {
@@ -2774,7 +2834,7 @@ set_sys_param /sys/devices/system/cpu/cpufreq/policy0/scaling_governor CPU_GOVER
 # spinning the CPU.
 function camdiskworkers {
   echo -n camdiskworkers > /proc/self/comm
-  until has_cam_disk
+  until has_cam_disk && usb_storage_ready
   do
     sleep 10
   done
@@ -2808,6 +2868,11 @@ wifichecker &
 timesyncloop &
 kmsgmirror &
 
+# Mount ordering does not guarantee a successful mount. Keep the web/API
+# available while storage is missing; the archive worker waits here and
+# resumes automatically if the mount/image becomes available later.
+wait_for_usb_storage
+
 # Travel Mode crash-restart guard: the service runs with Restart=always, so
 # any archiveloop crash re-enters this startup path with the system still in
 # whatever state the crash left it. The configfs gadget survives process
@@ -2832,8 +2897,7 @@ then
     /root/bin/make_snapshot.sh || log "ERROR: make_snapshot.sh failed (exit $?)"
   fi
 else
-  fix_errors_in_images
-
+  # Cleanup/connect below check images only after successful USB teardown.
   if has_cam_disk
   then
     # always remove files that fsck recoverd
@@ -2852,7 +2916,7 @@ else
   # ~50 extra seconds without a drive on every power-on. The lock chime is
   # synced inside connect (before enable), so the car still sees a single
   # plug-in with everything already in place.
-  connect_usb_drives_to_host || log "ERROR: boot USB connect failed"
+  connect_usb_at_startup
 
   if has_cam_disk
   then
