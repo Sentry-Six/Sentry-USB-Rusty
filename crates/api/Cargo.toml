@@ -40,4 +40,4 @@ sentryusb-ble-health = { path = "../ble_health", package = "sentryusb-ble-health
 tempfile = "3"
 tower = { version = "0.5", features = ["util"] }
 # Test-only ZIP reader for streaming-writer validation.
-zip = { version = "8", default-features = false, features = ["deflate"] }
+zip = { version = "9", default-features = false, features = ["deflate"] }
