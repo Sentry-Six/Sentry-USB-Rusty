@@ -40,9 +40,11 @@ interface Props {
 }
 
 export function AwayModeControl({ onOpenWizard, openTravelMode = false, onTravelModeClose }: Props = {}) {
-  const { status, enable, disable, setMode, config, updateConfig, saveError, useCurrentLocation } = useAwayMode()
+  const { status, statusError, actionError, refresh, enable, disable, setMode, config, updateConfig, saveError, useCurrentLocation } = useAwayMode()
   // Avoid a disabled-state flash before the first compatible response.
   const apConfigured = status.ap_configured !== false
+  const apError = statusError || status.ap_error
+  const operationError = actionError || status.ap_start_error
   const mode: AwayModeKind = status.mode ?? "manual"
   const [selectedDuration, setSelectedDuration] = useState(240)
   const [customHours, setCustomHours] = useState("")
@@ -195,7 +197,9 @@ export function AwayModeControl({ onOpenWizard, openTravelMode = false, onTravel
         ) : null
       }
       disabled={
-        !apConfigured
+        apError
+          ? { reason: apError, cta: { label: "Retry", onClick: () => void refresh() } }
+          : !apConfigured
           ? {
               reason:
                 "Enable the WiFi Access Point in the Setup Wizard to use Away Mode.",
@@ -206,6 +210,9 @@ export function AwayModeControl({ onOpenWizard, openTravelMode = false, onTravel
           : undefined
       }
     >
+      {operationError && <p role="alert" className="text-xs text-amber-300">{operationError}</p>}
+      {status.ap_start_error && mode === "auto" && <p className="text-xs text-slate-400">Automatic mode will retry while the car remains away.</p>}
+      {status.ap_starting && <p role="status" className="text-xs text-blue-400">Starting the hotspot…</p>}
       <SegPicker<AwayModeKind>
         options={MODE_OPTIONS}
         value={mode}
@@ -322,13 +329,14 @@ export function AwayModeControl({ onOpenWizard, openTravelMode = false, onTravel
                 </button>
                 <button
                   onClick={handleEnableClick}
-                  disabled={enabling || (useCustom && getCustomMinutes() <= 0)}
+                  disabled={enabling || status.ap_starting || (useCustom && getCustomMinutes() <= 0)}
                   className="ml-auto rounded-lg bg-blue-500/15 px-3 py-1.5 text-xs font-medium text-blue-400 transition-colors hover:bg-blue-500/25 disabled:opacity-40"
                 >
-                  {enabling ? "Enabling..." : "Enable"}
+                  {enabling || status.ap_starting ? "Starting..." : "Enable"}
                 </button>
               </div>
 
+              {status.ap_starting && <button onClick={disable} className="text-xs text-red-400">Cancel startup</button>}
               {useCustom && (
                 <div className="flex items-center gap-1.5">
                   <input

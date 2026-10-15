@@ -16,6 +16,9 @@ use crate::env::SetupEnv;
 use crate::error::ConfigError;
 use crate::SetupEmitter;
 
+pub mod ap_profile;
+pub mod networkd;
+
 /// Configure the WiFi access point.
 ///
 /// The runner gates this on `AP_SSID` and a valid `AP_PASS` being set, so by
@@ -68,16 +71,21 @@ pub async fn configure_ap(env: &SetupEnv, emitter: &SetupEmitter) -> Result<()> 
                 info!("nmcli AP add failed ({e}); falling back to keyfile writer");
                 // NM's keyfile plugin sometimes refuses `nmcli con add` when
                 // NM was started while root was read-only. Writing the
-                // .nmconnection file directly works because the keyfile
-                // plugin re-reads it on `con reload` — and that doesn't
-                // require the plugin to be healthy.
-                nm_write_ap_file(&ssid, &pass, &ip, emitter).await
-                    .context("failed to configure AP (both nmcli and keyfile paths failed)")?;
+                // .nmconnection file directly and loading it avoids a
+                // service restart. Both paths verify the loaded profile.
+                let result = nm_write_ap_file(&ssid, &pass, &ip, emitter).await
+                    .with_context(|| format!("failed to configure AP (nmcli add failed: {e:#}; keyfile fallback also failed)"));
                 teardown_ap_scaffolding().await;
+                result?;
                 emitter.progress("AP configured via keyfile fallback.");
                 return Ok(());
             }
         }
+    }
+
+    // Netplan/networkd Armbian images do not have ifupdown's files or tools.
+    if networkd::applicable().await? {
+        return networkd::configure(env, emitter).await;
     }
 
     // wpa_supplicant + hostapd path (non-NM systems).
@@ -118,6 +126,12 @@ async fn teardown_ap_scaffolding() {
 /// Access Point" in the wizard actually removes the feature instead of
 /// silently leaving the old profile (and a possibly-broadcasting AP) behind.
 pub async fn deconfigure_ap(emitter: &SetupEmitter) -> Result<()> {
+    if networkd::applicable().await? {
+        networkd::remove().await?;
+        let _ = std::fs::remove_file("/mutable/sentryusb_away_mode.json");
+        let _ = std::fs::remove_file("/mutable/sentryusb_away_mode.json.tmp");
+        return Ok(());
+    }
     let keyfile = "/etc/NetworkManager/system-connections/SENTRYUSB_AP.nmconnection";
     let dispatcher = "/etc/NetworkManager/dispatcher.d/10-sentryusb-ap";
 
@@ -205,6 +219,8 @@ async fn nm_add_ap(
         "nmcli", &["con", "modify", "SENTRYUSB_AP", "ipv6.method", "disabled"],
     ).await?;
 
+    ap_profile::verify_nm_ap_profile(ssid, ip).await?;
+
     // Clean up stale if-up.d script from previous installs.
     let _ = std::fs::remove_file("/etc/network/if-up.d/sentryusb-ap");
 
@@ -212,11 +228,11 @@ async fn nm_add_ap(
     Ok(())
 }
 
-/// Fallback: write the connection file directly and `nmcli con reload`.
+/// Fallback: write the connection file directly, load it and verify it.
 ///
 /// When NM's keyfile plugin started on a read-only root it refuses
 /// `nmcli con add`, but once the FS is remounted rw we can write the
-/// file ourselves. `nmcli con reload` picks it up without a full restart,
+/// file ourselves. `nmcli con load` picks it up without a full restart,
 /// so SSH sessions survive.
 async fn nm_write_ap_file(
     ssid: &str,
@@ -269,7 +285,7 @@ async fn nm_write_ap_file(
     // silently breaks the AP profile.
     write_secret_file(file, &contents)?;
 
-    let _ = sentryusb_shell::run("nmcli", &["con", "reload"]).await;
+    ap_profile::load_nm_ap_profile(ssid, ip).await?;
 
     let _ = std::fs::remove_file("/etc/network/if-up.d/sentryusb-ap");
     install_ap_dispatcher(&wlan).await?;

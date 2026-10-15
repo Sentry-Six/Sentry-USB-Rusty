@@ -1794,6 +1794,9 @@ fi
 
 if [ -n "${AP_SSID:+x}" ]
 then
+  if [ -f /etc/armbian-release ]; then
+    copy_script setup/pi/networkd-ap.sh /root/bin
+  fi
   copy_script setup/pi/configure-ap.sh /tmp
   /tmp/configure-ap.sh
 fi

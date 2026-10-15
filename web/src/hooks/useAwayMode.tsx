@@ -7,8 +7,11 @@ interface AwayModeStatus {
     mode?: AwayModeKind
     state: "idle" | "active"
     has_rtc?: boolean
-    /** False when no AP profile exists; undefined until the first response. */
+    /** False when the AP is unavailable; ap_error distinguishes a failed check. */
     ap_configured?: boolean
+    ap_error?: string
+    ap_starting?: boolean
+    ap_start_error?: string
     ap_ssid?: string
     ap_ip?: string
     expires_at?: string
@@ -38,6 +41,9 @@ export interface AwayGeofenceValues {
 
 interface AwayModeContextValue {
     status: AwayModeStatus
+    statusError: string | null
+    actionError: string | null
+    refresh: () => Promise<void>
     enable: (durationMin: number) => Promise<void>
     disable: () => Promise<void>
     setMode: (mode: AwayModeKind) => Promise<void>
@@ -52,6 +58,9 @@ const DEFAULT_CONFIG: AwayGeofenceValues = { homeLat: null, homeLon: null, radiu
 
 const AwayModeContext = createContext<AwayModeContextValue>({
     status: { state: "idle" },
+    statusError: null,
+    actionError: null,
+    refresh: async () => { },
     enable: async () => { },
     disable: async () => { },
     setMode: async () => { },
@@ -67,6 +76,19 @@ export function useAwayMode() {
 
 const AWAY_MODE_LS_KEY = "sentryusb_away_mode"
 
+async function responseBody(res: Response) {
+    const data = await res.json().catch(() => null)
+    if (!res.ok) throw new Error(typeof data?.error === "string" ? data.error : `Request failed (HTTP ${res.status}).`)
+    return data
+}
+
+function requireStatus(data: AwayModeStatus | null): AwayModeStatus {
+    if (!data || (data.state !== "idle" && data.state !== "active")) {
+        throw new Error("The device returned an invalid Away Mode status.")
+    }
+    return data
+}
+
 /** Returns locally stored Away Mode info (survives connection loss). */
 export function getStoredAwayMode(): { enabled_at: string; ap_ssid: string; ap_ip: string } | null {
     try {
@@ -80,31 +102,40 @@ export function getStoredAwayMode(): { enabled_at: string; ap_ssid: string; ap_i
 
 export function AwayModeProvider({ children }: { children: React.ReactNode }) {
     const [status, setStatus] = useState<AwayModeStatus>({ state: "idle" })
+    const [statusError, setStatusError] = useState<string | null>(null)
+    const [actionError, setActionError] = useState<string | null>(null)
     const [config, setConfig] = useState<AwayGeofenceValues>(DEFAULT_CONFIG)
     const [saveError, setSaveError] = useState<string | null>(null)
     const lastMutation = useRef(0)
+    const lastRefresh = useRef({ id: 0 })
     const saveTimer = useRef<number | null>(null)
 
     const refresh = useCallback(async () => {
-        const startedAt = Date.now()
+        const mutation = lastMutation.current
+        const request = ++lastRefresh.current.id
+        const isCurrent = () => mutation === lastMutation.current && request === lastRefresh.current.id
         try {
             const res = await fetch("/api/away-mode/status")
-            const data: AwayModeStatus = await res.json()
-            if (startedAt >= lastMutation.current) {
+            const data = requireStatus(await responseBody(res))
+            if (isCurrent()) {
                 setStatus(data)
-                if (data.state === "idle" && data.mode !== "auto") {
+                setStatusError(null)
+                if (data.state === "idle" && data.mode !== "auto" && !data.ap_starting) {
                     localStorage.removeItem(AWAY_MODE_LS_KEY)
                 }
             }
-        } catch { /* ignore — connection may be lost due to Away Mode */ }
+        } catch (error) {
+            if (isCurrent()) setStatusError(`Could not check Away Mode: ${error instanceof Error ? error.message : "The device is unreachable."}`)
+        }
     }, [])
 
     useEffect(() => {
         let mounted = true
+        const requests = lastRefresh.current
         const tick = () => { if (mounted) refresh() }
         tick()
         const iv = setInterval(tick, 5000)
-        return () => { mounted = false; clearInterval(iv) }
+        return () => { mounted = false; clearInterval(iv); requests.id++ }
     }, [refresh])
 
     useEffect(() => {
@@ -128,46 +159,59 @@ export function AwayModeProvider({ children }: { children: React.ReactNode }) {
     }, [])
 
     const enable = useCallback(async (durationMin: number) => {
-        lastMutation.current = Date.now()
+        lastMutation.current++
+        setActionError(null)
         try {
             const res = await fetch("/api/away-mode/enable", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ duration_min: durationMin }),
             })
-            const data: AwayModeStatus = await res.json()
+            const data = requireStatus(await responseBody(res))
+            lastMutation.current++
             setStatus(data)
+            setStatusError(null)
             // Preserve the deadline for the offline connection banner.
             localStorage.setItem(AWAY_MODE_LS_KEY, JSON.stringify({
                 enabled_at: data.enabled_at ?? new Date().toISOString(),
                 ap_ssid: data.ap_ssid ?? "",
                 ap_ip: data.ap_ip ?? "",
             }))
-        } catch { /* ignore */ }
+        } catch (error) {
+            setActionError(`Could not enable Away Mode: ${error instanceof Error ? error.message : "The device is unreachable."}`)
+        }
     }, [])
 
     const disable = useCallback(async () => {
-        lastMutation.current = Date.now()
-        setStatus((prev) => ({ ...prev, state: "idle" }))
-        localStorage.removeItem(AWAY_MODE_LS_KEY)
+        lastMutation.current++
+        setActionError(null)
         try {
-            await fetch("/api/away-mode", { method: "DELETE" })
-        } catch { /* ignore */ }
+            await responseBody(await fetch("/api/away-mode", { method: "DELETE" }))
+            lastMutation.current++
+            setStatus((prev) => ({ ...prev, state: "idle", ap_starting: false, ap_on: false, ap_start_error: undefined }))
+            localStorage.removeItem(AWAY_MODE_LS_KEY)
+        } catch (error) {
+            setActionError(`Could not disable Away Mode: ${error instanceof Error ? error.message : "The device is unreachable."}`)
+        }
     }, [])
 
     const setMode = useCallback(async (mode: AwayModeKind) => {
-        lastMutation.current = Date.now()
-        setStatus((prev) => ({ ...prev, mode }))
+        lastMutation.current++
+        setActionError(null)
         try {
-            await fetch("/api/away-mode/mode", {
+            const res = await fetch("/api/away-mode/mode", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ mode }),
             })
-        } catch { /* ignore */ }
-        // Keep the mutation timestamp so an older in-flight poll cannot revert
-        // the optimistic mode; the full refresh also supplies AP metadata.
-        refresh()
+            const data = requireStatus(await responseBody(res))
+            lastMutation.current++
+            setStatus((prev) => ({ ...prev, ...data }))
+            // The mode response lacks AP metadata; fetch it after success.
+            void refresh()
+        } catch (error) {
+            setActionError(`Could not change Away Mode: ${error instanceof Error ? error.message : "The device is unreachable."}`)
+        }
     }, [refresh])
 
     const updateConfig = useCallback((patch: Partial<AwayGeofenceValues>) => {
@@ -211,7 +255,7 @@ export function AwayModeProvider({ children }: { children: React.ReactNode }) {
 
     return (
         <AwayModeContext.Provider
-            value={{ status, enable, disable, setMode, config, updateConfig, saveError, useCurrentLocation }}
+            value={{ status, statusError, actionError, refresh, enable, disable, setMode, config, updateConfig, saveError, useCurrentLocation }}
         >
             {children}
         </AwayModeContext.Provider>

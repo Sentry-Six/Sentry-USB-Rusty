@@ -831,6 +831,12 @@ function wait_after_archive_cycle () {
 }
 
 function wifi_cycle () {
+  if [ -f /etc/armbian-release ] && [ -f /etc/sentryusb/networkd-ap/station ] \
+     && [ -f /root/bin/networkd-ap.sh ] && bash /root/bin/networkd-ap.sh detect >/dev/null 2>&1; then
+    # Recover only this backend's owned interface and Netplan station service.
+    bash /root/bin/networkd-ap.sh stop || log "Armbian hotspot WiFi recovery failed"
+    return
+  fi
   # This fix is only needed when ap0 exists.  ap0 shares the same physical
   # radio as wlan0 and locks it to the AP channel, preventing wlan0 from
   # scanning other channels to find the home network.  Without ap0,

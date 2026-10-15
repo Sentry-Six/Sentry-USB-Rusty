@@ -42,6 +42,23 @@ function nm_get_wifi_client_device () {
   return 1
 }
 
+function nm_verify_ap () {
+  local actual expected
+  actual="$(nmcli --escape no -g 802-11-wireless.mode,802-11-wireless.ssid,ipv4.addresses con show id SENTRYUSB_AP)" || return 1
+  expected="$(printf 'ap\n%s\n%s/24' "$AP_SSID" "${AP_IP:-192.168.66.1}")"
+  if [ "$actual" != "$expected" ]; then
+    log_progress "STOP: NetworkManager has not loaded the expected AP profile (mode, SSID or IP does not match)"
+    return 1
+  fi
+}
+
+function nm_load_ap_file () {
+  # Load this exact file so NM reports keyfile errors, then verify the
+  # installed profile. Neither operation activates the AP or restarts WiFi.
+  nmcli con load "$1" || return 1
+  nm_verify_ap
+}
+
 function nm_add_ap () {
   nm_get_wifi_client_device || return 1
 
@@ -74,6 +91,7 @@ function nm_add_ap () {
   nmcli con modify SENTRYUSB_AP ipv4.addr "$IP/24" || return 1
   nmcli con modify SENTRYUSB_AP ipv4.method shared || return 1
   nmcli con modify SENTRYUSB_AP ipv6.method disabled || return 1
+  nm_verify_ap || return 1
   # Remove stale if-up.d script from previous installs — it doesn't fire on
   # NetworkManager/netplan systems (e.g. Pi 5 with Debian Trixie).
   rm -f /etc/network/if-up.d/sentryusb-ap
@@ -114,7 +132,7 @@ function nm_write_ap_file () {
   # Write the AP connection profile directly to disk, bypassing NM's
   # keyfile plugin.  This works even when NM was started on a read-only
   # root (the plugin refuses "nmcli con add", but the filesystem is
-  # writable after remountfs_rw).  Uses "nmcli con reload" instead of a
+  # writable after remountfs_rw). Uses "nmcli con load" instead of a
   # full NM restart, so WiFi stays up and SSH sessions survive.
   log_progress "Writing AP connection file directly (NM keyfile workaround)"
   local _ssid="$AP_SSID"
@@ -158,8 +176,7 @@ method=disabled
 EOF
   chmod 0600 "$_file"
 
-  # Tell NM to pick up the new file without a full restart
-  nmcli con reload 2>/dev/null || true
+  nm_load_ap_file "$_file" || return 1
 
   # Install the dispatcher script for ap0 — only recreates ap0 when Away
   # Mode is active (flag file exists).
@@ -221,6 +238,19 @@ then
   exit 0
 fi
 
+
+# Only the affected Armbian backend uses this helper; NM and ifupdown retain
+# their existing configuration paths.
+if [ -f /etc/armbian-release ] && [ -f /root/bin/networkd-ap.sh ]; then
+  if bash /root/bin/networkd-ap.sh detect >/dev/null; then
+    apt-get -y install hostapd iw || exit 1
+    bash /root/bin/networkd-ap.sh configure
+    exit $?
+  else
+    result=$?
+    [ "$result" = 1 ] || exit "$result"
+  fi
+fi
 
 if [ ! -e /etc/wpa_supplicant/wpa_supplicant.conf ]
 then

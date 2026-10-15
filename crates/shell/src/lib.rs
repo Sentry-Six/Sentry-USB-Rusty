@@ -7,6 +7,22 @@ use tracing::debug;
 /// Default command timeout.
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// A completed command that failed. Keep its exit code so callers can
+/// distinguish a missing resource from a failed lookup without parsing stderr.
+#[derive(Debug)]
+pub struct CommandError {
+    pub code: Option<i32>,
+    pub stderr: String,
+}
+
+impl std::fmt::Display for CommandError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "command failed (exit {}): {}", self.code.unwrap_or(-1), self.stderr)
+    }
+}
+
+impl std::error::Error for CommandError {}
+
 /// Executes a command and returns its stdout output with a 30-second timeout.
 pub async fn run(name: &str, args: &[&str]) -> Result<String> {
     run_with_timeout(DEFAULT_TIMEOUT, name, args).await
@@ -36,11 +52,10 @@ pub async fn run_with_timeout(timeout: Duration, name: &str, args: &[&str]) -> R
                 Ok(String::from_utf8_lossy(&output.stdout).into_owned())
             } else {
                 let stderr = String::from_utf8_lossy(&output.stderr);
-                bail!(
-                    "command failed (exit {}): {}",
-                    output.status.code().unwrap_or(-1),
-                    clean_stderr(&stderr)
-                )
+                Err(CommandError {
+                    code: output.status.code(),
+                    stderr: clean_stderr(&stderr),
+                }.into())
             }
         }
     }
@@ -127,6 +142,15 @@ fn is_curl_progress_line(line: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn failed_command_preserves_exit_code_and_stderr() {
+        let error = run("sh", &["-c", "echo 'profile not found' >&2; exit 10"]).await.unwrap_err();
+        let command = error.downcast_ref::<CommandError>().unwrap();
+        assert_eq!(command.code, Some(10));
+        assert_eq!(command.stderr, "profile not found");
+        assert_eq!(error.to_string(), "command failed (exit 10): profile not found");
+    }
 
     #[test]
     fn test_clean_stderr_removes_curl_progress() {

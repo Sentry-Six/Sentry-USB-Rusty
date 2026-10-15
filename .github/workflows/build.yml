@@ -353,6 +353,8 @@ jobs:
           bash test/archive-retry.test.sh
           bash test/cifs-compatibility.test.sh
           bash test/diagnostics-capture.test.sh
+          bash test/ap-profile.test.sh
+          python3 test/networkd-ap.test.py
           bash test/usb-startup.test.sh
           bash test/archiveloop-gadget-cycle-min.test.sh
           bash test/archiveloop-camdisk-supervisor.test.sh

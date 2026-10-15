@@ -1,8 +1,9 @@
 //! Timed and geofence-controlled Wi-Fi access-point management.
 
 use std::sync::{Mutex, OnceLock};
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, Instant, SystemTime};
 
+use anyhow::{Context, bail};
 use axum::Json;
 use axum::extract::State;
 use axum::http::StatusCode;
@@ -10,11 +11,12 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use tokio::sync::Notify;
 use tracing::{info, warn};
+use sentryusb_setup::network::ap_profile::{self, ApProfile, AP_KEYFILE, AP_PROFILE};
+use sentryusb_setup::network::networkd;
 
 use crate::router::AppState;
 
 const FLAG_FILE: &str = "/mutable/sentryusb_away_mode.json";
-const AP_PROFILE: &str = "SENTRYUSB_AP";
 const HOSTAPD_CONF: &str = "/etc/hostapd/hostapd.conf";
 const IFUPDOWN_AP_FILE: &str = "/etc/network/interfaces.d/sentryusb-ap";
 /// Default to 5 GHz channel 36 when the station is not associated.
@@ -123,6 +125,9 @@ struct FlagData {
     has_rtc: bool,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ApPhase { Off, Starting, On }
+
 struct Inner {
     /// `manual` uses the timer; `auto` follows the geofence.
     mode: &'static str, // "manual" | "auto"
@@ -139,6 +144,10 @@ struct Inner {
     stop: std::sync::Arc<Notify>,
     /// Watcher generation; prevents a missed notification from leaving duplicates.
     epoch: u64,
+    ap_phase: ApPhase,
+    ap_generation: u64,
+    ap_start_error: Option<String>,
+    retry_at: Option<Instant>,
 }
 
 fn mgr() -> &'static Mutex<Inner> {
@@ -161,6 +170,10 @@ fn mgr() -> &'static Mutex<Inner> {
             pending_count: 0,
             stop: std::sync::Arc::new(Notify::new()),
             epoch: 0,
+            ap_phase: ApPhase::Off,
+            ap_generation: 0,
+            ap_start_error: None,
+            retry_at: None,
         })
     })
 }
@@ -379,16 +392,23 @@ async fn auto_eval_tick(my_epoch: u64) {
         if is_home {
             // Remove the flag before stopping the AP to prevent resurrection.
             remove_flag_file();
-            stop_ap_bg();
+            request_ap_stop(&mut inner);
             away_mode_log("Automatic: at home — stopping AP (rejoining home WiFi)");
             info!("[away-mode] auto: home → AP off");
         } else {
             // Persist away state before starting the AP.
             write_auto_flag_file();
-            start_ap_bg();
+            request_ap_start(&mut inner);
             away_mode_log("Automatic: away from home — starting AP");
             info!("[away-mode] auto: away → AP on");
         }
+    } else if candidate == Some(false) && inner.last_is_home == Some(false)
+        && inner.ap_phase == ApPhase::Off
+        && inner.retry_at.is_some_and(|at| Instant::now() >= at)
+    {
+        // Retry only with a fresh, still-away fix, and back off after failures.
+        write_auto_flag_file();
+        request_ap_start(&mut inner);
     }
 }
 
@@ -406,6 +426,7 @@ fn spawn_auto_watcher(stop: std::sync::Arc<Notify>, my_epoch: u64) {
                     return;
                 }
             }
+            check_running_ap().await;
             auto_eval_tick(my_epoch).await;
         }
     });
@@ -462,13 +483,12 @@ async fn wait_for_ap0_ready() -> bool {
     false
 }
 
-fn start_ap_bg() {
-    tokio::spawn(async {
+async fn start_ap() -> Result<(), String> {
+        if networkd::applicable().await.map_err(|error| format!("{error:#}"))? {
+            return networkd::start().await.map_err(|error| format!("{error:#}"));
+        }
         if wait_for_networkmanager().await {
-            if let Err(e) = ensure_ap0().await {
-                away_mode_log(&format!("Failed to create ap0: {}", e));
-                warn!("[away-mode] Failed to create ap0: {}", e);
-            }
+            ensure_ap0().await?;
             // Activation races NetworkManager unless `ap0` is ready.
             if !wait_for_ap0_ready().await {
                 away_mode_log(
@@ -482,8 +502,7 @@ fn start_ap_bg() {
                     info!("[away-mode] AP started");
                 }
                 Err(e) => {
-                    away_mode_log(&format!("Failed to bring up AP: {}", e));
-                    warn!("[away-mode] Failed to bring up AP: {}", e);
+                    return Err(format!("Failed to bring up AP: {e}"));
                 }
             }
         } else {
@@ -491,10 +510,7 @@ fn start_ap_bg() {
             let (channel, hw_mode) = detect_sta_channel()
                 .await
                 .unwrap_or((DEFAULT_AP_CHANNEL, DEFAULT_AP_HW_MODE));
-            if let Err(e) = update_hostapd_channel(channel, hw_mode) {
-                away_mode_log(&format!("Failed to set hostapd channel: {}", e));
-                warn!("[away-mode] update_hostapd_channel: {}", e);
-            }
+            update_hostapd_channel(channel, hw_mode)?;
             match sentryusb_shell::run("ifup", &["ap0"]).await {
                 Ok(_) => {
                     away_mode_log(&format!(
@@ -507,16 +523,17 @@ fn start_ap_bg() {
                     );
                 }
                 Err(e) => {
-                    away_mode_log(&format!("ifup ap0 failed: {}", e));
-                    warn!("[away-mode] ifup ap0 failed: {}", e);
+                    return Err(format!("ifup ap0 failed: {e}"));
                 }
             }
         }
-    });
+    Ok(())
 }
 
-fn stop_ap_bg() {
-    tokio::spawn(async {
+async fn stop_ap() -> Result<(), String> {
+        if networkd::applicable().await.map_err(|error| format!("{error:#}"))? {
+            return networkd::stop().await.map_err(|error| format!("{error:#}"));
+        }
         if use_networkmanager() {
             match sentryusb_shell::run("nmcli", &["con", "down", AP_PROFILE]).await {
                 Ok(_) => {
@@ -546,69 +563,203 @@ fn stop_ap_bg() {
         }
         // Remove `ap0` so the shared radio can scan normally.
         let _ = sentryusb_shell::run("iw", &["dev", "ap0", "del"]).await;
+    Ok(())
+}
+
+fn ap_operations() -> &'static tokio::sync::Mutex<()> {
+    static OPERATIONS: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
+    OPERATIONS.get_or_init(|| tokio::sync::Mutex::new(()))
+}
+
+fn request_ap_start(inner: &mut Inner) {
+    inner.ap_generation += 1;
+    inner.ap_phase = ApPhase::Starting;
+    inner.ap_start_error = None;
+    inner.retry_at = None;
+    let generation = inner.ap_generation;
+    tokio::spawn(async move {
+        // Serialize radio changes. An obsolete start must finish cleanup before
+        // a newer start/stop can take ownership of the interface.
+        let _operation = ap_operations().lock().await;
+        if mgr().lock().unwrap().ap_generation != generation { return; }
+        let mut result = start_ap().await;
+        let current = mgr().lock().unwrap().ap_generation == generation;
+        if result.is_err() || !current {
+            if let Err(error) = stop_ap().await {
+                away_mode_log(&format!("AP cleanup failed: {error}"));
+                result = Err(format!("{}; WiFi recovery failed: {error}", result.err().unwrap_or_else(|| "Hotspot startup was canceled".into())));
+            }
+        }
+        let mut inner = mgr().lock().unwrap();
+        complete_ap_start(&mut inner, generation, result);
     });
 }
 
-/// Requires a complete AP profile, including both ifupdown files when applicable.
-async fn ap_profile_exists() -> bool {
-    if use_networkmanager() {
-        sentryusb_shell::run("nmcli", &["-t", "con", "show", AP_PROFILE])
-            .await
-            .map(|o| !o.trim().is_empty())
-            .unwrap_or(false)
-    } else {
-        std::path::Path::new(HOSTAPD_CONF).exists()
-            && std::path::Path::new(IFUPDOWN_AP_FILE).exists()
+fn complete_ap_start(inner: &mut Inner, generation: u64, result: Result<(), String>) {
+    if finish_ap_start(inner, generation, result) {
+        // Failure flags must not suppress archiveloop WiFi recovery or
+        // make a dispatcher resurrect a hotspot that never started.
+        remove_flag_file();
+        away_mode_log(&format!("Hotspot failed: {}", inner.ap_start_error.as_deref().unwrap_or_default()));
     }
 }
 
-async fn get_ap_info() -> (String, String) {
-    if use_networkmanager() {
-        let out = match sentryusb_shell::run(
-            "nmcli",
-            &["-t", "-f", "802-11-wireless.ssid,ipv4.addresses", "con", "show", AP_PROFILE],
-        )
-        .await
-        {
-            Ok(o) => o,
-            Err(_) => return (String::new(), String::new()),
-        };
-        let mut ssid = String::new();
-        let mut ip = String::new();
-        for line in out.lines() {
-            let line = line.trim();
-            if let Some(rest) = line.strip_prefix("802-11-wireless.ssid:") {
-                ssid = rest.to_string();
-            } else if let Some(rest) = line.strip_prefix("ipv4.addresses:") {
-                ip = rest.to_string();
-                if let Some(idx) = ip.find('/') {
-                    ip.truncate(idx);
-                }
-            }
+/// Only the new backend is health-checked here; existing backends keep their
+/// current monitoring. A service exit after startup must also release WiFi.
+async fn check_running_ap() {
+    let generation = {
+        let inner = mgr().lock().unwrap();
+        if inner.ap_phase != ApPhase::On { return; }
+        inner.ap_generation
+    };
+    if !networkd::applicable().await.unwrap_or(false) { return; }
+    let _operation = ap_operations().lock().await;
+    if mgr().lock().unwrap().ap_generation != generation { return; }
+    if let Err(error) = networkd::check().await {
+        let mut message = format!("{error:#}");
+        if let Err(cleanup) = networkd::stop().await {
+            message.push_str(&format!("; WiFi recovery failed: {cleanup:#}"));
         }
-        (ssid, ip)
+        complete_ap_start(&mut mgr().lock().unwrap(), generation, Err(message));
+    }
+}
+
+/// Returns true only when the current request failed and owns flag cleanup.
+fn finish_ap_start(inner: &mut Inner, generation: u64, result: Result<(), String>) -> bool {
+    if inner.ap_generation != generation { return false; }
+    match result {
+        Ok(()) => { inner.ap_phase = ApPhase::On; false }
+        Err(error) => {
+            inner.ap_phase = ApPhase::Off;
+            inner.ap_start_error = Some(error);
+            inner.retry_at = Some(Instant::now() + Duration::from_secs(60));
+            if inner.mode == "manual" {
+                inner.state = "idle";
+                inner.enabled_at = None;
+                inner.expires_at = None;
+                inner.stop.notify_waiters();
+                inner.epoch += 1;
+            }
+            true
+        }
+    }
+}
+
+fn request_ap_stop(inner: &mut Inner) {
+    inner.ap_generation += 1;
+    inner.ap_phase = ApPhase::Off;
+    inner.ap_start_error = None;
+    inner.retry_at = None;
+    let generation = inner.ap_generation;
+    tokio::spawn(async move {
+        let _operation = ap_operations().lock().await;
+        if mgr().lock().unwrap().ap_generation != generation { return; }
+        if let Err(error) = stop_ap().await {
+            away_mode_log(&format!("Hotspot cleanup failed: {error}"));
+            let mut inner = mgr().lock().unwrap();
+            if inner.ap_generation == generation { inner.ap_start_error = Some(error); }
+        }
+    });
+}
+
+async fn get_ap_info() -> anyhow::Result<Option<ApProfile>> {
+    let keyfile_exists = std::path::Path::new(AP_KEYFILE).try_exists()
+        .context("Could not check the WiFi Access Point configuration file")?;
+    // A stopped/starting NM service is a lookup failure, not an ifupdown
+    // installation with no AP. Keep using NM when it owns the saved profile.
+    let nm_enabled = std::process::Command::new("systemctl")
+        .args(["--quiet", "is-enabled", "NetworkManager.service"])
+        .status().map(|status| status.success()).unwrap_or(false);
+    let nm_active = use_networkmanager();
+    let using_networkd = !nm_active && !nm_enabled && networkd::applicable().await?;
+    let using_nm = !using_networkd && (nm_active || nm_enabled || keyfile_exists);
+    let profile = if using_nm {
+        ap_profile::read_nm_ap_profile().await?
+    } else if using_networkd {
+        networkd::profile().await?
     } else {
-        // Read ifupdown configuration directly on the status hot path.
-        let mut ssid = String::new();
-        let mut ip = String::new();
-        if let Ok(content) = std::fs::read_to_string(HOSTAPD_CONF) {
-            for line in content.lines() {
-                if let Some(rest) = line.strip_prefix("ssid=") {
-                    ssid = rest.trim().to_string();
-                    break;
-                }
-            }
+        read_hostapd_profile(HOSTAPD_CONF, IFUPDOWN_AP_FILE, "/etc/network/interfaces")?
+    };
+    if profile.is_none() {
+        let missing = if using_nm { "NetworkManager has no SENTRYUSB_AP profile" }
+            else if using_networkd { "the Armbian Netplan/networkd hotspot profile is missing" }
+            else { "the hostapd AP configuration is missing" };
+        explain_missing_ap_profile(sentryusb_config::find_config_path(), keyfile_exists && using_nm, missing)?;
+    }
+    Ok(profile)
+}
+
+fn explain_missing_ap_profile(config_path: &str, keyfile_exists: bool, missing: &str) -> anyhow::Result<()> {
+    if keyfile_exists {
+        bail!("The WiFi Access Point configuration file exists, but NetworkManager has not loaded SENTRYUSB_AP. Check the setup log for the load error.");
+    }
+    if std::path::Path::new(config_path).try_exists().context("Could not check the saved AP settings")? {
+        let (config, _) = sentryusb_config::parse_file(config_path)
+            .context("Could not read the saved AP settings")?;
+        if config.get("AP_SSID").is_some_and(|ssid| !ssid.is_empty()) {
+            bail!("WiFi Access Point settings are saved, but {missing}. AP setup is incomplete; check the setup log and retry Apply & Run Setup.");
         }
-        if let Ok(content) = std::fs::read_to_string(IFUPDOWN_AP_FILE) {
-            for line in content.lines() {
-                let l = line.trim();
-                if let Some(rest) = l.strip_prefix("address ") {
-                    ip = rest.trim().to_string();
-                    break;
-                }
+    }
+    Ok(())
+}
+
+fn read_optional_ap_file(path: &str) -> anyhow::Result<Option<String>> {
+    match std::fs::read_to_string(path) {
+        Ok(contents) => Ok(Some(contents)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error).with_context(|| format!("Could not read AP configuration {path}")),
+    }
+}
+
+fn read_hostapd_profile(hostapd: &str, ap_interfaces: &str, interfaces: &str) -> anyhow::Result<Option<ApProfile>> {
+    let hostapd_config = read_optional_ap_file(hostapd)?;
+    let dedicated = read_optional_ap_file(ap_interfaces)?;
+    if hostapd_config.is_none() && dedicated.is_none() {
+        return Ok(None);
+    }
+    let hostapd_config = hostapd_config.with_context(|| format!("The AP interface is configured, but {hostapd} is missing"))?;
+    let ssid = hostapd_config.lines().find_map(|line| line.trim().strip_prefix("ssid="))
+        .filter(|ssid| !ssid.is_empty()).context("The hostapd AP configuration has no network name (SSID)")?;
+    // Older setup versions (including the Rust hostapd installer) write
+    // ap0 into the main interfaces file instead of the dedicated snippet.
+    let network = match dedicated {
+        Some(network) => network,
+        None => read_optional_ap_file(interfaces)?.context("The AP configuration has no network interfaces file")?,
+    };
+    let mut in_ap = false;
+    for line in network.lines() {
+        let fields: Vec<_> = line.split_whitespace().collect();
+        if fields.first() == Some(&"iface") {
+            in_ap = fields.get(1) == Some(&"ap0") && fields.get(2) == Some(&"inet");
+        } else if in_ap && fields.first() == Some(&"address") {
+            let ip = fields.get(1).unwrap_or(&"").split('/').next().unwrap_or_default();
+            if ip.parse::<std::net::Ipv4Addr>().is_err() {
+                bail!("The ap0 interface has no valid IPv4 address");
             }
+            return Ok(Some(ApProfile { ssid: ssid.to_string(), ip: ip.to_string() }));
         }
-        (ssid, ip)
+    }
+    bail!("The hostapd AP configuration exists, but the ap0 interface has no IPv4 address");
+}
+
+fn add_ap_status(snap: &mut serde_json::Value, profile: anyhow::Result<Option<ApProfile>>) {
+    snap["ap_configured"] = serde_json::json!(matches!(profile, Ok(Some(_))));
+    match profile {
+        Ok(Some(profile)) => {
+            snap["ap_ssid"] = serde_json::json!(profile.ssid);
+            snap["ap_ip"] = serde_json::json!(profile.ip);
+        }
+        Ok(None) => {}
+        Err(error) => snap["ap_error"] = serde_json::json!(format!("{error:#}")),
+    }
+}
+
+fn require_ap_profile(profile: anyhow::Result<Option<ApProfile>>) -> Result<ApProfile, (StatusCode, Json<serde_json::Value>)> {
+    match profile {
+        Ok(Some(profile)) => Ok(profile),
+        Ok(None) => Err(crate::json_error(StatusCode::PRECONDITION_FAILED,
+            "AP not configured. Run setup with AP settings first.")),
+        Err(error) => Err(crate::json_error(StatusCode::SERVICE_UNAVAILABLE, &format!("{error:#}"))),
     }
 }
 
@@ -619,6 +770,7 @@ fn spawn_watcher(stop: std::sync::Arc<Notify>, my_epoch: u64) {
                 _ = stop.notified() => return,
                 _ = tokio::time::sleep(POLL_INTERVAL) => {}
             }
+            check_running_ap().await;
             let expired = {
                 let mut inner = mgr().lock().unwrap();
                 if inner.state != "active" || inner.epoch != my_epoch {
@@ -630,6 +782,7 @@ fn spawn_watcher(stop: std::sync::Arc<Notify>, my_epoch: u64) {
                     inner.expires_at = None;
                     inner.enabled_at = None;
                     remove_flag_file();
+                    request_ap_stop(&mut inner);
                     true
                 } else {
                     // Persist the countdown for systems without a reliable RTC.
@@ -640,7 +793,6 @@ fn spawn_watcher(stop: std::sync::Arc<Notify>, my_epoch: u64) {
             if expired {
                 away_mode_log("Timer expired, disabling");
                 info!("[away-mode] Timer expired");
-                stop_ap_bg();
                 return;
             }
         }
@@ -649,6 +801,9 @@ fn spawn_watcher(stop: std::sync::Arc<Notify>, my_epoch: u64) {
 
 /// Restores automatic geofence state or a still-active manual timer at startup.
 pub fn restore_from_file() {
+    if networkd::has_runtime_owner() && !std::path::Path::new(FLAG_FILE).exists() {
+        request_ap_stop(&mut mgr().lock().unwrap());
+    }
     if read_auto_enabled_config() {
         let flag_exists = std::path::Path::new(FLAG_FILE).exists();
         let (notify, epoch) = {
@@ -663,6 +818,9 @@ pub fn restore_from_file() {
             inner.pending_count = 0;
             inner.stop = std::sync::Arc::new(Notify::new());
             inner.epoch += 1;
+            if should_start_ap_on_boot(flag_exists) {
+                request_ap_start(&mut inner);
+            }
             (inner.stop.clone(), inner.epoch)
         };
         // Retain any persisted away decision.
@@ -672,7 +830,6 @@ pub fn restore_from_file() {
         if should_start_ap_on_boot(flag_exists) {
             away_mode_log("Automatic: booted while away — starting AP");
             info!("[away-mode] auto: booted while away → starting AP");
-            start_ap_bg();
         }
         spawn_auto_watcher(notify, epoch);
         return;
@@ -707,7 +864,7 @@ pub fn restore_from_file() {
     if remaining.is_zero() {
         info!("[away-mode] Flag file expired, cleaning up");
         remove_flag_file();
-        stop_ap_bg();
+        request_ap_stop(&mut mgr().lock().unwrap());
         return;
     }
 
@@ -719,6 +876,7 @@ pub fn restore_from_file() {
         inner.expires_at = Some(SystemTime::now() + remaining);
         inner.stop = std::sync::Arc::new(Notify::new());
         inner.epoch += 1;
+        request_ap_start(&mut inner);
         (inner.stop.clone(), inner.epoch)
     };
 
@@ -731,7 +889,6 @@ pub fn restore_from_file() {
         "[away-mode] Restored from flag file ({}s remaining)",
         remaining.as_secs()
     );
-    start_ap_bg();
     spawn_watcher(notify, epoch);
 }
 
@@ -768,12 +925,10 @@ pub async fn enable(
         );
     }
     // Do not acknowledge activation without a configured AP.
-    if !ap_profile_exists().await {
-        return crate::json_error(
-            StatusCode::PRECONDITION_FAILED,
-            "AP not configured. Run setup with AP settings first.",
-        );
-    }
+    let profile = match require_ap_profile(get_ap_info().await) {
+        Ok(profile) => profile,
+        Err(response) => return response,
+    };
 
     let duration = Duration::from_secs(minutes * 60);
     enum Action {
@@ -801,6 +956,7 @@ pub async fn enable(
                 minutes, inner.has_rtc
             ));
             info!("[away-mode] Enabled (duration: {}m)", minutes);
+            request_ap_start(&mut inner);
             (
                 Action::Started(inner.stop.clone(), inner.epoch),
                 status_snapshot_sync(&inner),
@@ -809,16 +965,11 @@ pub async fn enable(
     };
 
     if let Action::Started(notify, epoch) = action {
-        start_ap_bg();
         spawn_watcher(notify, epoch);
     }
 
     let mut snap = snap;
-    let (ssid, ip) = get_ap_info().await;
-    if !ssid.is_empty() {
-        snap["ap_ssid"] = serde_json::Value::String(ssid);
-        snap["ap_ip"] = serde_json::Value::String(ip);
-    }
+    add_ap_status(&mut snap, Ok(Some(profile)));
     (StatusCode::OK, Json(snap))
 }
 
@@ -839,10 +990,10 @@ pub async fn disable(State(_s): State<AppState>) -> (StatusCode, Json<serde_json
         inner.enabled_at = None;
         inner.epoch += 1;
         remove_flag_file();
+        request_ap_stop(&mut inner);
     }
     away_mode_log("Disabled by user");
     info!("[away-mode] Disabled by user");
-    stop_ap_bg();
     crate::json_ok()
 }
 
@@ -852,13 +1003,7 @@ pub async fn status(State(_s): State<AppState>) -> (StatusCode, Json<serde_json:
         let inner = mgr().lock().unwrap();
         (status_snapshot_sync(&inner), inner.mode)
     };
-    let (ssid, ip) = get_ap_info().await;
-    // A configured AP profile always has an SSID.
-    snap["ap_configured"] = serde_json::Value::Bool(!ssid.is_empty());
-    if !ssid.is_empty() {
-        snap["ap_ssid"] = serde_json::Value::String(ssid);
-        snap["ap_ip"] = serde_json::Value::String(ip);
-    }
+    add_ap_status(&mut snap, get_ap_info().await);
     // Automatic mode also exposes its geofence and GPS freshness.
     if mode == "auto" {
         let (home_lat, home_lon, radius) = read_away_geofence();
@@ -902,6 +1047,12 @@ pub async fn set_mode(
             );
         }
     };
+
+    if want_auto {
+        if let Err(response) = require_ap_profile(get_ap_info().await) {
+            return response;
+        }
+    }
 
     // Persist the mode before changing in-process ownership.
     let persist = tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
@@ -948,6 +1099,10 @@ pub async fn set_mode(
             inner.pending_count = 0;
             inner.stop = std::sync::Arc::new(Notify::new());
             inner.epoch += 1;
+            if inner.ap_phase == ApPhase::Starting {
+                remove_flag_file();
+                request_ap_stop(&mut inner);
+            }
             (inner.stop.clone(), inner.epoch)
         };
         away_mode_log("Switched to Automatic (geofence) mode");
@@ -967,10 +1122,10 @@ pub async fn set_mode(
             inner.pending_count = 0;
             inner.epoch += 1;
             remove_flag_file();
+            request_ap_stop(&mut inner);
         }
         away_mode_log("Switched to Manual mode — AP stopped");
         info!("[away-mode] mode → manual");
-        stop_ap_bg();
     }
 
     let snap = {
@@ -1054,6 +1209,140 @@ pub async fn config_set(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn starting_session(mode: &'static str) -> Inner {
+        Inner {
+            mode, state: if mode == "manual" { "active" } else { "idle" }, has_rtc: false,
+            expires_at: Some(SystemTime::now() + Duration::from_secs(600)),
+            enabled_at: Some(SystemTime::now()), last_is_home: Some(false),
+            pending_is_home: None, pending_count: 0,
+            stop: std::sync::Arc::new(Notify::new()), epoch: 1,
+            ap_phase: ApPhase::Starting, ap_generation: 7, ap_start_error: None, retry_at: None,
+        }
+    }
+
+    #[test]
+    fn manual_start_is_not_active_until_success_and_failure_cancels_its_timer() {
+        let mut inner = starting_session("manual");
+        let pending = status_snapshot_sync(&inner);
+        assert_eq!(pending["state"], "idle");
+        assert_eq!(pending["ap_starting"], true);
+        assert_eq!(pending["ap_on"], false);
+        assert!(finish_ap_start(&mut inner, 7, Err("hostapd did not become ready".into())), "current failure must remove its flag");
+        assert_eq!(inner.state, "idle");
+        assert!(inner.expires_at.is_none() && inner.enabled_at.is_none());
+        assert_eq!(inner.epoch, 2, "the timer watcher is invalidated");
+        let failed = status_snapshot_sync(&inner);
+        assert_eq!(failed["ap_starting"], false);
+        assert_eq!(failed["ap_on"], false);
+        assert_eq!(failed["ap_start_error"], "hostapd did not become ready");
+    }
+
+    #[test]
+    fn automatic_failure_preserves_location_but_not_active_state_and_backs_off() {
+        let mut inner = starting_session("auto");
+        assert!(finish_ap_start(&mut inner, 7, Err("failed to create ap0".into())));
+        let status = status_snapshot_sync(&inner);
+        assert_eq!(status["is_home"], false);
+        assert_eq!(status["ap_on"], false);
+        assert_eq!(inner.epoch, 1, "automatic watching must continue");
+        assert!(inner.retry_at.unwrap() > Instant::now());
+    }
+
+    #[test]
+    fn stale_start_completion_cannot_reactivate_or_clear_a_new_sessions_flag() {
+        let mut inner = starting_session("manual");
+        inner.ap_generation = 8;
+        inner.ap_phase = ApPhase::Off;
+        inner.state = "idle";
+        assert!(!finish_ap_start(&mut inner, 7, Ok(())));
+        assert_eq!(inner.ap_phase, ApPhase::Off);
+        inner.ap_phase = ApPhase::Starting;
+        assert!(!finish_ap_start(&mut inner, 7, Err("obsolete failure".into())));
+        assert_eq!(inner.ap_phase, ApPhase::Starting);
+        assert!(inner.ap_start_error.is_none());
+    }
+
+    #[test]
+    fn successful_start_confirms_active_state_for_both_modes() {
+        for mode in ["manual", "auto"] {
+            let mut inner = starting_session(mode);
+            assert!(!finish_ap_start(&mut inner, 7, Ok(())));
+            let status = status_snapshot_sync(&inner);
+            assert_eq!(status["ap_on"], true);
+            assert_eq!(status["ap_starting"], false);
+            assert_eq!(status["state"], if mode == "manual" { "active" } else { "idle" });
+        }
+    }
+
+    #[test]
+    fn ap_status_distinguishes_missing_profile_from_detection_error() {
+        let mut missing = serde_json::json!({ "state": "idle" });
+        add_ap_status(&mut missing, Ok(None));
+        assert_eq!(missing["ap_configured"], false);
+        assert!(missing.get("ap_error").is_none());
+
+        let mut failed = serde_json::json!({ "state": "active" });
+        add_ap_status(&mut failed, Err(anyhow::anyhow!("NetworkManager is not running")));
+        assert_eq!(failed["state"], "active");
+        assert_eq!(failed["ap_configured"], false);
+        assert_eq!(failed["ap_error"], "NetworkManager is not running");
+
+        let mut ready = serde_json::json!({ "state": "idle" });
+        add_ap_status(&mut ready, Ok(Some(ApProfile { ssid: "Road WiFi".into(), ip: "192.168.66.1".into() })));
+        assert_eq!(ready["ap_configured"], true);
+        assert_eq!(ready["ap_ssid"], "Road WiFi");
+        assert!(ready.get("ap_error").is_none());
+    }
+
+    #[test]
+    fn activation_returns_the_detection_error_instead_of_setup_instructions() {
+        assert_eq!(require_ap_profile(Ok(None)).unwrap_err().0, StatusCode::PRECONDITION_FAILED);
+        let (code, Json(body)) = require_ap_profile(Err(anyhow::anyhow!("AP profile lookup timed out"))).unwrap_err();
+        assert_eq!(code, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(body["error"], "AP profile lookup timed out");
+    }
+
+    #[test]
+    fn saved_ap_settings_and_unloaded_keyfile_are_reported_as_incomplete_setup() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = dir.path().join("sentryusb.conf");
+        let path = config.to_str().unwrap();
+        let missing = "NetworkManager has no SENTRYUSB_AP profile";
+        assert!(explain_missing_ap_profile(path, false, missing).is_ok());
+        std::fs::write(&config, "# export AP_SSID='optional'\n").unwrap();
+        assert!(explain_missing_ap_profile(path, false, missing).is_ok());
+        std::fs::write(&config, "export AP_SSID='Road WiFi'\n").unwrap();
+        let error = explain_missing_ap_profile(path, false, missing).unwrap_err().to_string();
+        assert!(error.contains("settings are saved"));
+        assert!(error.contains("no SENTRYUSB_AP profile"));
+        let error = explain_missing_ap_profile(path, true, missing).unwrap_err().to_string();
+        assert!(error.contains("has not loaded SENTRYUSB_AP"));
+    }
+
+    #[test]
+    fn hostapd_detection_accepts_both_installer_layouts_and_rejects_partial_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let hostapd = dir.path().join("hostapd.conf");
+        let dedicated = dir.path().join("sentryusb-ap");
+        let interfaces = dir.path().join("interfaces");
+        let read = || read_hostapd_profile(hostapd.to_str().unwrap(), dedicated.to_str().unwrap(), interfaces.to_str().unwrap());
+        assert_eq!(read().unwrap(), None);
+        std::fs::write(&hostapd, "ssid=Road WiFi\nwpa_passphrase=never-return-this\n").unwrap();
+        assert!(read().is_err(), "an SSID alone is not a complete profile");
+        let stanza = "iface wlan0 inet static\n  address 10.0.0.2\niface ap0 inet static\n  address 192.168.66.1\n";
+        std::fs::write(&interfaces, stanza).unwrap();
+        assert_eq!(read().unwrap().unwrap().ip, "192.168.66.1");
+        std::fs::write(&dedicated, stanza).unwrap();
+        std::fs::remove_file(&interfaces).unwrap();
+        assert_eq!(read().unwrap().unwrap().ssid, "Road WiFi");
+        std::fs::remove_file(&hostapd).unwrap();
+        assert!(read().unwrap_err().to_string().contains("is missing"));
+        std::fs::create_dir(&hostapd).unwrap();
+        let error = format!("{:#}", read().unwrap_err());
+        assert!(error.contains("Could not read AP configuration"));
+        assert!(!error.contains("never-return-this"));
+    }
 
     #[test]
     fn distance_zero_for_same_point() {
@@ -1150,16 +1439,20 @@ mod tests {
 fn status_snapshot_sync(inner: &Inner) -> serde_json::Value {
     let mut v = serde_json::json!({
         "mode": inner.mode,
-        "state": inner.state,
+        "state": if inner.ap_phase == ApPhase::Starting { "idle" } else { inner.state },
         "has_rtc": inner.has_rtc,
+        "ap_starting": inner.ap_phase == ApPhase::Starting,
+        "ap_on": inner.ap_phase == ApPhase::On,
     });
+    if let Some(error) = &inner.ap_start_error {
+        v["ap_start_error"] = serde_json::json!(error);
+    }
     if inner.mode == "auto" {
-        // The AP is on only for a confirmed away decision.
+        // Location and actual hotspot state are separate: startup can fail.
         v["is_home"] = match inner.last_is_home {
             Some(h) => serde_json::Value::Bool(h),
             None => serde_json::Value::Null,
         };
-        v["ap_on"] = serde_json::Value::Bool(matches!(inner.last_is_home, Some(false)));
     } else if inner.state == "active" {
         if let Some(exp) = inner.expires_at {
             v["expires_at"] = serde_json::Value::String(to_rfc3339(exp));

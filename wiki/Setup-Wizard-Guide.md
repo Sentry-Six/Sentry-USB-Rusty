@@ -26,6 +26,10 @@ You can change reporting any time at **Settings → System → Device counting**
 - **Device Hostname** — defaults to `sentryusb`. Leave it unless you have a reason to change. The Pi is reachable at `http://<hostname>.local`.
 - **WiFi Access Point** (optional) — broadcast a backup WiFi network from the Pi itself. Useful when you're away from home WiFi and want to reach the web UI from your phone.
 
+On Armbian images using Netplan with systemd-networkd, Apply & Run Setup installs a dedicated hotspot service and DHCP configuration for `ap0`. Existing installs need to apply their AP settings once after updating. The home WiFi configuration is preserved; Away Mode temporarily releases that connection and restores it when stopped or when hotspot startup fails. This backend is selected only on Armbian with a Netplan WiFi service and without NetworkManager enabled or running. Other network backends retain their existing setup paths.
+
+Away Mode shows “Starting” until the hotspot is ready. A failed start clears its active flag and displays the error; Automatic mode retries with a fresh away location after a delay. WiFi driver/AP support is still required.
+
 ## 4. Storage
 
 Pick how much of the SD card each "virtual USB drive" gets. The remainder is used for snapshots (saved and sentry clips). Defaults are sensible — most users only touch **Dashcam Size**.
