@@ -17,8 +17,27 @@ For Windows file sharing, macOS file sharing, and most consumer NAS devices (Syn
 | Username | `tesla` |
 | Password | _your password_ |
 | CIFS Version | leave blank unless you know you need 2.0 / 1.0 |
+| Unraid SMB compatibility | enable only for Unraid shares reporting `Stale file handle` |
 
 If the connection fails, the most common cause is an older NAS that needs `CIFS_VERSION=2.0` set explicitly.
+
+For Unraid shares that report `Stale file handle`, enable **Unraid SMB compatibility**
+in **Settings → Setup Wizard → Archive**, then apply the configuration. This saves
+`CIFS_NOSERVERINO=true` and adds `noserverino` to the archive and music SMB mounts,
+including connection tests. It survives reboots, updates, and setup reruns. It is
+off by default and has no effect on NFS, rsync, or rclone.
+
+`noserverino` tells the Pi to generate file IDs locally instead of relying on the
+server's IDs, which can change when Unraid moves files between storage locations.
+The client cannot reliably identify hard links with this option. Disable the
+setting and apply setup again to restore the default SMB behavior.
+
+After a failed transfer in normal mode, Sentry USB retries automatically after
+60 seconds, then 120, 240, and at most 300 seconds between attempts while the server
+remains reachable. Archive Sync can start an attempt sooner. A successful transfer
+or a departure resets the delay; cancelled transfers still wait for departure.
+Travel Mode keeps its existing interval and Fast Retry setting. Repeated retry
+failures are logged without repeating push notifications.
 
 ## rsync
 

@@ -665,13 +665,15 @@ function run_archive_cycle () {
   # Wrapper around archive_clips that owns the loop-level failure state.
   # ARCHIVE_RETRY_ATTEMPT must be derived from the PREVIOUS cycle's result
   # before it is cleared: it tells archive_teslacam_clips to suppress
-  # per-attempt push notifications so minute-cadence fast retries don't
+  # per-attempt push notifications so automatic retries don't
   # spam the phone (first failure and eventual success still notify).
-  if [ "${ARCHIVE_CYCLE_FAILED:-0}" = "1" ] && travel_mode_active && travel_mode_fast_retry_active; then
+  if [ "${ARCHIVE_CYCLE_FAILED:-0}" = "1" ] &&
+     { [ "${ARCHIVE_HOME_RETRY_PENDING:-0}" = "1" ] || { travel_mode_active && travel_mode_fast_retry_active; }; }; then
     ARCHIVE_RETRY_ATTEMPT=1
   else
     ARCHIVE_RETRY_ATTEMPT=0
   fi
+  ARCHIVE_HOME_RETRY_PENDING=0
   ARCHIVE_CYCLE_FAILED=0
   if archive_cancel_requested; then
     archive_cancel_cleanup
@@ -762,14 +764,68 @@ PY
   rm -f "$response"
 }
 
+function home_archive_retry_pace () {
+  # A reachable SMB/NFS port does not mean the mounted share is usable.
+  # After a failed transfer, retry without requiring the car to leave home.
+  # Cap the backoff, not the number of attempts: a temporary share outage
+  # must not strand the remaining clips until the next departure.
+  case "${ARCHIVE_HOME_RETRY_DELAY:-0}" in
+    60) ARCHIVE_HOME_RETRY_DELAY=120 ;;
+    120) ARCHIVE_HOME_RETRY_DELAY=240 ;;
+    240|300) ARCHIVE_HOME_RETRY_DELAY=300 ;;
+    *) ARCHIVE_HOME_RETRY_DELAY=60 ;;
+  esac
+  ARCHIVE_HOME_RETRY_PENDING=1
+  log "Archive transfer failed; automatic retry in ${ARCHIVE_HOME_RETRY_DELAY}s"
+  local deadline=$((SECONDS + ARCHIVE_HOME_RETRY_DELAY))
+  while [ "$SECONDS" -lt "$deadline" ]; do
+    if travel_mode_active; then
+      ARCHIVE_HOME_RETRY_DELAY=0
+      ARCHIVE_HOME_RETRY_PENDING=0
+      travel_mode_pace
+      return 0
+    fi
+    # trigger-sync removes its unreachable canary before publishing this
+    # one. Consume the request, like Travel Mode, so it cannot leak into a
+    # later reachability wait. Manual Sync need not wait for the backoff.
+    if [ -e /tmp/archive_is_reachable ]; then
+      if rm -f -- /tmp/archive_is_reachable; then
+        log "Manual sync requested during archive retry wait"
+        # An explicit user request is a fresh attempt, with normal notices.
+        ARCHIVE_HOME_RETRY_DELAY=0
+        ARCHIVE_HOME_RETRY_PENDING=0
+        return 0
+      fi
+    fi
+    if ! archive_is_reachable; then
+      ARCHIVE_HOME_RETRY_DELAY=0
+      ARCHIVE_HOME_RETRY_PENDING=0
+      log "Archive unavailable during retry wait; waiting for reconnection"
+      return 0
+    fi
+    sleep 1
+  done
+}
+
 # Cancellation uses the normal wait-for-departure path, even in Travel Mode.
 # There is no persistent pause flag and no resume operation.
 function wait_after_archive_cycle () {
   if [ "${ARCHIVE_CYCLE_CANCELLED:-0}" = "1" ]; then
+    ARCHIVE_HOME_RETRY_DELAY=0
+    ARCHIVE_HOME_RETRY_PENDING=0
     wait_for_archive_to_be_unreachable
   elif travel_mode_active; then
+    ARCHIVE_HOME_RETRY_DELAY=0
+    ARCHIVE_HOME_RETRY_PENDING=0
     travel_mode_pace
-  elif archive_is_reachable; then
+  elif ! archive_is_reachable; then
+    ARCHIVE_HOME_RETRY_DELAY=0
+    ARCHIVE_HOME_RETRY_PENDING=0
+  elif [ "${ARCHIVE_CYCLE_FAILED:-0}" = "1" ] && [ "${ARCHIVE_SYSTEM:-none}" != none ]; then
+    home_archive_retry_pace
+  else
+    ARCHIVE_HOME_RETRY_DELAY=0
+    ARCHIVE_HOME_RETRY_PENDING=0
     wait_for_archive_to_be_unreachable
   fi
 }
@@ -829,6 +885,10 @@ function wait_for_archive_to_be_reachable () {
       log "Archive is reachable."
       break
     fi
+    # A retry can lose its connection just as its delay ends. The next
+    # arrival is a fresh cycle, not another suppressed retry notification.
+    ARCHIVE_HOME_RETRY_DELAY=0
+    ARCHIVE_HOME_RETRY_PENDING=0
     if [ -e /tmp/archive_is_reachable ]
     then
       log "Simulating archive is reachable"
@@ -1643,9 +1703,9 @@ function archive_teslacam_clips () {
 
     message+=" starting at $(date)"
     if [ "${ARCHIVE_RETRY_ATTEMPT:-0}" = "1" ]; then
-      # Fast-retry attempt after a failed cycle: the user already got the
+      # Retry attempt after a failed cycle: the user already got the
       # failure push; don't re-announce the start every minute.
-      log "Fast retry attempt: suppressing archive-start notification"
+      log "Retry attempt: suppressing archive-start notification"
     else
       ARCHIVE_TOTAL_COUNT=$total_count /root/bin/send-push-message "$NOTIFICATION_TITLE:" "$message" start archive_start "$(archive_start_summary "$total_count" "$prior_done" "$resume_total")" || log "failed to send mobile app notification"
       /root/bin/send-live-activity start "$total_count" || true
@@ -1790,10 +1850,10 @@ function archive_teslacam_clips () {
     if archive_cancel_requested; then
       log "Archive cancelled by user; completed transfers recorded, remaining footage preserved"
     elif [ "${ARCHIVE_RETRY_ATTEMPT:-0}" = "1" ] && [ "$archive_success" = "false" ]; then
-      # Still failing on a fast retry: log it, but don't push a failure
+      # Still failing on a retry: log it, but don't push a failure
       # notification every minute. The eventual success (or the first
       # failure of a normal cycle) still notifies.
-      log "Fast retry attempt failed: suppressing archive-finish notification (${message})"
+      log "Retry attempt failed: suppressing archive-finish notification (${message})"
     else
       local notification_category=archive_complete
       if [[ "$archive_success" == false ]]; then notification_category=archive_error; fi
@@ -2057,7 +2117,7 @@ function archive_clips () {
   log "Archiving..."
 
   # Track whether the clip-archiving part of this cycle succeeded, so the
-  # caller (run_archive_cycle) can pace a Travel Mode fast retry. Failures
+  # caller (run_archive_cycle) can pace another transfer attempt. Failures
   # in the post-archive extras (music, processing, cloud) don't count —
   # only clips left behind by a broken uplink justify a rapid retry.
   local clips_ok=true
@@ -2070,6 +2130,7 @@ function archive_clips () {
     if [ "${ARCHIVE_SYSTEM:-}" = "cifs" ]; then
       log "  ARCHIVE_MOUNT=${ARCHIVE_MOUNT:-unset} SHARE_NAME=${SHARE_NAME:-unset}"
     fi
+    /root/bin/disconnect-archive.sh 2>> "$LOG_FILE" || true
     return 1
   fi
 

@@ -687,13 +687,26 @@ pub fn cifs_share_looks_like_path(raw: &str) -> bool {
     raw.trim_start().starts_with('/') && normalize_cifs_share(raw).contains('/')
 }
 
+fn cifs_fstab_entry(env: &SetupEnv, share: &str, mount_point: &str, access: &str) -> String {
+    let server = env.get("ARCHIVE_SERVER", "");
+    let vers = env.get("CIFS_VERSION", "3.0");
+    let inode_option = if sentryusb_config::cifs_noserverino_enabled(&env.config) {
+        ",noserverino"
+    } else {
+        ""
+    };
+    let share_escaped = normalize_cifs_share(share).replace(' ', "\\040");
+    format!(
+        "//{server}/{share_escaped} {mount_point} cifs {access},noauto,credentials=/root/.teslaCamArchiveCredentials,iocharset=utf8,file_mode=0777,dir_mode=0777,vers={vers}{inode_option} 0 0"
+    )
+}
+
 async fn configure_cifs_mount(env: &SetupEnv, emitter: &SetupEmitter) -> Result<()> {
     let server = env.get("ARCHIVE_SERVER", "");
     let share = env.get("SHARE_NAME", "");
     let user = env.get("SHARE_USER", "");
     let pass = env.get("SHARE_PASSWORD", "");
     let domain = env.get("SHARE_DOMAIN", "");
-    let vers = env.get("CIFS_VERSION", "3.0");
     if server.is_empty() || share.is_empty() || user.is_empty() || pass.is_empty() {
         return Ok(());
     }
@@ -712,12 +725,7 @@ async fn configure_cifs_mount(env: &SetupEnv, emitter: &SetupEmitter) -> Result<
 
     std::fs::create_dir_all("/mnt/archive").context("mkdir /mnt/archive")?;
 
-    // Strip leading slash (CIFS share, not an absolute path), then escape spaces.
-    let share_escaped = normalize_cifs_share(&share).replace(' ', "\\040");
-    let line = format!(
-        "//{}/{} /mnt/archive cifs rw,noauto,credentials={},iocharset=utf8,file_mode=0777,dir_mode=0777,vers={} 0 0",
-        server, share_escaped, creds_path, vers
-    );
+    let line = cifs_fstab_entry(env, &share, "/mnt/archive", "rw");
     replace_fstab_entry("cifs", "/mnt/archive", &line)?;
     emitter.progress("Added CIFS mount to /etc/fstab");
 
@@ -726,11 +734,7 @@ async fn configure_cifs_mount(env: &SetupEnv, emitter: &SetupEmitter) -> Result<
     let music_share = env.get("MUSIC_SHARE_NAME", "");
     if !normalize_cifs_share(&music_share).is_empty() {
         std::fs::create_dir_all("/mnt/musicarchive").context("mkdir /mnt/musicarchive")?;
-        let music_escaped = normalize_cifs_share(&music_share).replace(' ', "\\040");
-        let music_line = format!(
-            "//{}/{} /mnt/musicarchive cifs ro,noauto,credentials={},iocharset=utf8,file_mode=0777,dir_mode=0777,vers={} 0 0",
-            server, music_escaped, creds_path, vers
-        );
+        let music_line = cifs_fstab_entry(env, &music_share, "/mnt/musicarchive", "ro");
         replace_fstab_entry("cifs", "/mnt/musicarchive", &music_line)?;
         emitter.progress("Added CIFS music mount to /etc/fstab");
     } else {
@@ -1059,18 +1063,38 @@ mod tests {
     #[test]
     fn cifs_fstab_line_has_single_separator_for_slashed_share() {
         // Share typed with a leading slash: the UNC must not double the separator.
-        let server = "192.168.1.7";
-        let share = "/TeslaCam";
-        let share_escaped = normalize_cifs_share(share).replace(' ', "\\040");
-        let line = format!(
-            "//{}/{} /mnt/archive cifs rw,noauto,credentials={},iocharset=utf8,file_mode=0777,dir_mode=0777,vers={} 0 0",
-            server, share_escaped, "/root/.teslaCamArchiveCredentials", "3.0"
-        );
+        let env = env_with(&[("ARCHIVE_SERVER", "192.168.1.7")]);
+        let line = cifs_fstab_entry(&env, "/TeslaCam", "/mnt/archive", "rw");
         assert!(
             line.starts_with("//192.168.1.7/TeslaCam "),
             "expected single-slash UNC, got: {line}"
         );
         assert!(!line.contains("//192.168.1.7//"), "no doubled separator");
+    }
+
+    #[test]
+    fn cifs_compatibility_preserves_defaults_and_can_be_disabled_again() {
+        let mut env = env_with(&[("ARCHIVE_SERVER", "nas.local"), ("CIFS_VERSION", "3.1.1")]);
+        for (share, mount, access) in [
+            ("/Tesla Cam", "/mnt/archive", "rw"),
+            ("Music", "/mnt/musicarchive", "ro"),
+        ] {
+            env.config.remove("CIFS_NOSERVERINO");
+            let baseline = cifs_fstab_entry(&env, share, mount, access);
+            let escaped = normalize_cifs_share(share).replace(' ', "\\040");
+            assert_eq!(baseline, format!(
+                "//nas.local/{escaped} {mount} cifs {access},noauto,credentials=/root/.teslaCamArchiveCredentials,iocharset=utf8,file_mode=0777,dir_mode=0777,vers=3.1.1 0 0"
+            ));
+            env.config.insert("CIFS_NOSERVERINO".into(), "true".into());
+            let compatible = cifs_fstab_entry(&env, share, mount, access);
+            assert_eq!(compatible.replace(",noserverino", ""), baseline);
+            assert_eq!(compatible.matches(",noserverino").count(), 1);
+            // Setup re-renders from saved settings, rather than editing an
+            // ephemeral mount. Repeated setup must retain the same option.
+            assert_eq!(cifs_fstab_entry(&env, share, mount, access), compatible);
+            env.config.insert("CIFS_NOSERVERINO".into(), "false".into());
+            assert_eq!(cifs_fstab_entry(&env, share, mount, access), baseline);
+        }
     }
 
     #[test]

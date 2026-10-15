@@ -45,7 +45,7 @@ jobs:
             exit 1
           fi
       - name: Icons up to date
-        # Verify generated icons against symbols.mjs; generation uses jsDelivr.
+        # Verify generated icons against symbols.mjs and the locked local package.
         run: |
           cd web
           npm run icons -- --check

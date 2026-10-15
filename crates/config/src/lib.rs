@@ -9,6 +9,14 @@ use anyhow::{Context, Result};
 /// Configuration variables as key-value pairs.
 pub type SetupConfig = HashMap<String, String>;
 
+/// Opt-in workaround for SMB servers whose file IDs change (e.g. Unraid Mover).
+/// Missing/disabled values keep the kernel's normal server inode behavior.
+pub fn cifs_noserverino_enabled(config: &SetupConfig) -> bool {
+    config.get("CIFS_NOSERVERINO").is_some_and(|value| {
+        matches!(value.trim().to_ascii_lowercase().as_str(), "true" | "yes" | "1" | "on")
+    })
+}
+
 /// Standard location for the setup variables file.
 pub const DEFAULT_CONFIG_PATH: &str = "/root/sentryusb.conf";
 
@@ -293,6 +301,34 @@ pub fn get_config_value(active: &SetupConfig, commented: &SetupConfig, key: &str
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unraid_compatibility_requires_explicit_opt_in_and_survives_config_writes() {
+        let mut config = SetupConfig::new();
+        assert!(!cifs_noserverino_enabled(&config));
+        for value in ["", "false", "no", "0", "off", "invalid"] {
+            config.insert("CIFS_NOSERVERINO".into(), value.into());
+            assert!(!cifs_noserverino_enabled(&config), "{value}");
+        }
+        for value in ["true", "yes", "1", "on", " TRUE "] {
+            config.insert("CIFS_NOSERVERINO".into(), value.into());
+            assert!(cifs_noserverino_enabled(&config), "{value}");
+        }
+
+        let path = std::env::temp_dir().join(format!(
+            "sentryusb-cifs-config-{}-{}", std::process::id(),
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
+        ));
+        fs::write(&path, "").unwrap();
+        for value in ["true", "false"] {
+            config.insert("CIFS_NOSERVERINO".into(), value.into());
+            write_file(path.to_str().unwrap(), &config).unwrap();
+            let (loaded, _) = parse_file(path.to_str().unwrap()).unwrap();
+            assert_eq!(loaded.get("CIFS_NOSERVERINO").unwrap(), value);
+            assert_eq!(cifs_noserverino_enabled(&loaded), value == "true");
+        }
+        fs::remove_file(path).unwrap();
+    }
 
     #[test]
     fn test_unquote_single_quotes() {

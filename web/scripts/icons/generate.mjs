@@ -1,6 +1,6 @@
 // Generates icons.tsx from symbols.mjs. `npm run icons -- --check` verifies it.
-// Downloaded glyphs are cached under node_modules/.cache.
-import { readFileSync, writeFileSync, mkdirSync, existsSync } from "node:fs"
+// Glyphs come from the pinned npm dependency; generation needs no network.
+import { readFileSync, writeFileSync, existsSync } from "node:fs"
 import { join, dirname } from "node:path"
 import { fileURLToPath } from "node:url"
 import { SYMBOLS, FLIP, LUCIDE_ORIGIN } from "./symbols.mjs"
@@ -8,8 +8,6 @@ import { SYMBOLS, FLIP, LUCIDE_ORIGIN } from "./symbols.mjs"
 const HERE = dirname(fileURLToPath(import.meta.url))
 const WEB = join(HERE, "..", "..")
 const TARGET = join(WEB, "src", "components", "icons.tsx")
-const CACHE = join(WEB, "node_modules", ".cache", "material-symbols")
-const CDN = "https://cdn.jsdelivr.net/npm/@material-symbols/svg-400/outlined"
 
 const check = process.argv.includes("--check")
 
@@ -26,19 +24,15 @@ const mirror = (viewBox) => {
   return `scale(-1,1) translate(${-(2 * minX + width)},0)`
 }
 
-async function fetchSymbol(name) {
-  const cached = join(CACHE, `${name}.svg`)
-  if (!existsSync(cached)) {
-    const res = await fetch(`${CDN}/${name}.svg`)
-    if (!res.ok) {
-      throw new Error(
-        `${name}: HTTP ${res.status} — check the spelling against https://fonts.google.com/icons`,
-      )
-    }
-    mkdirSync(CACHE, { recursive: true })
-    writeFileSync(cached, await res.text())
+function readSymbol(name) {
+  // Preserve legacy glyphs not distributed by the pinned package.
+  const override = join(HERE, "overrides", `${name}.svg`)
+  const source = existsSync(override) ? override
+    : fileURLToPath(import.meta.resolve(`@material-symbols/svg-400/outlined/${name}.svg`))
+  if (!existsSync(source)) {
+    throw new Error(`${name}: missing from the pinned Material Symbols package — check symbols.mjs`)
   }
-  const svg = readFileSync(cached, "utf8")
+  const svg = readFileSync(source, "utf8")
   const inner = svg.match(/<svg[^>]*>([\s\S]*)<\/svg>/)?.[1].trim()
   if (!inner?.startsWith("<path")) throw new Error(`${name}: unexpected SVG content`)
   // Preserve each glyph's viewBox; Material Symbols use more than one grid.
@@ -47,7 +41,7 @@ async function fetchSymbol(name) {
 }
 
 const glyphs = {}
-for (const symbol of SYMBOLS) glyphs[symbol] = await fetchSymbol(symbol)
+for (const symbol of SYMBOLS) glyphs[symbol] = readSymbol(symbol)
 
 const components = SYMBOLS.map((symbol) => {
   const { inner, viewBox } = glyphs[symbol]

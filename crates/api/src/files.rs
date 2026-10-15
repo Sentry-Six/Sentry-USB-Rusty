@@ -1016,7 +1016,9 @@ mod tests {
 
         let mut archive = zip::ZipArchive::new(std::io::Cursor::new(bytes)).expect("valid zip");
         let mut names: Vec<String> = (0..archive.len())
-            .map(|i| archive.by_index(i).unwrap().name().to_string())
+            .map(|i| {
+                archive.by_index(i).unwrap().name().expect("valid ZIP filename").into_owned()
+            })
             .collect();
         names.sort();
         assert_eq!(names, vec!["a.txt".to_string(), "sub/b.bin".to_string()]);

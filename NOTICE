@@ -141,7 +141,8 @@ required to read Tesla-written filesystems.
 4. Vendored Material Symbols icons  --  Apache License 2.0
 ================================================================================
 
-The SVG path data in web/src/components/icons.tsx is generated from Google's
+The SVG path data in web/src/components/icons.tsx and the preserved glyphs in
+web/scripts/icons/overrides are from Google's
 Material Symbols icon set (outlined style, weight 400), obtained via the
 @material-symbols/svg-400 package (https://github.com/marella/material-symbols),
 Copyright Google LLC, licensed under the Apache License, Version 2.0

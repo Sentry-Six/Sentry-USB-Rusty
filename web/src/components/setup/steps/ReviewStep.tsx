@@ -14,6 +14,7 @@ const sections = [
     title: "Archive",
     fields: [
       "ARCHIVE_SYSTEM", "ARCHIVE_SERVER", "SHARE_NAME", "SHARE_USER", "SHARE_PASSWORD",
+      "CIFS_NOSERVERINO",
       "RSYNC_SERVER", "RSYNC_USER", "RSYNC_PATH", "RSYNC_SSH_PORT",
       "RCLONE_DRIVE", "RCLONE_PATH",
       "ARCHIVE_SAVEDCLIPS", "ARCHIVE_SENTRYCLIPS", "ARCHIVE_RECENTCLIPS",
@@ -70,6 +71,9 @@ function formatReviewValue(key: string, value: string, data: StepProps["data"]):
   }
   if (key === "TEMPERATURE_UNIT" || key === "SYSTEM_TEMPERATURE_UNIT") {
     return value === "F" ? "Fahrenheit" : "Celsius"
+  }
+  if (key === "CIFS_NOSERVERINO") {
+    return ["true", "yes", "1", "on"].includes(value.trim().toLowerCase()) ? "Enabled" : "Disabled"
   }
   if (key === "RTC_BATTERY_ENABLED" || key === "RTC_TRICKLE_CHARGE") {
     return value === "true" ? "Enabled" : "Disabled"
