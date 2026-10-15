@@ -416,6 +416,9 @@ pub async fn test_archive(
             if !cifs_ver.is_empty() {
                 opts.push_str(&format!(",vers={}", cifs_ver));
             }
+            if sentryusb_config::cifs_noserverino_enabled(&params) {
+                opts.push_str(",noserverino");
+            }
             let looks_like_path = sentryusb_setup::archive::cifs_share_looks_like_path(&share);
             // Normalize so the probe mounts the same UNC configure_cifs_mount writes.
             let share = sentryusb_setup::archive::normalize_cifs_share(&share);

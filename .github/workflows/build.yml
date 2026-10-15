@@ -350,12 +350,19 @@ jobs:
           bash test/notification-messages.test.sh
           bash test/notification-dispatch.test.sh
           bash test/archive-cancel.test.sh
+          bash test/archive-retry.test.sh
+          bash test/cifs-compatibility.test.sh
           bash test/diagnostics-capture.test.sh
           bash test/usb-startup.test.sh
           bash test/archiveloop-gadget-cycle-min.test.sh
           bash test/archiveloop-camdisk-supervisor.test.sh
       - name: Run tests
         run: cargo test --workspace
+      - name: Run installer safety regressions
+        run: |
+          bash test/install-pi-safety.test.sh
+          bash test/sentryusb-pick-binary.test.sh
+          bash test/ble-setup-recovery.test.sh
 
   lint-web:
     name: Lint web
@@ -391,7 +398,7 @@ jobs:
             exit 1
           fi
       - name: Icons up to date
-        # Verify generated icons against symbols.mjs; generation uses jsDelivr.
+        # Verify generated icons against symbols.mjs and the locked local package.
         run: |
           cd web
           npm run icons -- --check

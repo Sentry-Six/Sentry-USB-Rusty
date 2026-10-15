@@ -2,6 +2,11 @@
 
 VERS_OPT=
 SEC_OPT=
+INODE_OPT=
+# Explicit opt-in only; preserve mount options for existing SMB users.
+case "${CIFS_NOSERVERINO:-}" in
+  [Tt][Rr][Uu][Ee]|[Yy][Ee][Ss]|1|[Oo][Nn]) INODE_OPT=,noserverino ;;
+esac
 
 function log_progress () {
   if declare -F setup_progress > /dev/null
@@ -75,7 +80,7 @@ function check_archive_mountable () {
       then
         secopt="sec=$sec"
       fi
-      local commandline="mount -t cifs '//$1/$sharepath' '$test_mount_location' -o '$3,credentials=${tmp_credentials_file_path},iocharset=utf8,file_mode=0777,dir_mode=0777,$versopt,$secopt'"
+      local commandline="mount -t cifs '//$1/$sharepath' '$test_mount_location' -o '$3,credentials=${tmp_credentials_file_path},iocharset=utf8,file_mode=0777,dir_mode=0777,$versopt,$secopt$INODE_OPT'"
       log_progress "Trying mount command-line:"
       log_progress "$commandline"
       if eval "$commandline"
@@ -165,7 +170,7 @@ function configure_archive () {
     # Strip leading slash so an absolute path isn't doubled (see check_archive_mountable).
     local sharename; sharename=$(printf '%s' "$SHARE_NAME" | sed 's#^/*##')
     local sharenameforstab="${sharename// /\\040}"
-    echo "//$ARCHIVE_SERVER/$sharenameforstab $archive_path cifs rw,noauto,credentials=${credentials_file_path},iocharset=utf8,file_mode=0777,dir_mode=0777,$VERS_OPT,$SEC_OPT 0" >> /etc/fstab
+    echo "//$ARCHIVE_SERVER/$sharenameforstab $archive_path cifs rw,noauto,credentials=${credentials_file_path},iocharset=utf8,file_mode=0777,dir_mode=0777,$VERS_OPT,$SEC_OPT$INODE_OPT 0" >> /etc/fstab
   elif [ -d "$archive_path" ]
   then
     rmdir "$archive_path" || log_progress "failed to remove $archive_path"
@@ -180,7 +185,7 @@ function configure_archive () {
       mkdir "$music_archive_path"
     fi
     local musicsharenameforstab="${musicsharename// /\\040}"
-    echo "//$ARCHIVE_SERVER/$musicsharenameforstab $music_archive_path cifs ro,noauto,credentials=${credentials_file_path},iocharset=utf8,file_mode=0777,dir_mode=0777,$VERS_OPT,$SEC_OPT 0" >> /etc/fstab
+    echo "//$ARCHIVE_SERVER/$musicsharenameforstab $music_archive_path cifs ro,noauto,credentials=${credentials_file_path},iocharset=utf8,file_mode=0777,dir_mode=0777,$VERS_OPT,$SEC_OPT$INODE_OPT 0" >> /etc/fstab
   elif [ -d "$music_archive_path" ]
   then
     rmdir "$music_archive_path" || log_progress "failed to remove $music_archive_path"

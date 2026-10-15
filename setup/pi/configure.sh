@@ -299,39 +299,39 @@ function check_and_configure_tesla_ble () {
 
     local pairing_needed=true
     mkdir -p /root/.ble
-    if [ ! -f /root/.ble/key_public.pem ] || [ ! -f /root/.ble/key_private.pem ]
-    then
-      if [ -x "$ble_action" ]; then
-        # Generates the keypair + the key_pending_pairing marker with the
-        # right perms (0600 / 0644).
-        "$ble_action" keygen
-        log_progress "Generated keys for Tesla BLE interface."
+    if [ -x "$ble_action" ]; then
+      # Nonempty PEM files can still be truncated or belong to different pairs.
+      # keygen validates every pair and preserves a usable private key.
+      if "$ble_action" keygen; then
+        log_progress "Validated Tesla BLE keypair."
+        if [ ! -e /root/.ble/key_pending_pairing ]; then
+          # Only probe an existing identity. A running daemon could still hold
+          # the old key after recovery generated a replacement on disk.
+          local ble_token
+          ble_token="$(timeout 40 "$ble_action" session-info 2>/dev/null | tr -d '[:space:]')" \
+            || ble_token=UNREACHABLE
+          case "$ble_token" in
+            PAIRED)
+              log_progress "Tesla BLE keys exist and are paired."
+              pairing_needed=false
+              ;;
+            NOT_PAIRED)
+              log_progress "WARNING: Tesla BLE keys already exist, but are not paired."
+              ;;
+            *)
+              log_progress "WARNING: Tesla BLE keys exist, but the car is not reachable right now."
+              log_progress "If you are performing setup away from your car, this is expected."
+              log_progress "Pairing can be completed later via the web UI when SentryUSB is near the car."
+              pairing_needed=false
+              ;;
+          esac
+        fi
       else
-        log_progress "WARNING: $ble_action not found — keys will be generated later via the web UI."
+        log_progress "WARNING: keygen failed (exit $?) — BLE pairing will not work. Check that / is writable and re-run: $ble_action keygen"
         pairing_needed=false
       fi
-    elif [ -x "$ble_action" ]; then
-      # Keys already exist — probe pairing state natively. session-info
-      # prints exactly one token: PAIRED / NOT_PAIRED / UNREACHABLE.
-      local ble_token
-      ble_token="$(timeout 40 "$ble_action" session-info 2>/dev/null | tr -d '[:space:]')"
-      case "$ble_token" in
-        PAIRED)
-          log_progress "Tesla BLE keys exist and are paired."
-          pairing_needed=false
-          ;;
-        NOT_PAIRED)
-          log_progress "WARNING: Tesla BLE keys already exist, but are not paired."
-          ;;
-        *)
-          log_progress "WARNING: Tesla BLE keys exist, but the car is not reachable right now."
-          log_progress "If you are performing setup away from your car, this is expected."
-          log_progress "Pairing can be completed later via the web UI when SentryUSB is near the car."
-          pairing_needed=false
-          ;;
-      esac
     else
-      log_progress "WARNING: $ble_action not found — pairing must be completed via the web UI."
+      log_progress "WARNING: $ble_action not found — keys and pairing must be completed via the web UI."
       pairing_needed=false
     fi
 

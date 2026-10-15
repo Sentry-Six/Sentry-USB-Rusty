@@ -63,7 +63,7 @@ pub async fn run_startup_migration() -> bool {
         MIGRATE_REPO, script_ref
     );
 
-    let script = migration_script_for_mode(&tarball_url, automatic);
+    let script = migration_script_for_mode(&tarball_url, &script_ref, automatic);
 
     // Retry up to 3 times with exponential backoff. The script itself
     // fails fast on `curl: Could not resolve host: github.com` when DNS
@@ -158,8 +158,8 @@ pub async fn run_startup_migration() -> bool {
     false
 }
 
-fn migration_script_for_mode(tarball_url: &str, automatic: bool) -> String {
-    let mut script = build_migration_script(tarball_url);
+fn migration_script_for_mode(tarball_url: &str, release_ref: &str, automatic: bool) -> String {
+    let mut script = build_migration_script(tarball_url, release_ref);
     if automatic {
         // The payload was validated/staged with the target binary. Never fetch
         // main or resume a partial installation after an unexpected power cut.
@@ -172,7 +172,12 @@ fn migration_script_for_mode(tarball_url: &str, automatic: bool) -> String {
     script
 }
 
-fn build_migration_script(tarball_url: &str) -> String {
+fn build_migration_script(tarball_url: &str, release_ref: &str) -> String {
+    let helper_release_base = if release_ref == MIGRATE_BRANCH {
+        format!("https://github.com/{MIGRATE_REPO}/releases/latest/download")
+    } else {
+        format!("https://github.com/{MIGRATE_REPO}/releases/download/{release_ref}")
+    };
     format!(
         r#"set -e
 
@@ -464,24 +469,35 @@ if [ -f "$TMPDIR/server/ble/sentryusb-telemetry.service" ]; then
   fi
   if [ -n "$_suffix" ]; then
     for _name in sentryusb-tesla-telemetry sentryusb-ble-action; do
-      # Symlink already in place → the picker owns it now; skip.
-      if [ -L "/root/bin/$_name" ]; then
+      _dest="/opt/sentryusb/$_name-$_suffix"
+      _link="/root/bin/$_name"
+      # Skip only a healthy link to the expected executable. A dangling
+      # symlink satisfies -L but execve returns ENOENT; older code skipped it
+      # forever and still wrote the per-version migration marker.
+      if [ -L "$_link" ] \
+        && [ "$(readlink "$_link" 2>/dev/null || true)" = "$_dest" ] \
+        && [ -x "$_link" ] \
+        && [ -x "$_dest" ]; then
         continue
       fi
       if [ "${{SENTRYUSB_AUTOMATIC_UPDATE:-0}}" = 1 ]; then
         echo "migrate: staged automatic-update helper missing: $_name" >&2
         exit 1
       fi
-      _url="https://github.com/{repo}/releases/latest/download/$_name-$_suffix"
-      if curl -sfI --max-time 10 "$_url" >/dev/null 2>&1; then
-        mkdir -p /root/bin /opt/sentryusb
-        if curl -fsSL --max-time 120 "$_url" -o "/tmp/$_name.migrate" 2>/dev/null; then
-          chmod +x "/tmp/$_name.migrate"
-          mv "/tmp/$_name.migrate" "/opt/sentryusb/$_name-$_suffix"
-          ln -sfn "/opt/sentryusb/$_name-$_suffix" "/root/bin/$_name"
-          echo "migrate: installed $_name-$_suffix and linked /root/bin/$_name"
-        fi
-      fi
+      _url="{helper_release_base}/$_name-$_suffix"
+      _staged="/opt/sentryusb/.$_name.migrate.new"
+      mkdir -p /root/bin /opt/sentryusb
+      rm -f "$_staged"
+      # Stage on the destination filesystem so the final rename is atomic.
+      # Any failure aborts the migration, so Rust does not write .migrated-*;
+      # the next boot can retry instead of preserving a half-install.
+      curl -fsSL --max-time 120 "$_url" -o "$_staged"
+      [ -s "$_staged" ]
+      chmod +x "$_staged"
+      mv -f "$_staged" "$_dest"
+      ln -sfn "$_dest" "$_link"
+      [ -x "$_link" ]
+      echo "migrate: installed $_name-$_suffix and linked $_link"
     done
   fi
 
@@ -534,6 +550,7 @@ rm -f /root/bin/tesla-control /root/bin/tesla-keygen \
 "#,
         tarball_url = tarball_url,
         repo = MIGRATE_REPO,
+        helper_release_base = helper_release_base,
         branch = MIGRATE_BRANCH
     )
 }
@@ -543,7 +560,7 @@ mod tests {
     use super::*;
     #[test]
     fn automatic_migration_uses_cached_payload_and_preserves_manual_fallback() {
-        let automatic = migration_script_for_mode("https://example.invalid/release.tar.gz", true);
+        let automatic = migration_script_for_mode("https://example.invalid/release.tar.gz", "v0.0.0", true);
         assert!(automatic.starts_with("SENTRYUSB_AUTOMATIC_UPDATE=1\n"));
         assert!(automatic.contains("tar xzf /opt/sentryusb/auto-update-source.tar.gz"));
         assert!(!automatic.contains("https://example.invalid/release.tar.gz"));
@@ -553,7 +570,7 @@ mod tests {
         use std::io::Write;
         child.stdin.take().unwrap().write_all(automatic.as_bytes()).unwrap();
         assert!(child.wait().unwrap().success());
-        let manual = migration_script_for_mode("https://example.invalid/release.tar.gz", false);
+        let manual = migration_script_for_mode("https://example.invalid/release.tar.gz", "v0.0.0", false);
         assert!(manual.contains("https://example.invalid/release.tar.gz"));
         assert!(manual.contains("FALLBACK="));
         assert!(!manual.starts_with("SENTRYUSB_AUTOMATIC_UPDATE=1"));
@@ -566,6 +583,7 @@ mod tests {
     fn migration_script_parses() {
         let script = build_migration_script(
             "https://github.com/Sentry-Six/Sentry-USB-Rusty/archive/v0.0.0.tar.gz",
+            "v0.0.0",
         );
         // Placeholders must all have been substituted.
         assert!(!script.contains("{repo}"), "unsubstituted {{repo}}");
@@ -582,5 +600,112 @@ mod tests {
             .status()
             .expect("bash not available");
         assert!(status.success(), "bash -n rejected the migration script");
+    }
+
+    #[test]
+    fn migration_script_repairs_dangling_aux_links() {
+        let script = build_migration_script(
+            "https://github.com/Sentry-Six/Sentry-USB-Rusty/archive/v0.0.0.tar.gz",
+            "v0.0.0",
+        );
+
+        assert!(
+            script.contains("&& [ -x \"$_link\" ]") && script.contains("&& [ -x \"$_dest\" ]"),
+            "auxiliary migration must not treat a dangling symlink as healthy"
+        );
+        assert!(
+            script.contains("_staged=\"/opt/sentryusb/.$_name.migrate.new\""),
+            "auxiliary downloads must be staged on the destination filesystem"
+        );
+        assert!(
+            script.contains("[ -x \"$_link\" ]\n      echo \"migrate: installed"),
+            "migration must verify the published executable before succeeding"
+        );
+    }
+
+    #[test]
+    fn migration_downloads_helpers_from_the_installed_release() {
+        let script = build_migration_script(
+            "https://github.com/Sentry-Six/Sentry-USB-Rusty/archive/v0.0.0.tar.gz",
+            "v0.0.0",
+        );
+
+        assert!(
+            script.contains(
+                "https://github.com/Sentry-Six/Sentry-USB-Rusty/releases/download/v0.0.0/$_name-$_suffix"
+            ),
+            "migration must keep auxiliary binaries on the installed release"
+        );
+        assert!(
+            !script.contains("releases/latest/download/$_name-$_suffix"),
+            "a migration for an exact version must not install latest helpers"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn helper_repair_keeps_automatic_updates_offline_and_manual_updates_versioned() {
+        use std::os::unix::fs::{PermissionsExt, symlink};
+        let script = build_migration_script("https://example.invalid/source.tar.gz", "v1.2.3");
+        let start = script.find("    for _name in sentryusb-tesla-telemetry sentryusb-ble-action; do").unwrap();
+        let end = start + script[start..].find("\n    done").unwrap() + "\n    done".len();
+        let loop_body = &script[start..end];
+
+        for (automatic, healthy, download_ok) in [
+            (true, true, true), (true, false, true),
+            (false, false, true), (false, false, false),
+        ] {
+            let nonce = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+            let root = std::env::temp_dir().join(format!("sentryusb-helper-{}-{nonce}", std::process::id()));
+            let install = root.join("install");
+            let bin = root.join("bin");
+            std::fs::create_dir_all(&install).unwrap();
+            std::fs::create_dir_all(&bin).unwrap();
+            for name in ["sentryusb-tesla-telemetry", "sentryusb-ble-action"] {
+                let target = install.join(format!("{name}-linux-arm64-a53"));
+                if healthy {
+                    std::fs::write(&target, "#!/bin/sh\nexit 0\n").unwrap();
+                    std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o755)).unwrap();
+                }
+                symlink(&target, bin.join(name)).unwrap();
+            }
+            let isolated = loop_body.replace("/opt/sentryusb", install.to_str().unwrap())
+                .replace("/root/bin", bin.to_str().unwrap());
+            let harness = format!(r#"set -eu
+_suffix=linux-arm64-a53
+curl() {{
+    printf '%s\n' "$*" >> "$TEST_DIR/requests"
+    [ "$DOWNLOAD_OK" = 1 ] || return 22
+    while [ "$#" -gt 0 ]; do
+        if [ "$1" = -o ]; then
+            printf '#!/bin/sh\nexit 0\n' > "$2"
+            return 0
+        fi
+        shift
+    done
+    return 2
+}}
+{isolated}
+"#);
+            let output = std::process::Command::new("bash").args(["-c", &harness])
+                .env("TEST_DIR", &root)
+                .env("SENTRYUSB_AUTOMATIC_UPDATE", if automatic { "1" } else { "0" })
+                .env("DOWNLOAD_OK", if download_ok { "1" } else { "0" })
+                .output().unwrap();
+            assert_eq!(output.status.success(), healthy || (!automatic && download_ok), "{}", String::from_utf8_lossy(&output.stderr));
+            let requests = std::fs::read_to_string(root.join("requests")).unwrap_or_default();
+            if automatic {
+                assert!(requests.is_empty(), "automatic migration downloaded a helper");
+            } else {
+                assert!(requests.contains("/releases/download/v1.2.3/"));
+                assert!(!requests.contains("/latest/"));
+                if download_ok {
+                    for name in ["sentryusb-tesla-telemetry", "sentryusb-ble-action"] {
+                        assert!(bin.join(name).is_file(), "missing repaired helper: {name}");
+                    }
+                }
+            }
+            std::fs::remove_dir_all(&root).unwrap();
+        }
     }
 }

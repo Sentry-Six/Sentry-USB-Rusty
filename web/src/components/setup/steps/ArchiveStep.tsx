@@ -205,6 +205,18 @@ export function ArchiveStep({ data, onChange }: StepProps) {
           <Field label="Password" field="SHARE_PASSWORD" type="password" placeholder="password" data={data} onChange={onChange} error={req("SHARE_PASSWORD", ["cifs"])} />
           <Field label="Domain" field="SHARE_DOMAIN" placeholder="optional" data={data} onChange={onChange} hint="Usually not needed" />
           <Field label="CIFS Version" field="CIFS_VERSION" placeholder="3.0" data={data} onChange={onChange} hint="Usually not needed" />
+          <label className="flex items-start gap-2 sm:col-span-2">
+            <input
+              type="checkbox"
+              checked={["true", "yes", "1", "on"].includes((data.CIFS_NOSERVERINO ?? "").trim().toLowerCase())}
+              onChange={(e) => { onChange("CIFS_NOSERVERINO", e.target.checked ? "true" : "false"); setTestResult(null) }}
+              className="mt-0.5 h-4 w-4 rounded border-white/20 bg-white/5 accent-blue-500"
+            />
+            <span>
+              <span className="block text-sm text-slate-300">Unraid SMB compatibility</span>
+              <span className="block text-xs text-slate-500">Enable for Unraid shares reporting “Stale file handle”. Off by default; limits hard-link detection.</span>
+            </span>
+          </label>
         </div>
       )}
 

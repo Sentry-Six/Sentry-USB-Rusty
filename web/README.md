@@ -39,6 +39,12 @@ npm run icons             # rewrites src/components/icons.tsx
 npm run icons -- --check  # CI: fails if the committed file is stale
 ```
 
+Glyphs come from the exact `@material-symbols/svg-400` version in `package.json`
+and `package-lock.json`, installed by `npm ci`. Generation and checks run offline;
+they do not fetch from a CDN. Review generated icon changes when updating the package.
+Two legacy expand glyphs are preserved in `scripts/icons/overrides` to retain their
+existing artwork because the pinned package does not include them.
+
 Each symbol becomes a component named after it (`delete` → `DeleteIcon`), taking
 the same props as any `<svg>`, so Tailwind sizing (`h-4 w-4`) works as usual.
 
