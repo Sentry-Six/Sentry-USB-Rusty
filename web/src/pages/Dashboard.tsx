@@ -840,8 +840,12 @@ function ActivityTile({ driveStats, archiveCycle, archiveProgress, processProgre
   const active = Boolean(archiveProgress || processing || archiveCycle)
   const progress = archiveProgress ?? processProgress
   const title = archiveProgress ? "Archiving footage" : processing ? "Processing clips" : archiveCycle ? "Archive in progress" : "Your library"
-  const rateState = [status.wifi_rate_state, status.ether_rate_state].includes("live") ? "live" : status.wifi_ssid ? status.wifi_rate_state : status.ether_rate_state
-  const upload = formatThroughput((status.wifi_tx_bps ?? 0) + (status.ether_tx_bps ?? 0), rateState)
+  const wifiRates = status.wifi_adapters
+    ? status.wifi_adapters.filter(adapter => adapter.connected).map(adapter => ({ bps: adapter.tx_bps, state: adapter.rate_state }))
+    : [{ bps: status.wifi_tx_bps ?? 0, state: status.wifi_rate_state }]
+  const rates = [...wifiRates, { bps: status.ether_tx_bps ?? 0, state: status.ether_rate_state }]
+  const rateState = ["live", "sampling", "stale", "unavailable", "disconnected"].find(state => rates.some(rate => rate.state === state))
+  const upload = formatThroughput(rates.reduce((sum, rate) => sum + (rate.bps ?? 0), 0), rateState)
   return (
     <section aria-label="Archive and library" className="glass-card p-4 sm:p-5">
       <div className="flex flex-wrap items-center justify-between gap-3">
