@@ -19,7 +19,8 @@ interface Props {
 }
 
 export function NetworkTab({ status, onOpenWizard, openTravelMode, onTravelModeClose }: Props) {
-  const wifiConnected = !!status?.wifi_ssid
+  const adapters = status?.wifi_adapters
+  const wifiConnected = adapters ? adapters.some(adapter => adapter.connected) : !!status?.wifi_ssid
   const ethConnected =
     !!status?.ether_speed && status.ether_speed !== "Unknown!"
 
@@ -32,7 +33,27 @@ export function NetworkTab({ status, onOpenWizard, openTravelMode, onTravelModeC
         title="WiFi"
         badge={wifiConnected ? <Pill kind="accent">Connected</Pill> : null}
       >
-        {wifiConnected && status ? (
+        {adapters?.length ? (
+          <div className="space-y-4">
+            {adapters.map(adapter => (
+              <div key={adapter.device}>
+                <div className="flex items-center justify-between gap-2">
+                  <div className="t-md font-semibold">{adapter.device === "wlan0" ? "Internal Wi-Fi" : "USB Wi-Fi"} ({adapter.device})</div>
+                  <Pill kind={adapter.connected ? "accent" : "slate"}>{adapter.connected ? "Connected" : "Not connected"}</Pill>
+                </div>
+                {adapter.connected && <>
+                  <div className="t-xs mt-1">{adapter.ssid}</div>
+                  <Row label="IP" value={<span className="t-mono">{adapter.ip || "—"}</span>} />
+                  <Row label="Signal" value={adapter.signal_dbm != null ? `${adapter.signal_dbm} dBm` : adapter.strength || "—"} />
+                  {adapter.band && <Row label="Band" value={adapter.band} />}
+                  {adapter.channel != null && <Row label="Channel" value={adapter.channel} />}
+                  {adapter.link_rx_mbps != null && <Row label="RX link speed" value={`${adapter.link_rx_mbps} Mbit/s`} />}
+                  {adapter.link_tx_mbps != null && <Row label="TX link speed" value={`${adapter.link_tx_mbps} Mbit/s`} />}
+                </>}
+              </div>
+            ))}
+          </div>
+        ) : wifiConnected && status ? (
           <>
             <div className="t-md font-semibold">{status.wifi_ssid}</div>
             <Row
