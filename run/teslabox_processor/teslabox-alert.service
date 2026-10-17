@@ -1,0 +1,40 @@
+[Unit]
+Description=SentryUSB event processor: immediate alert queue
+After=network-online.target teslabox-capture.service
+Wants=network-online.target
+RequiresMountsFor=/backingfiles
+ConditionPathExists=/backingfiles/teslabox-processor/app/service.py
+
+[Service]
+Type=simple
+EnvironmentFile=-/backingfiles/teslabox-processor/processor.env
+User=teslabox-processor
+Group=teslabox-processor
+UMask=0077
+LoadCredential=pushover.json:/backingfiles/teslabox-processor/secrets/pushover.json
+ExecStart=/backingfiles/teslabox-processor/venv/bin/python /backingfiles/teslabox-processor/app/service.py alert --pushover-credential %d/pushover.json
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=20s
+Nice=0
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectControlGroups=yes
+ProtectKernelModules=yes
+ProtectKernelTunables=yes
+ProtectClock=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+PrivateTmp=no
+PrivateDevices=yes
+ProtectHostname=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+ReadOnlyPaths=/backingfiles
+ReadWritePaths=/backingfiles/teslabox-processor/alerts
+MemoryMax=128M
+
+[Install]
+WantedBy=multi-user.target
