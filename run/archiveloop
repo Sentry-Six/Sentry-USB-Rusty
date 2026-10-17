@@ -2433,7 +2433,7 @@ function gadget_stall_watchdog () {
       continue
     elif (( udc_bad_since > 0 && now - udc_bad_since >= 60 ))
     then
-      reason="UDC state '$udc_state' for $(( now - udc_bad_since ))s while car awake"
+      reason="UDC state '$udc_state' for $(( now - udc_bad_since ))s with recent BLE activity; the car may be asleep"
     elif (( fresh_seen == 1 && age >= stall_secs ))
     then
       # Home suppression for the write-stall trigger (see function header).
@@ -2501,8 +2501,8 @@ function gadget_stall_watchdog () {
     ) 209>"$GADGET_CYCLE_LOCK"
     then
       /root/bin/send-push-message "$NOTIFICATION_TITLE:" \
-        "USB drive stall detected ($reason). Re-presented the drive to the car. Evidence: $evidence" \
-        warning gadget_stall "USB recording connection stalled. Recovery attempted." 2>/dev/null || true
+        "USB connection may be stalled ($reason). Re-presented the drive to the car. Evidence: $evidence" \
+        warning gadget_stall "USB connection unavailable. The car may be asleep. Reconnection attempted." 2>/dev/null || true
       last_recovery=$now
       recoveries=$((recoveries + 1))
       fresh_seen=0

@@ -15,8 +15,104 @@ mod supply_voltage;
 
 // Shared status snapshots keep UI polling independent of archive I/O.
 
+#[derive(Clone, Default, Serialize)]
+struct WifiAdapter {
+    device: String,
+    ssid: String,
+    ip: String,
+    freq: String,
+    band: Option<&'static str>,
+    channel: Option<u32>,
+    connected: bool,
+    strength: String,
+    signal_dbm: Option<i32>,
+    link_rx_mbps: Option<f64>,
+    link_tx_mbps: Option<f64>,
+    rx_bps: u64,
+    tx_bps: u64,
+    rate_state: &'static str,
+}
+
+/// `iw link` may report decimal MHz; `iw info` supplies the primary channel.
+fn parse_wifi_radio(link: &str, device_info: &str) -> (String, Option<&'static str>, Option<u32>) {
+    let mhz = link.lines().find_map(|line| {
+        line.trim().strip_prefix("freq:")?.trim().parse::<f64>().ok()
+    }).filter(|value| value.is_finite() && *value > 0.0 && *value < 100_000.0);
+    let band = mhz.and_then(|value| {
+        if (2400.0..2500.0).contains(&value) { Some("2.4 GHz") }
+        else if (4900.0..5925.0).contains(&value) { Some("5 GHz") }
+        else if (5925.0..7125.0).contains(&value) { Some("6 GHz") }
+        else if (57_000.0..71_000.0).contains(&value) { Some("60 GHz") }
+        else { None }
+    });
+    let channel = device_info.lines().find_map(|line| {
+        line.trim().strip_prefix("channel ")?.split_whitespace().next()?.parse::<u32>().ok()
+    }).filter(|channel| *channel > 0);
+    (mhz.map(|value| format!("{:.0}", value * 1_000_000.0)).unwrap_or_default(), band, channel)
+}
+
+#[cfg(test)]
+mod wifi_radio_tests {
+    use super::parse_wifi_radio;
+
+    #[test]
+    fn reads_decimal_frequency_and_driver_primary_channel() {
+        assert_eq!(parse_wifi_radio("freq: 5200.0", "\tchannel 40 (5200 MHz), width: 80 MHz, center1: 5210 MHz"), ("5200000000".into(), Some("5 GHz"), Some(40)));
+        assert_eq!(parse_wifi_radio("freq: 2412", "channel 1 (2412 MHz)"), ("2412000000".into(), Some("2.4 GHz"), Some(1)));
+        assert_eq!(parse_wifi_radio("freq: 5955.0", "channel 1 (5955 MHz)"), ("5955000000".into(), Some("6 GHz"), Some(1)));
+    }
+
+    #[test]
+    fn missing_radio_fields_remain_unavailable() {
+        for link in ["Not connected.", "freq: NaN", "freq: -5200"] {
+            assert_eq!(parse_wifi_radio(link, ""), (String::new(), None, None));
+        }
+        assert_eq!(parse_wifi_radio("freq: 5200.0", ""), ("5200000000".into(), Some("5 GHz"), None));
+    }
+}
+
+/// Keep negotiated radio rates separate from measured traffic counters.
+fn parse_wifi_link_rates(output: &str) -> (Option<f64>, Option<f64>) {
+    let mut rx = None;
+    let mut tx = None;
+    for line in output.lines() {
+        let line = line.trim();
+        let target = if let Some(rest) = line.strip_prefix("rx bitrate:") {
+            Some((&mut rx, rest))
+        } else if let Some(rest) = line.strip_prefix("tx bitrate:") {
+            Some((&mut tx, rest))
+        } else { None };
+        if let Some((target, rest)) = target {
+            let mut parts = rest.split_whitespace();
+            if let (Some(value), Some("MBit/s")) = (parts.next(), parts.next()) {
+                *target = value.parse::<f64>().ok().filter(|rate| rate.is_finite() && *rate >= 0.0);
+            }
+        }
+    }
+    (rx, tx)
+}
+
+#[cfg(test)]
+mod wifi_link_rate_tests {
+    use super::parse_wifi_link_rates;
+
+    #[test]
+    fn parses_driver_rates_with_optional_radio_metadata() {
+        assert_eq!(parse_wifi_link_rates("\trx bitrate: 526.6 MBit/s VHT-MCS 6 80MHz\n\ttx bitrate:\t866.7 MBit/s short GI"), (Some(526.6), Some(866.7)));
+        assert_eq!(parse_wifi_link_rates("tx bitrate: 24.0 MBit/s"), (None, Some(24.0)));
+    }
+
+    #[test]
+    fn unavailable_or_invalid_rates_are_not_reported_as_zero() {
+        for output in ["Not connected.", "rx bitrate: NaN MBit/s", "tx bitrate: -1 MBit/s", "tx bitrate: 123 unknown"] {
+            assert_eq!(parse_wifi_link_rates(output), (None, None));
+        }
+    }
+}
+
 #[derive(Clone, Default)]
 struct CachedNetwork {
+    wifi_adapters: Vec<WifiAdapter>,
     wifi_ssid: String,
     /// Frequency in Hz, empty when unavailable.
     wifi_freq: String,
@@ -186,6 +282,7 @@ struct PiStatus {
     udc_state: String,
     /// Seconds since the last `cam_disk.bin` write, or -1 when unknown.
     cam_last_write_secs: i64,
+    wifi_adapters: Vec<WifiAdapter>,
     wifi_ssid: String,
     /// Wi-Fi frequency in Hz, empty when unavailable.
     wifi_freq: String,
@@ -232,6 +329,20 @@ pub async fn get_status(
 
     // Cache stable network identity; keep signal and throughput live.
     let net = cached_network().await;
+    s.wifi_adapters = net.wifi_adapters;
+    for adapter in &mut s.wifi_adapters {
+        adapter.rate_state = "disconnected";
+        if adapter.connected {
+            if let Some((strength, dbm)) = read_wireless_quality(&adapter.device) {
+                adapter.strength = strength;
+                adapter.signal_dbm = dbm;
+            }
+            let (rx, tx, quality, _) = latest_throughput(&state.net_sampler, &adapter.device);
+            adapter.rx_bps = rx;
+            adapter.tx_bps = tx;
+            adapter.rate_state = quality;
+        }
+    }
     s.wifi_ssid = net.wifi_ssid;
     s.wifi_freq = net.wifi_freq;
     s.wifi_ip = net.wifi_ip;
@@ -276,6 +387,7 @@ fn status_fs_snapshot() -> PiStatus {
         drives_active: "no".into(),
         udc_state: String::new(),
         cam_last_write_secs: -1,
+        wifi_adapters: Vec::new(),
         wifi_ssid: String::new(),
         wifi_freq: String::new(),
         wifi_strength: String::new(),
@@ -364,43 +476,53 @@ async fn compute_network_info() -> CachedNetwork {
     let mut info = CachedNetwork::default();
 
     // Skip potentially blocking Wi-Fi commands when the interface is down.
-    let wifi_dev = find_net_device("wl*");
-    if !wifi_dev.is_empty() && iface_is_up(&wifi_dev) {
-        info.wifi_dev = wifi_dev.clone();
+    let mut devices: Vec<String> = std::fs::read_dir("/sys/class/net/")
+        .into_iter().flatten().flatten()
+        .filter(|entry| entry.path().join("wireless").exists())
+        .filter_map(|entry| entry.file_name().into_string().ok()).collect();
+    devices.sort();
+    for wifi_dev in devices {
+        let mut adapter = WifiAdapter { device: wifi_dev.clone(), rate_state: "disconnected", ..Default::default() };
+        if !iface_is_up(&wifi_dev) {
+            info.wifi_adapters.push(adapter);
+            continue;
+        }
         let ssid_args = ["-r", wifi_dev.as_str()];
         let ip_args = ["-4", "addr", "show", wifi_dev.as_str()];
         // `iw` reports frequency in MHz.
         let iw_args = ["dev", wifi_dev.as_str(), "link"];
-        let (ssid_r, ip_r, iw_r) = tokio::join!(
+        let iw_info_args = ["dev", wifi_dev.as_str(), "info"];
+        let (ssid_r, ip_r, iw_r, iw_info_r) = tokio::join!(
             sentryusb_shell::run_with_timeout(Duration::from_secs(2), "iwgetid", &ssid_args),
             sentryusb_shell::run_with_timeout(Duration::from_secs(2), "ip", &ip_args),
             sentryusb_shell::run_with_timeout(Duration::from_secs(2), "iw", &iw_args),
+            sentryusb_shell::run_with_timeout(Duration::from_secs(2), "iw", &iw_info_args),
         );
         if let Ok(out) = ssid_r {
-            info.wifi_ssid = out.trim().to_string();
+            adapter.ssid = out.trim().to_string();
         }
         if let Ok(out) = ip_r {
             for line in out.lines() {
                 let trimmed = line.trim();
                 if trimmed.starts_with("inet ") {
                     if let Some(addr) = trimmed.split_whitespace().nth(1) {
-                        info.wifi_ip = addr.split('/').next().unwrap_or("").to_string();
+                        adapter.ip = addr.split('/').next().unwrap_or("").to_string();
                     }
                 }
             }
         }
         if let Ok(out) = iw_r {
-            for line in out.lines() {
-                let trimmed = line.trim();
-                // Convert MHz to the API's Hz-string format.
-                if let Some(rest) = trimmed.strip_prefix("freq:") {
-                    if let Ok(mhz) = rest.trim().parse::<u64>() {
-                        info.wifi_freq = (mhz * 1_000_000).to_string();
-                        break;
-                    }
-                }
-            }
+            (adapter.link_rx_mbps, adapter.link_tx_mbps) = parse_wifi_link_rates(&out);
+            (adapter.freq, adapter.band, adapter.channel) = parse_wifi_radio(&out, &iw_info_r.unwrap_or_default());
         }
+        adapter.connected = !adapter.ssid.is_empty();
+        if adapter.connected && info.wifi_dev.is_empty() {
+            info.wifi_dev = adapter.device.clone();
+            info.wifi_ssid = adapter.ssid.clone();
+            info.wifi_ip = adapter.ip.clone();
+            info.wifi_freq = adapter.freq.clone();
+        }
+        info.wifi_adapters.push(adapter);
     }
 
     // Apply the same blocking-command guard to Ethernet.

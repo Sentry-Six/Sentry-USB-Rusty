@@ -42,10 +42,33 @@ test('dashboard keeps its last data on failure, reads server ETA, and never load
     assert.match(container.textContent, /5V supply5\.10 V/)
     assert.ok(container.querySelector('[role="progressbar"]'))
     assert.equal(requested.includes('/api/drives'), false)
-    fixtures['/api/status'] = { ...fixtures['/api/status'] as object, supply_voltage: null }
+    fixtures['/api/status'] = { ...fixtures['/api/status'] as object, supply_voltage: null, wifi_tx_bps: 10000000, ether_tx_bps: 3000000, ether_rate_state: 'live', wifi_adapters: [
+      { device: 'wlan0', ssid: 'Internal network', ip: '192.0.2.10', freq: '5200000000', band: '5 GHz', channel: 40, connected: true, strength: '40/70', signal_dbm: -75, link_rx_mbps: 292.5, link_tx_mbps: 24, rx_bps: 0, tx_bps: 1000000, rate_state: 'live' },
+      { device: 'wlan1', ssid: 'USB network', ip: '192.0.2.11', freq: '2412000000', band: '2.4 GHz', channel: 1, connected: true, strength: '65/70', signal_dbm: -45, link_rx_mbps: 526.6, link_tx_mbps: 866.7, rx_bps: 0, tx_bps: 46000000, rate_state: 'live' },
+    ] }
     fixtures['/api/drives/status'] = { running: false, phase: 'archiving', current: 99, total: 174 }
     await act(async () => win.document.dispatchEvent(new win.Event('visibilitychange')))
     assert.doesNotMatch(container.textContent, /5V supply/, 'A missing sensor sample must not leave a stale voltage on screen')
+    assert.match(container.querySelector('[aria-label="Archive and library"]')!.textContent, /Upload 50\.0 Mbps/, 'Sum both Wi-Fi adapters and Ethernet without double-counting the legacy Wi-Fi field')
+    assert.match(container.textContent, /Internal Wi-Fi \(wlan0\)/)
+    assert.match(container.textContent, /USB Wi-Fi \(wlan1\)/)
+    const connectionDetails = [...container.querySelectorAll('details')].find(details => details.querySelector('summary')?.textContent === 'Connection details')!
+    assert.ok(connectionDetails)
+    assert.match(connectionDetails.textContent, /Wi-Fi address \(wlan0\)192\.0\.2\.10/)
+    assert.match(connectionDetails.textContent, /Wi-Fi address \(wlan1\)192\.0\.2\.11/)
+    assert.match(connectionDetails.textContent, /Signal \(wlan0\)-75 dBm/)
+    assert.match(connectionDetails.textContent, /Signal \(wlan1\)-45 dBm/)
+    assert.match(connectionDetails.textContent, /RX link speed \(wlan0\)292\.5 Mbit\/s/)
+    assert.match(connectionDetails.textContent, /TX link speed \(wlan1\)866\.7 Mbit\/s/)
+    assert.match(connectionDetails.textContent, /Band \(wlan0\)5 GHz/)
+    assert.match(connectionDetails.textContent, /Channel \(wlan0\)40/)
+    assert.match(connectionDetails.textContent, /Band \(wlan1\)2\.4 GHz/)
+    assert.match(connectionDetails.textContent, /Channel \(wlan1\)1/)
+    assert.match(connectionDetails.textContent, /Frequency \(wlan0\)5200 MHz/)
+    assert.match(container.textContent, /192\.0\.2\.10/)
+    assert.match(container.textContent, /192\.0\.2\.11/)
+    assert.match(container.textContent, /-75 dBm/)
+    assert.match(container.textContent, /-45 dBm/)
     assert.match(container.textContent, /99 \/ 174/)
     assert.match(container.textContent, /Estimate unavailable/)
     assert.doesNotMatch(container.textContent, /Estimating…/)

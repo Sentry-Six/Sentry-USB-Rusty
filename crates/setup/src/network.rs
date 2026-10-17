@@ -498,6 +498,13 @@ fn write_secret_file(path: &str, contents: &str) -> Result<()> {
     Ok(())
 }
 
+/// Select exactly one interface from NetworkManager's possibly multi-line output.
+fn first_wifi_device(output: &str) -> Option<&str> {
+    output.lines().map(str::trim).find(|name| {
+        !name.is_empty() && *name != "ap0" && !name.chars().any(char::is_whitespace)
+    })
+}
+
 /// Find the primary WiFi client device from NetworkManager.
 ///
 /// Prefers the device backing an *active* WiFi connection (the right
@@ -513,7 +520,7 @@ async fn find_wifi_device() -> Result<String> {
                 "nmcli -t -f TYPE,DEVICE c show --active | grep 802-11-wireless | grep -v ':ap0$' | cut -c17-",
             ],
         ).await.unwrap_or_default();
-        let wlan = output.trim().to_string();
+        let wlan = first_wifi_device(&output).unwrap_or_default().to_string();
         if !wlan.is_empty() {
             return Ok(wlan);
         }
@@ -526,7 +533,7 @@ async fn find_wifi_device() -> Result<String> {
                 "nmcli -t -f DEVICE,TYPE device status | grep ':wifi$' | grep -v '^ap0:' | cut -d: -f1 | head -n1",
             ],
         ).await.unwrap_or_default();
-        let wlan = output.trim().to_string();
+        let wlan = first_wifi_device(&output).unwrap_or_default().to_string();
         if !wlan.is_empty() {
             info!("No active WiFi connection; using wifi device {} from device list", wlan);
             return Ok(wlan);
@@ -588,6 +595,19 @@ fn append_unless_contains(path: &str, needle: &str, text: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn selects_one_wifi_device_when_both_adapters_are_active() {
+        assert_eq!(first_wifi_device("wlan1\nwlan0\n"), Some("wlan1"));
+        assert_eq!(first_wifi_device("wlan0\nwlan1\n"), Some("wlan0"));
+    }
+
+    #[test]
+    fn skips_empty_and_ap_interfaces() {
+        assert_eq!(first_wifi_device("\n ap0\n wlan0\n"), Some("wlan0"));
+        assert_eq!(first_wifi_device("\nap0\n"), None);
+        assert_eq!(first_wifi_device(""), None);
+    }
 
     #[test]
     fn tags_single_network_block() {
