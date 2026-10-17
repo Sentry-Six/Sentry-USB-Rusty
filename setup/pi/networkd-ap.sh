@@ -5,6 +5,7 @@ export LC_ALL=C
 umask 077
 CONFIG=/etc/sentryusb/networkd-ap
 NETWORK=/etc/systemd/network/05-sentryusb-ap.network
+DHCP_OVERRIDE=/run/systemd/network/05-sentryusb-ap.network.d/90-sentryusb-dhcp.conf
 UNIT=/etc/systemd/system/sentryusb-networkd-ap.service
 SERVICE=sentryusb-networkd-ap.service
 RUNTIME=/run/sentryusb-networkd-ap
@@ -79,6 +80,7 @@ configure() {
   hostapd_bin=$(command -v hostapd) || fail 'hostapd is not installed'
   command -v hostapd_cli >/dev/null || fail 'hostapd_cli is not installed'
   command -v iw >/dev/null || fail 'iw is not installed'
+  command -v ss >/dev/null || fail 'ss is not installed (install iproute2 to verify DHCP startup)'
   mkdir -p "$CONFIG" /etc/systemd/network /etc/systemd/system
   rm -f "$CONFIG/station"
   hex=$(printf '%s' "$ssid" | od -An -v -tx1 | tr -d ' \n')
@@ -111,6 +113,10 @@ LinkLocalAddressing=no
 IPv6AcceptRA=no
 ConfigureWithoutCarrier=yes
 [DHCPServer]
+# Away Mode leases last for this hotspot session. Persistent storage may be
+# read-only at boot, which otherwise prevents networkd from starting DHCP.
+PersistLeases=no
+BindToInterface=yes
 PoolOffset=10
 PoolSize=200
 EmitDNS=no
@@ -158,15 +164,49 @@ stop_ap() {
   return "$rc"
 }
 
+prepare_runtime_dhcp() {
+  local directory=${DHCP_OVERRIDE%/*} temporary
+  local settings=$'[DHCPServer]\nPersistLeases=no\nBindToInterface=yes'
+  # The embedded helper is updated with the app; the saved profile may be
+  # from an older release. A runtime drop-in also works with /etc read-only
+  # and is recreated after reboot, without setup or credential changes.
+  if [ -f "$DHCP_OVERRIDE" ] && [ "$(cat "$DHCP_OVERRIDE")" = "$settings" ]; then return 0; fi
+  install -d -m 0755 /run/systemd/network "$directory"
+  temporary=$(mktemp "$directory/.sentryusb-dhcp.XXXXXX")
+  if ! { printf '%s\n' "$settings" > "$temporary" && chmod 0644 "$temporary" && mv -f "$temporary" "$DHCP_OVERRIDE"; }; then
+    rm -f "$temporary"
+    fail 'could not prepare the runtime DHCP configuration'
+  fi
+}
+
+dhcp_ready() {
+  local networkd_pid listeners
+  networkd_pid=$(timeout 2 systemctl show -p MainPID --value systemd-networkd.service 2>/dev/null) || return 1
+  [[ "$networkd_pid" =~ ^[1-9][0-9]*$ ]] || return 1
+  listeners=$(timeout 3 ss -4 -H -u -l -n -p 'sport = :67' 2>/dev/null) || return 1
+  # networkd binds its DHCP socket to ap0. A different interface or DHCP
+  # daemon must not make our hotspot look ready. Match the PID exactly.
+  awk -v owner="pid=$networkd_pid," '
+    $4 ~ /%ap0:67$/ && index($0, owner) { found=1 }
+    END { exit !found }
+  ' <<< "$listeners"
+}
+
 ready() {
   local status
+  READY_ERROR='hostapd has not enabled the hotspot'
   status=$(timeout 3 hostapd_cli -p "$RUNTIME" -i ap0 status 2>/dev/null) || return 1
   grep -qx 'state=ENABLED' <<< "$status" || return 1
-  ip -4 -o address show dev ap0 | awk -v address="$address/24" '$4 == address { found=1 } END { exit !found }'
+  READY_ERROR="hotspot address $address/24 is not assigned to ap0"
+  ip -4 -o address show dev ap0 | awk -v address="$address/24" '$4 == address { found=1 } END { exit !found }' || return 1
+  READY_ERROR='networkd DHCP server is not listening on ap0 (UDP port 67); check the networkd logs in Diagnostics'
+  dhcp_ready || return 1
+  READY_ERROR=''
 }
 
 start_ap() {
   read_profile
+  command -v ss >/dev/null || fail 'ss is not installed (install iproute2 to verify DHCP startup)'
   if [ -f "$OWNER" ]; then
     if ready; then return 0; fi
     stop_ap || fail 'previous hotspot cleanup must finish before retrying'
@@ -174,6 +214,9 @@ start_ap() {
   # Do not commandeer an interface created by another service.
   if iw dev ap0 info >/dev/null 2>&1; then fail 'ap0 already exists outside this hotspot session'; fi
   iw dev "$station" info >/dev/null || fail "WiFi interface $station is unavailable"
+  # Prepare before releasing home WiFi; reload/reconfigure below applies the
+  # drop-in only to our ap0 profile. Existing active sessions recover above.
+  prepare_runtime_dhcp
   local resume=0
   if systemctl is-active --quiet "netplan-wpa-$station.service" || systemctl is-enabled --quiet "netplan-wpa-$station.service"; then resume=1; fi
   printf '%s %s\n' "$station" "$resume" > "$OWNER.tmp"
@@ -201,7 +244,8 @@ start_ap() {
     sleep 0.25
   done
   journalctl -u "$SERVICE" -n 8 --no-pager >&2 || true
-  fail 'hotspot failed to become ready (hostapd ENABLED and AP address required)'
+  timeout 3 journalctl -b -u systemd-networkd.service -u systemd-networkd-persistent-storage.service -n 12 --no-pager >&2 || true
+  fail "hotspot failed to become ready: $READY_ERROR"
 }
 
 action=${1:-detect}
@@ -215,13 +259,14 @@ case "$action" in
   detect) printf '%s\n' "$station" ;;
   configure) configure "$station" ;;
   info) read_profile; printf '%s\n%s\n' "$ssid" "$address" ;;
-  check) read_profile; [ -f "$OWNER" ] && ready || fail 'the active hotspot is no longer ready' ;;
+  check) read_profile; [ -f "$OWNER" ] && ready || fail "${READY_ERROR:-the active hotspot is no longer ready}" ;;
   start) start_ap ;;
   stop) stop_ap ;;
   remove)
     stop_ap
-    rm -f "$CONFIG/station" "$CONFIG/ssid" "$CONFIG/ip" "$CONFIG/hostapd.conf" "$NETWORK" "$UNIT" "$RESURRECTOR"
+    rm -f "$CONFIG/station" "$CONFIG/ssid" "$CONFIG/ip" "$CONFIG/hostapd.conf" "$NETWORK" "$UNIT" "$RESURRECTOR" "$DHCP_OVERRIDE"
     rmdir "$CONFIG" 2>/dev/null || true
+    rmdir "${DHCP_OVERRIDE%/*}" 2>/dev/null || true
     systemctl daemon-reload
     networkctl reload
     ;;

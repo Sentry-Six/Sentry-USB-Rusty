@@ -243,7 +243,7 @@ fi
 # their existing configuration paths.
 if [ -f /etc/armbian-release ] && [ -f /root/bin/networkd-ap.sh ]; then
   if bash /root/bin/networkd-ap.sh detect >/dev/null; then
-    apt-get -y install hostapd iw || exit 1
+    apt-get -y install hostapd iw iproute2 || exit 1
     bash /root/bin/networkd-ap.sh configure
     exit $?
   else

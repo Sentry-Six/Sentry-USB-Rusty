@@ -51,7 +51,7 @@ pub async fn profile() -> Result<Option<ApProfile>> {
 
 pub async fn configure(env: &SetupEnv, emitter: &SetupEmitter) -> Result<()> {
     emitter.progress("Configuring the Armbian Netplan/networkd hotspot");
-    crate::apt::apt_install(|message| emitter.progress(message), &["hostapd", "iw"], Duration::from_secs(300)).await?;
+    crate::apt::apt_install(|message| emitter.progress(message), &["hostapd", "iw", "iproute2"], Duration::from_secs(300)).await?;
     std::fs::create_dir_all("/root/bin")?;
     std::fs::write("/root/bin/networkd-ap.sh", SCRIPT)?;
     let ssid = env.get("AP_SSID", "");

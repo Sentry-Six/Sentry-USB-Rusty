@@ -751,6 +751,50 @@ const DIAGNOSTICS_SCRIPT: &str = r#"{
   ip -4 addr show 2>/dev/null | grep inet || ifconfig 2>/dev/null
   echo ""
 
+  echo "====== hotspot / DHCP (networkd) ======"
+  timeout 2 networkctl --version 2>&1 || echo "networkd version unavailable"
+  echo "--- ap0 networkd status ---"
+  timeout 3 networkctl status ap0 --no-pager 2>&1 || echo "ap0 networkd status unavailable or timed out"
+  echo "--- SentryUSB AP network configuration ---"
+  # This generated .network file contains address/DHCP settings. Do not dump
+  # hostapd, Netplan, or NetworkManager profiles: those contain WiFi secrets.
+  ap_network=/etc/systemd/network/05-sentryusb-ap.network
+  if [ -f "$ap_network" ]; then
+    timeout 2 head -c 16384 "$ap_network" 2>&1 || echo "AP network configuration unavailable or timed out"
+    echo
+  else
+    echo "SentryUSB networkd AP configuration is not installed"
+  fi
+  echo "--- SentryUSB runtime DHCP override ---"
+  dhcp_override=/run/systemd/network/05-sentryusb-ap.network.d/90-sentryusb-dhcp.conf
+  if [ -f "$dhcp_override" ]; then
+    timeout 2 head -c 16384 "$dhcp_override" 2>&1 || echo "runtime DHCP override unavailable or timed out"
+    echo
+  else
+    echo "SentryUSB runtime DHCP override is not installed"
+  fi
+  echo "--- networkd and hotspot services ---"
+  # status returns nonzero for failed/inactive units; retain that evidence.
+  timeout 3 systemctl --no-pager --full --lines=0 status \
+    systemd-networkd.service systemd-networkd-persistent-storage.service \
+    sentryusb-networkd-ap.service 2>&1 || true
+  echo "--- DHCP listeners (IPv4 UDP port 67) ---"
+  if dhcp_listeners=$(timeout 3 ss -4 -H -u -l -n -p 'sport = :67' 2>&1); then
+    if [ -n "$dhcp_listeners" ]; then
+      printf '%s\n' "$dhcp_listeners"
+    else
+      echo "No IPv4 UDP port 67 listeners found"
+    fi
+  else
+    printf '%s\n' "$dhcp_listeners"
+    echo "DHCP listener probe unavailable or timed out"
+  fi
+  echo "--- networkd and hotspot journal (current boot, last 150) ---"
+  timeout 3 journalctl -b -u systemd-networkd.service \
+    -u systemd-networkd-persistent-storage.service -u sentryusb-networkd-ap.service \
+    -n 150 --no-pager 2>&1 || echo "networkd/hotspot journal unavailable or timed out"
+  echo ""
+
   echo "====== services ======"
   for svc in sentryusb sentryusb-archive sentryusb-telemetry sentryusb-ble avahi-daemon bluetooth; do
     status=$(systemctl is-active "$svc" 2>/dev/null || echo "not found")
