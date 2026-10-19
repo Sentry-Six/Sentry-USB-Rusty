@@ -1359,6 +1359,23 @@ function cam_free_space_low () {
   return 1
 }
 
+# Even a forced disconnect should not land mid-burst: wait up to 60 s for
+# 5 s without writes (ignoring BLE; Sentry stays armed). Busy usually means
+# armed rather than writing right now.
+function wait_for_write_gap () {
+  local waited=0 quiet=0 prev cur
+  prev=$(car_write_counter) || return 0
+  while (( waited < 60 && quiet < 5 ))
+  do
+    sleep 1
+    waited=$((waited + 1))
+    cur=$(car_write_counter) || return 0
+    if (( cur - prev > 500000 )); then quiet=0; else quiet=$((quiet + 1)); fi
+    prev=$cur
+  done
+  log "Forced disconnect after ${waited}s ($( (( quiet >= 5 )) && echo "at a write gap" || echo "no write gap found"))"
+}
+
 # $1 = cam-cleanup: with CAM_CLEANUP_MAY_FORCE=1 (set by the at-home retry
 # once the car has stayed busy long enough), still disconnect a busy car
 # when the cam drive is short of space. Returns CAR_BUSY_STATUS when
@@ -1370,6 +1387,7 @@ function disconnect_usb_drives_from_host () {
      [ "${CAM_CLEANUP_MAY_FORCE:-0}" = 1 ] && cam_free_space_low
   then
     log "WARNING: disconnecting USB while the car is busy to free space"
+    wait_for_write_gap
     status=0
   fi
   case "$status" in

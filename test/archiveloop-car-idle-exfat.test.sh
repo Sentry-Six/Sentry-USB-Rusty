@@ -9,7 +9,7 @@ extract() {
   awk -v f="$1" '$0 ~ "^function " f "[ (]" {keep=1} keep {print} keep && /^}/ {exit}' "$script"
 }
 
-for fn in car_write_counter car_busy_via_ble wait_for_car_write_idle \
+for fn in car_write_counter car_busy_via_ble wait_for_car_write_idle wait_for_write_gap \
   disconnect_usb_drives_from_host ensure_music_file_is_mounted copy_music_files \
   exfat_fsck_supports_rescue reclaim_exfat_lost_found cam_free_space_mb \
   cam_free_space_low connect_usb_drives_to_host clean_and_retire_short_recordings \
@@ -169,13 +169,33 @@ expect_wait "cancelled while waiting" 1 3 "Archive cancelled"
 
 reset_wait; writes_until=999999; counter_fails_at=7
 expect_wait "gadget goes away while waiting" 0 7 "no longer active"
+
+# A forced disconnect still waits (up to 60 s) for a 5 s write gap, and
+# ignores BLE, since Sentry stays armed.
+expect_gap() {
+  local label="$1" want_tick="$2" want_log="$3"
+  wait_for_write_gap
+  [ "$tick" -eq "$want_tick" ] || fail "write gap $label: waited $tick s, want $want_tick"
+  [[ $logs == *"$want_log"* ]] || fail "write gap $label: missing '$want_log' in: $logs"
+}
+reset_wait; ble_gate Armed Park 0
+expect_gap "armed but not writing" 5 "Forced disconnect after 5s (at a write gap)"
+reset_wait; writes_until=12
+expect_gap "burst ends" 17 "Forced disconnect after 17s (at a write gap)"
+reset_wait; pattern=bursts; writes_until=999999
+expect_gap "no gap within 60 s" 60 "Forced disconnect after 60s (no write gap found)"
+reset_wait; counter_fails_at=0
+wait_for_write_gap
+[ "$tick" -eq 0 ] || fail "write gap waited without a gadget thread"
 reset_wait
 
 # --- disconnect policy ------------------------------------------------------
 lock_calls=0
 free_low=1
 free_low_calls=0
+gap_waits=0
 with_gadget_lock() { lock_calls=$((lock_calls + 1)); }
+wait_for_write_gap() { gap_waits=$((gap_waits + 1)); }
 wait_for_car_write_idle() { return "$idle_rc"; }
 cam_free_space_low() { free_low_calls=$((free_low_calls + 1)); return "$free_low"; }
 
@@ -187,8 +207,9 @@ expect_disconnect() {
   [ "$lock_calls" -eq "$want_locks" ] || fail "$label: $lock_calls teardown(s), want $want_locks"
 }
 
-idle_rc=0 CAM_FREE_MB_AT=$SECONDS
+idle_rc=0 CAM_FREE_MB_AT=$SECONDS gap_waits=0
 expect_disconnect "idle" cam-cleanup 0 1
+[ "$gap_waits" -eq 0 ] || fail "idle disconnect waited for a write gap"
 [ "$free_low_calls" -eq 0 ] || fail "idle disconnect measured free space"
 [ -z "${CAM_FREE_MB_AT:-}" ] || fail "free-space reading kept across a teardown"
 idle_rc=1
@@ -200,9 +221,10 @@ expect_disconnect "busy, low space, force not allowed yet" cam-cleanup "$CAR_BUS
 CAM_CLEANUP_MAY_FORCE=1
 idle_rc=2 free_low=1
 expect_disconnect "busy, space ok: defer" cam-cleanup "$CAR_BUSY_STATUS" 0
-idle_rc=2 free_low=0
+idle_rc=2 free_low=0 gap_waits=0
 expect_disconnect "busy, short of space, force allowed" cam-cleanup 0 1
 [[ $logs == *'WARNING: disconnecting USB while the car is busy'* ]] || fail "forced disconnect not logged"
+[ "$gap_waits" -eq 1 ] || fail "forced disconnect did not wait for a write gap"
 idle_rc=2 free_low=0
 expect_disconnect "busy music sync is never forced" "" "$CAR_BUSY_STATUS" 0
 [ "$free_low_calls" -eq 0 ] || fail "music disconnect measured free space"
