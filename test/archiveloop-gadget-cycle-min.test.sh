@@ -55,9 +55,14 @@ connect_usb_drives_to_host_locked() {
   record_cam_media_sync_success
 }
 with_gadget_lock() { "$@"; }
+car_idle_result=0
+car_idle_calls=0
+wait_for_car_write_idle() { car_idle_calls=$((car_idle_calls + 1)); return "$car_idle_result"; }
 
 reset() {
   connect_calls=0
+  car_idle_result=0
+  car_idle_calls=0
   usb_active=true
   logs=""
   rm -f "$CAM_MEDIA_SYNC_STAMP" "$CAM_CLEANUP_PENDING"
@@ -132,6 +137,30 @@ printf 'second\n' > "$workdir/Wraps/second.png"
 ensure_usb_drives_connected
 ensure_usb_drives_connected
 assert_calls 1 "changed host media"
+[ "$car_idle_calls" -eq 1 ] || {
+  echo "media cycle of an active gadget did not wait for the car once (got $car_idle_calls)" >&2
+  exit 1
+}
+
+# D2: a media cycle the car-idle wait vetoes leaves the gadget alone and
+# keeps the media dirty for a later attempt
+reset
+mkdir -p "$workdir/Wraps"
+printf 'pending\n' > "$workdir/Wraps/pending.png"
+car_idle_result=1
+ensure_usb_drives_connected
+assert_calls 0 "vetoed media cycle"
+[[ $logs == *'user-media sync deferred'* ]] || { echo "vetoed media cycle not logged" >&2; exit 1; }
+car_idle_result=0
+ensure_usb_drives_connected
+assert_calls 1 "media cycle retried after veto"
+
+# D3: an inactive gadget is reconnected without waiting for the car
+reset
+usb_active=false
+record_cam_media_sync_success
+ensure_usb_drives_connected
+[ "$car_idle_calls" -eq 0 ] || { echo "inactive reconnect waited for the car" >&2; exit 1; }
 
 # Cancellation must not cycle an active recording gadget for pending media.
 reset
@@ -189,6 +218,8 @@ short_recording="$CAM_MOUNT/TeslaCam/RecentClips/short recording.mp4"
 complete_recording="$CAM_MOUNT/TeslaCam/RecentClips/complete recording.mp4"
 printf 'short\n' > "$short_recording"
 truncate -s 100000 "$complete_recording"
+mkdir -p "$CAM_MOUNT/LOST+FOUND"
+printf 'orphan\n' > "$CAM_MOUNT/LOST+FOUND/FILE0000000.CHK"
 ensure_cam_file_is_mounted() { :; }
 trim_free_space() { :; }
 unmount_cam_file() { :; }
@@ -202,6 +233,10 @@ unmount_cam_file() { :; }
 }
 [ -e "$complete_recording" ] || {
   echo "complete recording was deleted" >&2
+  exit 1
+}
+[ ! -e "$CAM_MOUNT/LOST+FOUND" ] || {
+  echo "exFAT LOST+FOUND was not deleted" >&2
   exit 1
 }
 

@@ -357,6 +357,7 @@ jobs:
           python3 test/networkd-ap.test.py
           bash test/usb-startup.test.sh
           bash test/archiveloop-gadget-cycle-min.test.sh
+          bash test/archiveloop-car-idle-exfat.test.sh
           bash test/archiveloop-camdisk-supervisor.test.sh
       - name: Run tests
         run: cargo test --workspace

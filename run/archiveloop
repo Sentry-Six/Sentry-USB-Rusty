@@ -151,12 +151,69 @@ function fix_errors_in_image () {
     log "ERROR: losetup failed for $image"
     return 1
   fi
-  # Use -p repair arg. It works with vfat and exfat.
-  /sbin/fsck "${loopback}p1" -- -p |& timestamp '| ' >> "$LOG_FILE" || echo ""
+  local part="${loopback}p1"
+  if [ "$(blkid -p -o value -s TYPE "$part" 2>/dev/null || true)" = exfat ] && exfat_fsck_supports_rescue
+  then
+    # fsck.exfat -p repairs inconsistencies but never frees orphaned
+    # clusters (allocated in the bitmap, owned by no file): it writes back
+    # the union of the on-disk and the rebuilt bitmap and reports "clean".
+    # The car leaves such orphans when the drive disappears while it is
+    # writing, and they would leak free space permanently. -s turns them
+    # into /LOST+FOUND/FILE*.CHK, which is deleted right away, before the
+    # gadget is re-presented. (On vfat, -p salvages the equivalent lost
+    # chains into FSCK*.REC, which clean_cam_mount deletes.) With -s the
+    # exit status is 1 even on a clean volume, so it can't gate the reclaim.
+    /sbin/fsck "$part" -- -p -s |& timestamp '| ' >> "$LOG_FILE" || echo ""
+    reclaim_exfat_lost_found "$part" "$image"
+  else
+    # vfat (and exfat without rescue support): -p repairs inconsistencies.
+    /sbin/fsck "${loopback}p1" -- -p |& timestamp '| ' >> "$LOG_FILE" || echo ""
+  fi
   if ! losetup -d "$loopback"; then
     log "WARNING: failed to detach loopback $loopback for $image"
   fi
   log "Finished fsck on $image."
+}
+
+# -s/--rescue first appeared in exfatprogs 1.2.0.
+function exfat_fsck_supports_rescue () {
+  fsck.exfat --help 2>&1 | grep -q -- '--rescue'
+}
+
+# Delete the orphans "fsck.exfat -s" rescued into /LOST+FOUND (exfatprogs
+# 1.2.0 also leaves the directory behind when there was nothing to rescue).
+# Only called with the gadget down, on a partition device
+# fix_errors_in_image just attached, so the car never sees the directory.
+function reclaim_exfat_lost_found () {
+  local part="$1" image="$2" mnt mb files
+  if findmnt -n -S "$part" > /dev/null
+  then
+    log "WARNING: $part is mounted; not reclaiming orphaned clusters on $image"
+    return 0
+  fi
+  mnt=$(mktemp -d /tmp/reclaim.XXXXXX) || return 0
+  if mount -t exfat "$part" "$mnt" >> "$LOG_FILE" 2>&1
+  then
+    if [ -d "$mnt/LOST+FOUND" ]
+    then
+      files=$(find "$mnt/LOST+FOUND" -type f | wc -l)
+      mb=$(du -s -B1M "$mnt/LOST+FOUND" | cut -f1)
+      if ! rm -rf -- "$mnt/LOST+FOUND"
+      then
+        log "WARNING: failed to delete LOST+FOUND on $image"
+      elif (( files > 0 ))
+      then
+        log "Reclaimed ${mb} MB of orphaned clusters ($files rescued file(s)) on $image"
+      fi
+    fi
+    if ! umount "$mnt" >> "$LOG_FILE" 2>&1 && ! umount -l "$mnt" >> "$LOG_FILE" 2>&1
+    then
+      log "WARNING: failed to unmount $mnt"
+    fi
+  else
+    log "WARNING: could not mount $part to reclaim orphaned clusters on $image"
+  fi
+  rmdir "$mnt" 2>/dev/null || true
 }
 
 function archive_is_reachable () {
@@ -328,6 +385,16 @@ CAM_MEDIA_WATCH_PATHS=(
 # zero-clip skips cannot permanently drop free-space work across restarts.
 CAM_CLEANUP_PENDING=/mutable/sentryusb_cam_cleanup_pending
 CAM_CLEANUP_DEFERRED=/mutable/sentryusb_cam_cleanup_deferred
+# Reflink copy of cam_disk.bin used to measure its free space while the car
+# holds the live image.
+CAM_FREE_PROBE=/backingfiles/cam_free_probe.bin
+# disconnect_usb_drives_from_host status: car still writing, retry later.
+CAR_BUSY_STATUS=75
+# Live shift/Sentry state from the BLE telemetry sampler (when paired).
+CAR_BLE_GATE_FILE=/mutable/sentryusb-ble-gate.txt
+# Short recordings skipped by the last archive; their snapshot-index links
+# are retired once the live-image cleanup has deleted them.
+SHORT_RECORDING_IGNORELIST=/tmp/ignore_files
 
 # Run "$@" holding the gadget-cycle lock. Single definition so the fd
 # number and lock path can never drift between call sites — a mismatch
@@ -340,6 +407,14 @@ function with_gadget_lock () {
 }
 
 function connect_usb_drives_to_host() {
+  # Startup only: normally the gadget is already down after boot. If it is
+  # still bound (service restart) and the car is busy, it is presented and
+  # recording; leave it, and let the at-home retry sync user media later.
+  if ! wait_for_car_write_idle && usb_gadget_is_active
+  then
+    log "USB gadget still presented and the car is busy; leaving it connected"
+    return 0
+  fi
   with_gadget_lock connect_usb_drives_to_host_locked
 }
 
@@ -472,6 +547,13 @@ function cam_user_media_may_need_sync () {
 # Idempotent reconnect: full connect only when inactive or host media dirty.
 # Unlike connect_usb_drives_to_host, does not cycle a healthy presentation.
 function ensure_usb_drives_connected () {
+  # Only a user-media sync cycles a gadget that is already presented.
+  if usb_gadget_is_active && ! archive_cancel_requested && cam_user_media_may_need_sync &&
+     ! wait_for_car_write_idle
+  then
+    log "Leaving USB gadget connected; user-media sync deferred"
+    return 0
+  fi
   with_gadget_lock ensure_usb_drives_connected_locked
 }
 
@@ -972,14 +1054,14 @@ function ensure_mountpoint_is_mounted_with_retry () {
 
 function ensure_cam_file_is_mounted () {
   log "Ensuring cam file is mounted..."
-  disconnect_usb_drives_from_host || return 1
+  disconnect_usb_drives_from_host cam-cleanup || return $?
   ensure_mountpoint_is_mounted_with_retry "$CAM_MOUNT" || return 1
   log "Ensured cam file is mounted."
 }
 
 function ensure_music_file_is_mounted () {
   log "Ensuring music backing file is mounted..."
-  disconnect_usb_drives_from_host
+  disconnect_usb_drives_from_host || return $?
   ensure_mountpoint_is_mounted_with_retry "$MUSIC_MOUNT"
   log "Ensured music drive is mounted."
 }
@@ -1009,8 +1091,36 @@ function unmount_music_file () {
   unmount_mount_point "$MUSIC_MOUNT"
 }
 
+# While parked at home, retry USB work deferred because the car was writing:
+# pending cam cleanup, then a reconnect or user-media sync. Each attempt
+# waits for idle again and defers again if the car is still busy. If the car
+# sleeps and the Pi reboots first, the boot path completes the cleanup.
+# $1 = seconds parked at home since the archive cycle ended. Only after
+# CAR_BUSY_FORCE_AFTER_SECS may a busy car be disconnected for a cam drive
+# short of space: right after arriving the car is usually still recording,
+# and being under the 20 GB target is the normal state after a trip.
+function retry_deferred_usb_maintenance () {
+  local at_home_for="${1:-0}" may_force=0
+  travel_mode_active && return 0
+  if has_cam_disk && [ -e "$CAM_CLEANUP_PENDING" ] && [ ! -e "$CAM_CLEANUP_DEFERRED" ]
+  then
+    (( at_home_for < ${CAR_BUSY_FORCE_AFTER_SECS:-900} )) || may_force=1
+    log "Retrying deferred cam cleanup"
+    if CAM_CLEANUP_MAY_FORCE=$may_force clean_cam_mount freespace
+    then
+      retire_short_recording_links "$SHORT_RECORDING_IGNORELIST" || log "ERROR: failed to retire cleaned short recording links"
+    fi
+  fi
+  if ! usb_gadget_is_active || cam_user_media_may_need_sync
+  then
+    ensure_usb_drives_connected || log "ERROR: failed to ensure USB gadget after deferred maintenance"
+  fi
+}
+
 function wait_for_archive_to_be_unreachable () {
   log "Waiting for archive to be unreachable..."
+  local recheck="${CAR_IDLE_RECHECK_SECS:-300}" home_since=$SECONDS
+  local next_retry=$((SECONDS + recheck))
   while true
     do
       if ! retry archive_is_reachable
@@ -1023,6 +1133,11 @@ function wait_for_archive_to_be_unreachable () {
         log "Simulating archive being unreachable."
         rm /tmp/archive_is_unreachable
         break
+      fi
+      if (( SECONDS >= next_retry ))
+      then
+        retry_deferred_usb_maintenance $((SECONDS - home_since))
+        next_retry=$((SECONDS + recheck))
       fi
       sleep 1
   done
@@ -1078,8 +1193,195 @@ function fix_errors_in_images () {
   done
 }
 
+# Cumulative bytes the mass-storage gadget thread has passed to write()
+# (wchar; write_bytes counts the same I/O again at page-dirtying time).
+function car_write_counter () {
+  local pid
+  pid=$(pgrep -x file-storage | head -n 1)
+  [ -n "$pid" ] || return 1
+  awk '$1 == "wchar:" { print $2; found = 1 } END { exit !found }' "/proc/$pid/io" 2>/dev/null
+}
+
+# True when fresh BLE telemetry says the car is in gear or Sentry Mode is
+# armed: the car records, or may start an event clip, at any moment, even
+# in a gap between write bursts. Stale or missing telemetry (not paired,
+# sampler backed off, car asleep) says nothing; the write gap decides.
+function car_busy_via_ble () {
+  local key value updated="" shift_state="" sentry="" sentry_stale=false
+  [ -r "$CAR_BLE_GATE_FILE" ] || return 1
+  while IFS='=' read -r key value
+  do
+    case "$key" in
+      updated) updated=$value ;;
+      shift_state) shift_state=$value ;;
+      sentry_mode) sentry=$value ;;
+      sentry_mode_stale) sentry_stale=$value ;;
+    esac
+  done < "$CAR_BLE_GATE_FILE"
+  [[ $updated =~ ^[0-9]+$ ]] && (( $(date +%s) - updated <= 180 )) || return 1
+  case "$shift_state" in
+    Drive|Reverse|Neutral) return 0 ;;
+  esac
+  [ "$sentry_stale" != true ] || return 1
+  case "$sentry" in
+    Armed|Aware|Panic|Quiet) return 0 ;;
+  esac
+  return 1
+}
+
+# Taking the drive away while the car is writing corrupts its view of the
+# filesystem: on reconnect it writes back allocation state cached from
+# before the disconnect, re-marking clusters the Pi freed meanwhile and
+# orphaning its own in-flight allocations. Files the Pi wrote meanwhile may
+# be overwritten too, which no fsck repairs. Tesla writes in bursts a few
+# seconds apart while recording one-minute clips, so a short gap proves
+# nothing: require CAR_IDLE_QUIET_SECS without writes (and no BLE driving
+# or Sentry signal). Waits outside the gadget lock.
+#   0: idle (or no gadget/writer), OK to disconnect
+#   1: do not disconnect: the archive cycle was cancelled, or the car left
+#      home while we waited
+#   2: car still busy after CAR_IDLE_WAIT_SECS; the caller defers
+# A busy result is remembered for CAR_IDLE_WAIT_SECS, so the remaining
+# disconnects of the same archive cycle defer at once instead of each
+# waiting again.
+function wait_for_car_write_idle () {
+  local budget="${CAR_IDLE_WAIT_SECS:-240}" quiet_needed="${CAR_IDLE_QUIET_SECS:-90}"
+  local threshold=500000 waited=0 quiet=0 longest=0 prev cur at_home=false ble_logged=false
+
+  usb_gadget_is_active || return 0
+  (( budget > 0 )) || return 0
+  prev=$(car_write_counter) || return 0
+  if [ -n "${CAR_BUSY_SEEN_AT:-}" ] && (( SECONDS - CAR_BUSY_SEEN_AT < budget ))
+  then
+    log "Car was still busy $((SECONDS - CAR_BUSY_SEEN_AT))s ago; not waiting again"
+    return 2
+  fi
+  archive_is_reachable && at_home=true
+
+  log "Waiting up to ${budget}s for ${quiet_needed}s without car writes before disconnecting USB..."
+  while (( waited < budget ))
+  do
+    sleep 1
+    waited=$((waited + 1))
+    if archive_cancel_requested
+    then
+      log "Archive cancelled while waiting for the car to stop writing; leaving USB connected"
+      return 1
+    fi
+    if ! cur=$(car_write_counter)
+    then
+      log "Mass storage gadget no longer active; OK to disconnect"
+      return 0
+    fi
+    if (( cur - prev > threshold ))
+    then
+      quiet=0
+    elif car_busy_via_ble
+    then
+      quiet=0
+      if [ "$ble_logged" = false ]
+      then
+        log "BLE telemetry: car is in gear or Sentry Mode is armed; not idle"
+        ble_logged=true
+      fi
+    else
+      quiet=$((quiet + 1))
+      (( quiet <= longest )) || longest=$quiet
+    fi
+    prev=$cur
+    if (( quiet >= quiet_needed ))
+    then
+      log "Car idle for ${quiet_needed}s (waited ${waited}s); disconnecting USB"
+      unset CAR_BUSY_SEEN_AT
+      return 0
+    fi
+    if [ "$at_home" = true ] && (( waited % 30 == 0 )) && ! retry archive_is_reachable
+    then
+      log "Archive became unreachable while waiting for the car to stop writing; leaving USB connected"
+      return 1
+    fi
+  done
+  log "Car still busy after ${budget}s (longest quiet gap ${longest}s)"
+  CAR_BUSY_SEEN_AT=$SECONDS
+  return 2
+}
+
+# Free space of the cam drive in MB (10^6 bytes), measured on a reflink
+# copy (as make_snapshot.sh does) so the image the car is writing is never
+# mounted.
+function cam_free_space_mb () {
+  local mnt fstype opts avail="" bsize=""
+  rm -f "$CAM_FREE_PROBE"
+  if ! cp --reflink=always /backingfiles/cam_disk.bin "$CAM_FREE_PROBE" >> "$LOG_FILE" 2>&1
+  then
+    rm -f "$CAM_FREE_PROBE"
+    return 1
+  fi
+  read -r fstype opts <<< "$(/root/bin/mountoptsforimage "$CAM_FREE_PROBE" 2>> "$LOG_FILE" || true)"
+  if mnt=$(mktemp -d /tmp/camfree.XXXXXX)
+  then
+    if [ -n "$fstype" ] && mount -t "$fstype" -o "ro,$opts" "$CAM_FREE_PROBE" "$mnt" >> "$LOG_FILE" 2>&1
+    then
+      read -r avail bsize <<< "$(stat -f -c '%a %S' "$mnt")"
+      umount "$mnt" >> "$LOG_FILE" 2>&1 || umount -l "$mnt" >> "$LOG_FILE" 2>&1 || true
+    fi
+    rmdir "$mnt" 2>/dev/null || true
+  fi
+  rm -f "$CAM_FREE_PROBE"
+  [[ $avail =~ ^[0-9]+$ && $bsize =~ ^[1-9][0-9]*$ ]] || return 1
+  echo $((avail * bsize / 1000000))
+}
+
+# A full drive stops recording altogether, which is worse than the damage a
+# disconnect during writes can do. The threshold is the freespace cleanup's
+# own 20 GB target: a deferred cleanup must not leave the next trip (about
+# 17 GB on a 40 GiB drive in the field) without room. The reflink probe
+# runs at most every CAM_FREE_PROBE_INTERVAL.
+function cam_free_space_low () {
+  local mb threshold_mb=$(( ${CAM_FORCE_CLEANUP_FREE_GB:-20} * 1000 ))
+  if [ -n "${CAM_FREE_MB_AT:-}" ] && (( SECONDS - CAM_FREE_MB_AT < ${CAM_FREE_PROBE_INTERVAL:-1800} ))
+  then
+    mb=$CAM_FREE_MB
+  elif mb=$(cam_free_space_mb)
+  then
+    CAM_FREE_MB=$mb
+    CAM_FREE_MB_AT=$SECONDS
+  else
+    log "WARNING: could not measure cam drive free space; not forcing a disconnect"
+    return 1
+  fi
+  if (( mb < threshold_mb ))
+  then
+    log "Cam drive has ${mb} MB free, below ${threshold_mb} MB"
+    return 0
+  fi
+  log "Cam drive has ${mb} MB free; cleanup can wait for the car to go idle"
+  return 1
+}
+
+# $1 = cam-cleanup: with CAM_CLEANUP_MAY_FORCE=1 (set by the at-home retry
+# once the car has stayed busy long enough), still disconnect a busy car
+# when the cam drive is short of space. Returns CAR_BUSY_STATUS when
+# deferred because the car is busy, 1 when vetoed or teardown failed.
 function disconnect_usb_drives_from_host () {
-  with_gadget_lock disconnect_usb_drives_from_host_locked
+  local purpose="${1:-}" status=0
+  wait_for_car_write_idle || status=$?
+  if [ "$status" -eq 2 ] && [ "$purpose" = cam-cleanup ] &&
+     [ "${CAM_CLEANUP_MAY_FORCE:-0}" = 1 ] && cam_free_space_low
+  then
+    log "WARNING: disconnecting USB while the car is busy to free space"
+    status=0
+  fi
+  case "$status" in
+    0) ;;
+    2) log "Deferring USB disconnect until the car stops writing"
+       return "$CAR_BUSY_STATUS" ;;
+    *) return 1 ;;
+  esac
+  with_gadget_lock disconnect_usb_drives_from_host_locked || return $?
+  # The Pi is about to change the drive; don't reuse a free-space reading
+  # from before.
+  unset CAM_FREE_MB_AT
 }
 
 function disconnect_usb_drives_from_host_locked () {
@@ -1401,11 +1703,29 @@ function clean_cam_mount {
   fi
 
   log "cleaning cam mount"
-  ensure_cam_file_is_mounted || return 1
+  local status=0
+  ensure_cam_file_is_mounted || status=$?
+  if [ "$status" -ne 0 ]
+  then
+    # Car still writing: keep the obligation durable so the at-home retry
+    # or the next boot completes it.
+    if [ "$status" -eq "$CAR_BUSY_STATUS" ] && [ "$mode" = freespace ]
+    then
+      mark_cam_cleanup_pending || true
+    fi
+    return "$status"
+  fi
 
   # Delete the files that fsck "recovered". These are generally files
   # that were deleted previously by the car or teslausb
   archive_run_command find "${CAM_MOUNT}" \( \( -type f -name FSCK\*.REC \) -o \( -type f -name "*~[0-9].MP4" \) \) -exec rm -rf -- {} + || { ARCHIVE_ALL_STAGES_OK=0; [ -z "${ARCHIVE_STAGE_FAILURE_FILE:-}" ] || touch "$ARCHIVE_STAGE_FAILURE_FILE"; }
+  # exFAT counterpart: orphans rescued by "fsck.exfat -s". fix_errors_in_image
+  # normally deletes these already; this catches a manual fsck or an
+  # interrupted reclaim.
+  if [ -d "${CAM_MOUNT}/LOST+FOUND" ]
+  then
+    archive_run_command rm -rf -- "${CAM_MOUNT}/LOST+FOUND" || { ARCHIVE_ALL_STAGES_OK=0; [ -z "${ARCHIVE_STAGE_FAILURE_FILE:-}" ] || touch "$ARCHIVE_STAGE_FAILURE_FILE"; }
+  fi
 
   # Delete short recordings
   archive_run_command find "${CAM_MOUNT}" -type f -name \*.mp4 -size -100000c -delete || { ARCHIVE_ALL_STAGES_OK=0; [ -z "${ARCHIVE_STAGE_FAILURE_FILE:-}" ] || touch "$ARCHIVE_STAGE_FAILURE_FILE"; }
@@ -1506,6 +1826,22 @@ function retire_short_recording_links () {
   ) 9< "$SNAPSHOT_LOCK_DIR"
 }
 
+# Freespace cleanup, then retire the short recordings' links only if the
+# cleanup actually ran. A deferred or failed cleanup leaves them pending:
+# the at-home retry retires them after its own cleanup, and otherwise the
+# next archive lists the same shorts again.
+# ARCHIVE_ALL_STAGES_OK=0 on a deferral is deliberate: it also keeps the
+# post-archive auto-update, whose restart is another disconnect, from
+# running while the car is busy.
+function clean_and_retire_short_recordings () {
+  if clean_cam_mount freespace
+  then
+    retire_short_recording_links "$@" || log "ERROR: failed to retire cleaned short recording links"
+  else
+    ARCHIVE_ALL_STAGES_OK=0
+  fi
+}
+
 # Directory structure car uses:
 # TeslaCam/
 #   RecentClips/
@@ -1564,7 +1900,7 @@ function archive_teslacam_clips () {
   local -r sentrylist=/tmp/sentry_files
   local -r sentrylist_archived=/tmp/sentry_files_archived
   local -r sentrylist_previously_archived=/mutable/sentry_files_archived
-  local -r ignorelist=/tmp/ignore_files
+  local -r ignorelist=$SHORT_RECORDING_IGNORELIST
 
   # Find files by name only. Don't follow the symlinks yet, since that
   # would cause all snapshots to be mounted.
@@ -1914,8 +2250,7 @@ function archive_teslacam_clips () {
         fi
       elif [ -e "$CAM_CLEANUP_PENDING" ]; then
         log "Completing deferred cam cleanup"
-        clean_cam_mount freespace || ARCHIVE_ALL_STAGES_OK=0
-        retire_short_recording_links "$ignorelist" "$overlaylower" || log "ERROR: failed to retire cleaned short recording links"
+        clean_and_retire_short_recordings "$ignorelist" "$overlaylower"
       elif [ "$total_count" -eq 0 ] && [ "$ignore_count" -eq 0 ]; then
         # Zero-clip home archives used to always clean+reconnect, thrashing USB.
         log "No archive or maintenance candidates; leaving USB gadget connected"
@@ -1926,8 +2261,7 @@ function archive_teslacam_clips () {
           log "Archived files require cam cleanup"
         fi
         mark_cam_cleanup_pending || true
-        clean_cam_mount freespace || ARCHIVE_ALL_STAGES_OK=0
-        retire_short_recording_links "$ignorelist" "$overlaylower" || log "ERROR: failed to retire cleaned short recording links"
+        clean_and_retire_short_recordings "$ignorelist" "$overlaylower"
       fi
     else
       log "Skipping cleaning step after archive error"
@@ -1949,7 +2283,7 @@ function archive_teslacam_clips () {
 function copy_music_files () {
   log "Starting music sync..."
 
-  ensure_music_file_is_mounted
+  ensure_music_file_is_mounted || return $?
 
   local music_result=0
   archive_run_command /root/bin/copy-music.sh || music_result=$?
@@ -2176,11 +2510,16 @@ function archive_clips () {
       log "Travel Mode: skipping music sync (would disconnect the USB gadget from the car)"
     else
       log "Copying music..."
-      if copy_music_files
+      local music_status=0
+      copy_music_files || music_status=$?
+      if [ "$music_status" -eq 0 ]
       then
         log "Finished copying music."
+      elif [ "$music_status" -eq "$CAR_BUSY_STATUS" ]
+      then
+        log "Music sync deferred to a later archive: the car is still writing"
       else
-        log "ERROR: copy_music_files failed (exit $?)"
+        log "ERROR: copy_music_files failed (exit $music_status)"
       fi
     fi
   else
@@ -2486,6 +2825,8 @@ function gadget_stall_watchdog () {
          && ! findmnt --mountpoint "$CAM_MOUNT" > /dev/null \
          && ! findmnt --mountpoint "$MUSIC_MOUNT" > /dev/null
       then
+        # No wait_for_car_write_idle: this only fires when the car has
+        # stopped writing or the link itself is down.
         /root/bin/disable_gadget.sh || log "Gadget stall watchdog: disable_gadget failed (exit $?)"
         sleep 2
         if /root/bin/enable_gadget.sh
@@ -2939,6 +3280,9 @@ kmsgmirror &
 # available while storage is missing; the archive worker waits here and
 # resumes automatically if the mount/image becomes available later.
 wait_for_usb_storage
+# A free-space probe interrupted by a crash would keep growing as the cam
+# image diverges from it.
+rm -f "$CAM_FREE_PROBE"
 
 # Travel Mode crash-restart guard: the service runs with Restart=always, so
 # any archiveloop crash re-enters this startup path with the system still in
