@@ -206,14 +206,159 @@ pub(crate) async fn release_snapshot_locked(snap_name: &str) -> Result<()> {
         let _ = sentryusb_shell::run("umount", &[&mnt_dir]).await;
     }
 
+    // Remember which links point into this snapshot before it goes, so clips
+    // that another snapshot still holds can be re-pointed instead of orphaned.
+    let orphans = collect_links_into(
+        Path::new(TESLACAM),
+        &name,
+        Path::new(SNAPSHOTS_DIR),
+        Path::new(AUTOFS_SNAPSHOTS),
+    );
+
     std::fs::remove_dir_all(&snap_dir)?;
     // Remove stored-target links and directories they leave empty.
     let pruned = prune_links_into(&name);
     if pruned > 0 {
         info!("Pruned {} TeslaCam link(s) into {}", pruned, name);
     }
+    if pruned > 0 && backingfiles_mounted() {
+        let relinked = relink_orphans_in(
+            &orphans,
+            &name,
+            Path::new(SNAPSHOTS_DIR),
+            Path::new(AUTOFS_SNAPSHOTS),
+        );
+        if relinked > 0 {
+            info!(
+                "Re-pointed {} clip link(s) from {} at a surviving snapshot",
+                relinked, name
+            );
+        }
+    }
     info!("Released snapshot: {}", name);
     Ok(())
+}
+
+/// Links in the farm whose stored target names `snap_name` (stable `mnt` or
+/// autofs shape), with their targets. Read-only; depth-capped like the prune.
+fn collect_links_into(
+    farm: &Path,
+    snap_name: &str,
+    snapshots: &Path,
+    autofs: &Path,
+) -> Vec<(std::path::PathBuf, String)> {
+    fn walk(dir: &Path, depth: u8, found: &mut dyn FnMut(std::path::PathBuf, String)) {
+        if depth > 4 {
+            return;
+        }
+        let Ok(entries) = std::fs::read_dir(dir) else { return };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let Ok(ftype) = entry.file_type() else { continue };
+            if ftype.is_symlink() {
+                if let Ok(target) = std::fs::read_link(&path) {
+                    found(path, target.to_string_lossy().into_owned());
+                }
+            } else if ftype.is_dir() {
+                walk(&path, depth + 1, found);
+            }
+        }
+    }
+    let mut out = Vec::new();
+    walk(farm, 0, &mut |path, target| {
+        if owned_snap_component(&target, snapshots, autofs) == Some(snap_name) {
+            out.push((path, target));
+        }
+    });
+    out
+}
+
+/// Re-point links that pointed into the released snapshot at another live
+/// snapshot holding the same clip: the largest copy wins (an older snapshot
+/// can hold a clip the car was still writing), the highest slot breaks ties.
+///
+/// Every snapshot re-links all clips it holds, so a clip's link always names
+/// the newest snapshot that had it. Eviction order is by image mtime, and a
+/// snapshot taken before the clock synced (no RTC, fake-hwclock in the past)
+/// is evicted early even though it is recent; without this, its clips were
+/// unlinked although an older surviving snapshot still had them, and archiving
+/// silently skipped that footage. Returns the number of links re-created.
+fn relink_orphans_in(
+    orphans: &[(std::path::PathBuf, String)],
+    released: &str,
+    snapshots: &Path,
+    autofs: &Path,
+) -> usize {
+    let is_snap = |n: &str| {
+        n.strip_prefix("snap-")
+            .is_some_and(|d| !d.is_empty() && d.bytes().all(|b| b.is_ascii_digit()))
+    };
+    let mut live: Vec<String> = std::fs::read_dir(snapshots)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|e| e.file_name().into_string().ok())
+        .filter(|n| n != released && is_snap(n))
+        .filter(|n| snapshots.join(n).join("snap.bin").exists())
+        .collect();
+    // Zero-padded names sort by slot; highest first so it wins ties.
+    live.sort_by(|a, b| b.cmp(a));
+
+    let below = |target: &'_ str, root: &Path| -> Option<String> {
+        Some(
+            target
+                .strip_prefix(root.to_str()?)?
+                .strip_prefix('/')?
+                .strip_prefix(released)?
+                .strip_prefix('/')?
+                .to_string(),
+        )
+    };
+
+    let mut relinked = 0;
+    for (link, target) in orphans {
+        // Someone (a new snapshot) already re-created it.
+        if std::fs::symlink_metadata(link).is_ok() {
+            continue;
+        }
+        let (stable, clip_rel) = if let Some(rest) = below(target, snapshots) {
+            match rest.strip_prefix("mnt/") {
+                Some(r) => (true, r.to_string()),
+                None => continue,
+            }
+        } else if let Some(rest) = below(target, autofs) {
+            (false, rest)
+        } else {
+            continue;
+        };
+        if clip_rel.split('/').any(|c| c.is_empty() || c == "." || c == "..") {
+            continue;
+        }
+        let mut best: Option<(u64, &String)> = None;
+        for snap in &live {
+            // `snap-X/mnt` is the autofs link in production; a real dir in tests.
+            let Ok(md) = std::fs::metadata(snapshots.join(snap).join("mnt").join(&clip_rel)) else {
+                continue;
+            };
+            if md.is_file() && best.is_none_or(|(len, _)| md.len() > len) {
+                best = Some((md.len(), snap));
+            }
+        }
+        let Some((_, snap)) = best else { continue };
+        let new_target = if stable {
+            snapshots.join(snap).join("mnt").join(&clip_rel)
+        } else {
+            autofs.join(snap).join(&clip_rel)
+        };
+        if let Some(parent) = link.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        #[cfg(unix)]
+        if std::os::unix::fs::symlink(&new_target, link).is_ok() {
+            relinked += 1;
+        }
+    }
+    relinked
 }
 
 /// Remove link-farm symlinks whose stored target names this snapshot, without
@@ -1603,6 +1748,54 @@ mod tests {
             .filter(|p| std::fs::symlink_metadata(p).is_ok())
             .count();
         assert_eq!(survivors, 1, "the reused slot's remaining link must survive");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn release_relinks_clips_still_held_by_a_surviving_snapshot() {
+        use std::os::unix::fs::symlink;
+        let tmp = tempfile::tempdir().unwrap();
+        let farm = tmp.path().join("TeslaCam");
+        let snaps = tmp.path().join("snapshots");
+        let autofs = tmp.path().join("autofs");
+        let clip = "2026-10-19_08-43-55-front.mp4";
+        let rel = format!("TeslaCam/RecentClips/{clip}");
+        // snap-000035 (older, survives) and snap-000036 (released) both hold
+        // the clip; snap-000037 holds a partial copy; the link names 36.
+        for (snap, len) in [("snap-000035", 40usize), ("snap-000036", 40), ("snap-000037", 10)] {
+            let f = snaps.join(snap).join("mnt").join(&rel);
+            std::fs::create_dir_all(f.parent().unwrap()).unwrap();
+            std::fs::write(&f, vec![0u8; len]).unwrap();
+            std::fs::write(snaps.join(snap).join("snap.bin"), b"").unwrap();
+        }
+        let day = farm.join("RecentClips/2026-10-19");
+        std::fs::create_dir_all(&day).unwrap();
+        let link = day.join(clip);
+        let gone = farm.join("RecentClips/2026-10-19/2026-10-19_08-44-55-front.mp4");
+        let s = snaps.to_str().unwrap();
+        symlink(format!("{s}/snap-000036/mnt/{rel}"), &link).unwrap();
+        symlink(
+            format!("{s}/snap-000036/mnt/TeslaCam/RecentClips/2026-10-19_08-44-55-front.mp4"),
+            &gone,
+        )
+        .unwrap();
+
+        let orphans = collect_links_into(&farm, "snap-000036", &snaps, &autofs);
+        assert_eq!(orphans.len(), 2);
+        std::fs::remove_dir_all(snaps.join("snap-000036")).unwrap();
+        let dead = |_: &std::path::Path, t: &str| {
+            released_link_is_dead(t, "snap-000036", &snaps, &autofs)
+        };
+        assert_eq!(prune_farm_links(&farm, &dead, &|| true, false), (2, false));
+
+        let relinked = relink_orphans_in(&orphans, "snap-000036", &snaps, &autofs);
+        assert_eq!(relinked, 1, "only the clip a live snapshot still holds comes back");
+        assert_eq!(
+            std::fs::read_link(&link).unwrap(),
+            snaps.join("snap-000035/mnt").join(&rel),
+            "the full copy wins over the larger slot's partial copy"
+        );
+        assert!(std::fs::symlink_metadata(&gone).is_err(), "no copy anywhere: stays pruned");
     }
 
     #[cfg(unix)]
