@@ -36,6 +36,7 @@ workdir=$(mktemp -d)
 trap 'rm -rf "$workdir"' EXIT
 
 CAM_MEDIA_SYNC_STAMP="$workdir/media-stamp"
+EXFAT_RECLAIM_STAMP="$workdir/exfat-reclaimed"
 CAM_MEDIA_WATCH_PATHS=(
   "$workdir/Wraps"
   "$workdir/LicensePlate"
@@ -189,6 +190,8 @@ short_recording="$CAM_MOUNT/TeslaCam/RecentClips/short recording.mp4"
 complete_recording="$CAM_MOUNT/TeslaCam/RecentClips/complete recording.mp4"
 printf 'short\n' > "$short_recording"
 truncate -s 100000 "$complete_recording"
+mkdir -p "$CAM_MOUNT/LOST+FOUND"
+printf 'orphan\n' > "$CAM_MOUNT/LOST+FOUND/FILE0000000.CHK"
 ensure_cam_file_is_mounted() { :; }
 trim_free_space() { :; }
 unmount_cam_file() { :; }
@@ -202,6 +205,10 @@ unmount_cam_file() { :; }
 }
 [ -e "$complete_recording" ] || {
   echo "complete recording was deleted" >&2
+  exit 1
+}
+[ ! -e "$CAM_MOUNT/LOST+FOUND" ] || {
+  echo "exFAT LOST+FOUND was not deleted" >&2
   exit 1
 }
 

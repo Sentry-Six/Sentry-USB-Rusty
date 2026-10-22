@@ -144,19 +144,140 @@ function timestamp () {
   done
 }
 
+# Returns IMAGE_STILL_MOUNTED when the image may still be mounted by a
+# reclaim; callers must then neither mount it again nor present it.
 function fix_errors_in_image () {
-  local image="$1"
+  local image="$1" status=0
   log "Running fsck on $image..."
+  # Never check or touch an image an interrupted reclaim may still hold.
+  if ! release_exfat_reclaim_mount "Unmounting $EXFAT_RECLAIM_MOUNT left by an interrupted reclaim"
+  then
+    log "ERROR: not checking $image while $EXFAT_RECLAIM_MOUNT is mounted"
+    return "$IMAGE_STILL_MOUNTED"
+  fi
   if ! loopback=$(losetup_find_show -P "$image"); then
     log "ERROR: losetup failed for $image"
     return 1
   fi
-  # Use -p repair arg. It works with vfat and exfat.
-  /sbin/fsck "${loopback}p1" -- -p |& timestamp '| ' >> "$LOG_FILE" || echo ""
+  local part="${loopback}p1"
+  # Only the cam drive needs it (the car only reads the other drives), and
+  # only once per period without the car: it cannot orphan anything while
+  # the drive is down, so the second pass of a cycle would find nothing.
+  if [ "${image##*/}" = cam_disk.bin ] && [ ! -e "$EXFAT_RECLAIM_STAMP" ] &&
+     [ "$(blkid -p -o value -s TYPE "$part" 2>/dev/null || true)" = exfat ] && exfat_fsck_supports_rescue
+  then
+    # fsck.exfat -p repairs inconsistencies but never frees orphaned
+    # clusters (allocated in the bitmap, owned by no file): it writes back
+    # the union of the on-disk and the rebuilt bitmap and reports "clean".
+    # The car creates them: it keeps its cached allocation bitmap across a
+    # USB reconnect and later writes stale sectors back, re-marking
+    # clusters the Pi freed while it was disconnected (e.g. clips deleted
+    # by clean_cam_mount); a disconnect mid-write also orphans its
+    # in-flight allocations. Unreclaimed, they leak free space permanently.
+    # -s turns them into /LOST+FOUND/FILE*.CHK, which is deleted right
+    # away, before the gadget is re-presented. (On vfat, -p salvages the
+    # equivalent lost chains into FSCK*.REC, which clean_cam_mount
+    # deletes.) With -s the exit status is 1 even on a clean volume, so it
+    # can't gate the reclaim.
+    /sbin/fsck "$part" -- -p -s |& timestamp '| ' >> "$LOG_FILE" || echo ""
+    reclaim_exfat_lost_found "$part" "$image" || status=$IMAGE_STILL_MOUNTED
+  else
+    # vfat, other drives, exfat already reclaimed this period or without
+    # rescue support: -p repairs inconsistencies.
+    /sbin/fsck "${loopback}p1" -- -p |& timestamp '| ' >> "$LOG_FILE" || echo ""
+  fi
   if ! losetup -d "$loopback"; then
     log "WARNING: failed to detach loopback $loopback for $image"
   fi
   log "Finished fsck on $image."
+  return "$status"
+}
+
+# -s/--rescue first appeared in exfatprogs 1.2.0. Checked once per process.
+function exfat_fsck_supports_rescue () {
+  if [ -z "${EXFAT_FSCK_RESCUE:-}" ]
+  then
+    EXFAT_FSCK_RESCUE=no
+    if fsck.exfat --help 2>&1 | grep -q -- '--rescue'
+    then
+      EXFAT_FSCK_RESCUE=yes
+    fi
+  fi
+  [ "$EXFAT_FSCK_RESCUE" = yes ]
+}
+
+# Fixed mount point for the reclaim, so a mount left behind by a crash or
+# service restart mid-reclaim can be found and released (at startup and
+# before every fsck) instead of staying mounted while the image is checked,
+# mounted again or presented to the car: two writers on one image.
+EXFAT_RECLAIM_MOUNT=/tmp/exfat-reclaim
+# fix_errors_in_image(s) status: an image may still be mounted.
+IMAGE_STILL_MOUNTED=2
+# Exists from a completed cam reclaim until the drive is next presented to
+# the car (cleared before every enable_gadget.sh and at startup). The Rust
+# server's own gadget cycles don't clear it; anything the car orphans in
+# such a window is reclaimed in the next cycle.
+EXFAT_RECLAIM_STAMP=/tmp/sentryusb_exfat_reclaimed
+
+# Unmount EXFAT_RECLAIM_MOUNT, logging $1 (if given) when something is
+# mounted there. A busy unmount is retried, but never done lazily: that
+# would hide the mount while the filesystem can stay live. Fails while
+# anything is still mounted there.
+function release_exfat_reclaim_mount () {
+  local tries=0
+  mountpoint -q "$EXFAT_RECLAIM_MOUNT" || return 0
+  [ -z "${1:-}" ] || log "$1"
+  while mountpoint -q "$EXFAT_RECLAIM_MOUNT"
+  do
+    if (( tries >= 5 ))
+    then
+      log "ERROR: $EXFAT_RECLAIM_MOUNT is still mounted"
+      return 1
+    fi
+    (( tries == 0 )) || sleep 1
+    tries=$((tries + 1))
+    umount "$EXFAT_RECLAIM_MOUNT" >> "$LOG_FILE" 2>&1 || true
+  done
+}
+
+# Delete the orphans "fsck.exfat -s" rescued into /LOST+FOUND (exfatprogs
+# 1.2.0 also leaves the directory behind when there was nothing to rescue).
+# Only called with the gadget down, on a partition device
+# fix_errors_in_image just attached, so the car never sees the directory.
+# Fails only if the partition may still be mounted afterwards.
+function reclaim_exfat_lost_found () {
+  local part="$1" image="$2" mnt=$EXFAT_RECLAIM_MOUNT mb files
+  if findmnt -n -S "$part" > /dev/null
+  then
+    log "ERROR: $part is already mounted; not reclaiming orphaned clusters on $image"
+    return 1
+  fi
+  release_exfat_reclaim_mount "Unmounting $mnt left by an interrupted reclaim" || return 1
+  if ! mkdir -p "$mnt"
+  then
+    log "WARNING: could not create $mnt; not reclaiming orphaned clusters on $image"
+    return 0
+  fi
+  if mount -t exfat "$part" "$mnt" >> "$LOG_FILE" 2>&1
+  then
+    if [ -d "$mnt/LOST+FOUND" ]
+    then
+      files=$(find "$mnt/LOST+FOUND" -type f | wc -l)
+      mb=$(du -s -B1M "$mnt/LOST+FOUND" | cut -f1)
+      if ! rm -rf -- "$mnt/LOST+FOUND"
+      then
+        log "WARNING: failed to delete LOST+FOUND on $image"
+      elif (( files > 0 ))
+      then
+        log "Reclaimed ${mb} MB of orphaned clusters ($files rescued file(s)) on $image"
+      fi
+    fi
+    release_exfat_reclaim_mount || return 1
+    touch "$EXFAT_RECLAIM_STAMP" || true
+  else
+    log "WARNING: could not mount $part to reclaim orphaned clusters on $image"
+  fi
+  rmdir "$mnt" 2>/dev/null || true
 }
 
 function archive_is_reachable () {
@@ -358,7 +479,11 @@ function connect_usb_drives_to_host_locked() {
   # and causing the Tesla to stop writing dashcam footage.
   if /root/bin/disable_gadget.sh 2>/dev/null; then
     log "Disabled stale USB gadget before sync"
-    fix_errors_in_images
+    if ! fix_errors_in_images
+    then
+      log "ERROR: a disk image may still be mounted; not presenting the drive"
+      return 1
+    fi
   else
     log "ERROR: could not release USB gadget; skipping disk maintenance and reconnect"
     return 1
@@ -383,6 +508,8 @@ function connect_usb_drives_to_host_locked() {
   do
     ls "/var/www/html/fs/$d" > /dev/null 2>&1 || true
   done
+  # Once the car has the drive again, the next period needs a new reclaim.
+  rm -f "$EXFAT_RECLAIM_STAMP"
   if /root/bin/enable_gadget.sh; then
     if ! usb_gadget_is_active; then
       log "ERROR: USB enable completed without a bound disk; drive was not presented"
@@ -979,7 +1106,7 @@ function ensure_cam_file_is_mounted () {
 
 function ensure_music_file_is_mounted () {
   log "Ensuring music backing file is mounted..."
-  disconnect_usb_drives_from_host
+  disconnect_usb_drives_from_host || return 1
   ensure_mountpoint_is_mounted_with_retry "$MUSIC_MOUNT"
   log "Ensured music drive is mounted."
 }
@@ -1067,13 +1194,18 @@ function trim_free_space() {
   fi
 }
 
+# Returns IMAGE_STILL_MOUNTED, and stops, as soon as an image may still be
+# mounted by a reclaim. Other fsck problems are logged but not returned.
 function fix_errors_in_images () {
+  local rc
   for i in cam music boombox lightshow wraps
   do
     img="/backingfiles/${i}_disk.bin"
     if [ -e "$img" ]
     then
-      fix_errors_in_image "$img"
+      rc=0
+      fix_errors_in_image "$img" || rc=$?
+      [ "$rc" -ne "$IMAGE_STILL_MOUNTED" ] || return "$IMAGE_STILL_MOUNTED"
     fi
   done
 }
@@ -1086,7 +1218,11 @@ function disconnect_usb_drives_from_host_locked () {
   log "Disconnecting usb from host..."
   if /root/bin/disable_gadget.sh
   then
-    fix_errors_in_images
+    if ! fix_errors_in_images
+    then
+      log "ERROR: a disk image may still be mounted; not mounting it again"
+      return 1
+    fi
   else
     log "ERROR: disable_gadget.sh failed (exit $?), skipping fsck"
     return 1
@@ -1406,6 +1542,13 @@ function clean_cam_mount {
   # Delete the files that fsck "recovered". These are generally files
   # that were deleted previously by the car or teslausb
   archive_run_command find "${CAM_MOUNT}" \( \( -type f -name FSCK\*.REC \) -o \( -type f -name "*~[0-9].MP4" \) \) -exec rm -rf -- {} + || { ARCHIVE_ALL_STAGES_OK=0; [ -z "${ARCHIVE_STAGE_FAILURE_FILE:-}" ] || touch "$ARCHIVE_STAGE_FAILURE_FILE"; }
+  # exFAT counterpart: orphans rescued by "fsck.exfat -s". fix_errors_in_image
+  # normally deletes these already; this catches a manual fsck or an
+  # interrupted reclaim.
+  if [ -d "${CAM_MOUNT}/LOST+FOUND" ]
+  then
+    archive_run_command rm -rf -- "${CAM_MOUNT}/LOST+FOUND" || { ARCHIVE_ALL_STAGES_OK=0; [ -z "${ARCHIVE_STAGE_FAILURE_FILE:-}" ] || touch "$ARCHIVE_STAGE_FAILURE_FILE"; }
+  fi
 
   # Delete short recordings
   archive_run_command find "${CAM_MOUNT}" -type f -name \*.mp4 -size -100000c -delete || { ARCHIVE_ALL_STAGES_OK=0; [ -z "${ARCHIVE_STAGE_FAILURE_FILE:-}" ] || touch "$ARCHIVE_STAGE_FAILURE_FILE"; }
@@ -1949,7 +2092,7 @@ function archive_teslacam_clips () {
 function copy_music_files () {
   log "Starting music sync..."
 
-  ensure_music_file_is_mounted
+  ensure_music_file_is_mounted || return 1
 
   local music_result=0
   archive_run_command /root/bin/copy-music.sh || music_result=$?
@@ -2488,6 +2631,7 @@ function gadget_stall_watchdog () {
       then
         /root/bin/disable_gadget.sh || log "Gadget stall watchdog: disable_gadget failed (exit $?)"
         sleep 2
+        rm -f "$EXFAT_RECLAIM_STAMP"
         if /root/bin/enable_gadget.sh
         then
           log "Gadget stall watchdog: drive re-presented to the car"
@@ -2924,6 +3068,15 @@ function camdiskworkers {
     sleep 10
   done
 }
+
+# A previous instance may have died mid-reclaim with the cam partition still
+# mounted; release it now. If that fails, every fsck refuses to run and
+# every connect refuses to present the drive (retrying the release) until
+# it is gone.
+# The car may have had the drive since any earlier reclaim.
+rm -f "$EXFAT_RECLAIM_STAMP"
+release_exfat_reclaim_mount "Unmounting $EXFAT_RECLAIM_MOUNT left by an interrupted reclaim" ||
+  log "ERROR: disk images stay unpresented until $EXFAT_RECLAIM_MOUNT is released"
 
 if ! has_cam_disk
 then
