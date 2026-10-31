@@ -765,36 +765,87 @@ pub async fn safety_analytics(
     }
 }
 
+const EXPORT_PREFIX: &str = ".drive-data-export-";
+/// Older exports were left in RAM-backed /tmp under this fixed name.
+const LEGACY_EXPORT_PATH: &str = "/tmp/drive-data-export.json";
+
+/// Exports can be hundreds of MB, so they stage on the data disk, never RAM-backed
+/// /tmp. A read-only data disk makes the export fail instead of falling back to RAM.
+fn export_dir() -> std::path::PathBuf {
+    let backing = std::path::Path::new("/backingfiles");
+    if backing.is_dir() { backing.to_path_buf() } else { std::env::temp_dir() }
+}
+
+/// A name per request, so concurrent downloads never share or delete each other's file.
+fn export_temp_path() -> String {
+    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    export_dir()
+        .join(format!("{}{}-{}-{}.json", EXPORT_PREFIX, std::process::id(), nanos, seq))
+        .to_string_lossy()
+        .into_owned()
+}
+
+fn remove_export_files(path: &str) {
+    let _ = std::fs::remove_file(path);
+    let _ = std::fs::remove_file(format!("{}.tmp", path));
+}
+
+/// Removes exports a crashed daemon left behind, plus the legacy /tmp file.
+/// Call at startup only, before any download can be in flight.
+pub fn remove_leftover_exports() {
+    remove_export_files(LEGACY_EXPORT_PATH);
+    remove_leftover_exports_in(&export_dir());
+}
+
+fn remove_leftover_exports_in(dir: &std::path::Path) {
+    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    for entry in entries.flatten() {
+        if entry.file_name().to_string_lossy().starts_with(EXPORT_PREFIX) {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
+}
+
 /// Streams an exported JSON tempfile without buffering the full document.
 pub async fn download_data(
     State(state): State<AppState>,
 ) -> axum::response::Response {
+    export_download(state.drives.store.clone(), export_temp_path()).await
+}
+
+async fn export_download(store: Arc<DriveStore>, tmp: String) -> axum::response::Response {
     use axum::body::Body;
     use axum::http::header;
     use axum::response::IntoResponse;
 
     // Export is a blocking rusqlite walk; keep it off the tokio reactor.
-    let store = state.drives.store.clone();
-    let tmp = "/tmp/drive-data-export.json".to_string();
     let export_path = tmp.clone();
     let export_result = tokio::task::spawn_blocking(move || {
         store.export_json_to_file(&export_path)
     })
     .await;
 
-    match export_result {
-        Ok(Ok(())) => {}
-        Ok(Err(e)) => {
-            let (status, json) = crate::json_error(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string());
-            return (status, json).into_response();
-        }
-        Err(e) => {
-            let (status, json) = crate::json_error(StatusCode::INTERNAL_SERVER_ERROR, &format!("export task panic: {}", e));
-            return (status, json).into_response();
-        }
+    let failure = match export_result {
+        Ok(Ok(())) => None,
+        Ok(Err(e)) => Some(e.to_string()),
+        Err(e) => Some(format!("export task panic: {}", e)),
+    };
+    if let Some(msg) = failure {
+        remove_export_files(&tmp);
+        let (status, json) = crate::json_error(StatusCode::INTERNAL_SERVER_ERROR, &msg);
+        return (status, json).into_response();
     }
 
-    let file = match tokio::fs::File::open(&tmp).await {
+    let file = tokio::fs::File::open(&tmp).await;
+    // The open handle keeps the data readable, so the name can go now: nothing is
+    // left behind if the client disconnects mid-download.
+    remove_export_files(&tmp);
+    let file = match file {
         Ok(f) => f,
         Err(e) => {
             let (status, json) = crate::json_error(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string());
@@ -1503,5 +1554,77 @@ mod clip_ids_tests {
             assert!(body.is_empty());
         }
         assert_eq!(respond(Some("\"clip-ids-db-6\"")).await.0, StatusCode::OK);
+    }
+}
+
+#[cfg(test)]
+mod export_temp_tests {
+    use super::*;
+
+    #[test]
+    fn export_paths_are_unique_per_request() {
+        let a = export_temp_path();
+        let b = export_temp_path();
+        assert_ne!(a, b);
+        assert!(std::path::Path::new(&a).file_name().unwrap().to_string_lossy().starts_with(EXPORT_PREFIX));
+    }
+
+    #[test]
+    fn leftover_cleanup_removes_exports_and_partials_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let done = dir.path().join(format!("{}1-1-0.json", EXPORT_PREFIX));
+        let partial = dir.path().join(format!("{}1-1-1.json.tmp", EXPORT_PREFIX));
+        let other = dir.path().join("cam_disk.bin");
+        for p in [&done, &partial, &other] {
+            std::fs::write(p, b"x").unwrap();
+        }
+        remove_leftover_exports_in(dir.path());
+        assert!(!done.exists());
+        assert!(!partial.exists());
+        assert!(other.exists(), "unrelated files must survive");
+    }
+
+    #[tokio::test]
+    async fn download_streams_the_export_and_leaves_no_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("drive-data.db");
+        let store = Arc::new(DriveStore::open(db.to_str().unwrap()).unwrap());
+        store.add_route("RecentClips/2026-10-30_12-00-00-front.mp4", "2026-10-30", &[], &[], &[], &[], &[], 0, 0, &[], &[]).unwrap();
+        let tmp = dir.path().join(format!("{}1-1-1.json", EXPORT_PREFIX)).to_string_lossy().into_owned();
+
+        let response = export_download(store, tmp.clone()).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(!std::path::Path::new(&tmp).exists(), "the name is gone before the body is read");
+        let body = axum::body::to_bytes(response.into_body(), 64 << 20).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).expect("valid JSON");
+        assert!(json.to_string().contains("2026-10-30_12-00-00-front.mp4"));
+        let leftovers: Vec<_> = std::fs::read_dir(dir.path()).unwrap().flatten()
+            .filter(|e| e.file_name().to_string_lossy().starts_with(EXPORT_PREFIX)).collect();
+        assert!(leftovers.is_empty());
+    }
+
+    #[tokio::test]
+    async fn failed_export_returns_500() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("drive-data.db");
+        let store = Arc::new(DriveStore::open(db.to_str().unwrap()).unwrap());
+        // A regular file where the export directory should be makes the export fail.
+        let blocker = dir.path().join("not-a-dir");
+        std::fs::write(&blocker, b"x").unwrap();
+        let tmp = blocker.join(format!("{}1-1-2.json", EXPORT_PREFIX)).to_string_lossy().into_owned();
+
+        let response = export_download(store, tmp).await;
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    #[test]
+    fn remove_export_files_clears_the_partial_too() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(format!("{}9-9-9.json", EXPORT_PREFIX)).to_string_lossy().into_owned();
+        std::fs::write(&path, b"x").unwrap();
+        std::fs::write(format!("{}.tmp", path), b"x").unwrap();
+        remove_export_files(&path);
+        assert!(!std::path::Path::new(&path).exists());
+        assert!(!std::path::Path::new(&format!("{}.tmp", path)).exists());
     }
 }

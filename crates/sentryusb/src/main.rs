@@ -310,6 +310,8 @@ async fn main() {
     // Wipe any stale wanted-flag from a crashed prior run so the first
     // awake_stop after boot isn't deferred forever.
     sentryusb_api::drives_handler::clear_keep_awake_wanted();
+    // No download can be in flight yet, so every export file left now is a crash leftover.
+    sentryusb_api::drives_handler::remove_leftover_exports();
     let keep_awake = sentryusb_api::keep_awake::KeepAwakeManager::new(is_busy);
     phase!("processor_keepawake_initialized");
 
