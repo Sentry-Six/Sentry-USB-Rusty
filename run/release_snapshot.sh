@@ -34,6 +34,12 @@ find /mutable/TeslaCam/ -lname "*/${NAME}/*" -delete || true
 # synced has a past mtime and is evicted early although it is recent; its
 # clips may still exist in an older snapshot that survives.
 relinked=0
+# Listed once: one stat per link over all of them replaces a stat per (link, snapshot).
+snapdirs=()
+for snapdir in $(ls -d /backingfiles/snapshots/snap-* 2>/dev/null | LC_ALL=C sort -r)
+do
+  [ -e "$snapdir/snap.bin" ] && snapdirs+=("$snapdir")
+done
 while IFS=$'\t' read -r link target
 do
   [ -n "$link" ] || continue
@@ -43,18 +49,17 @@ do
     /tmp/snapshots/"$NAME"/*) rel=${target#/tmp/snapshots/"$NAME"/}; stable=0 ;;
     *) continue ;;
   esac
-  best=""
-  bestsize=-1
-  for snapdir in $(ls -d /backingfiles/snapshots/snap-* 2>/dev/null | LC_ALL=C sort -r)
+  [ "${#snapdirs[@]}" -gt 0 ] || continue
+  candidates=()
+  for snapdir in "${snapdirs[@]}"
   do
-    [ -e "$snapdir/snap.bin" ] || continue
-    size=$(stat -L -c %s "$snapdir/mnt/$rel" 2>/dev/null) || continue
-    if [ "$size" -gt "$bestsize" ]
-    then
-      best=$(basename "$snapdir")
-      bestsize=$size
-    fi
+    candidates+=("$snapdir/mnt/$rel")
   done
+  # xargs keeps argument order (highest slot first), so a strict > keeps the highest slot on ties.
+  best=$(printf '%s\0' "${candidates[@]}" | xargs -0 stat -L -c '%s %n' 2>/dev/null |
+    awk '{ size = $1 + 0; if (!found || size > max) { found = 1; max = size; path = substr($0, length($1) + 2) } } END { if (found) print path }')
+  best=${best#/backingfiles/snapshots/}
+  best=${best%%/*}
   [ -n "$best" ] || continue
   mkdir -p "$(dirname "$link")"
   if [ "$stable" = 1 ]
