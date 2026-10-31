@@ -810,7 +810,11 @@ pub fn migrate(conn: &Connection) -> Result<()> {
 
     // Disposable projections never replace the underlying route or telemetry records.
     conn.execute_batch(
-        "CREATE TABLE IF NOT EXISTS drive_preview_cache (
+        "CREATE TABLE IF NOT EXISTS archive_driving_evidence (
+            path TEXT PRIMARY KEY, identity TEXT NOT NULL,
+            gear INTEGER NOT NULL, max_speed REAL NOT NULL
+         );
+         CREATE TABLE IF NOT EXISTS drive_preview_cache (
             start_time TEXT NOT NULL, max_points INTEGER NOT NULL, revision INTEGER NOT NULL,
             body TEXT NOT NULL, used_at INTEGER NOT NULL, version INTEGER NOT NULL DEFAULT 1, PRIMARY KEY(start_time, max_points));
          CREATE TABLE IF NOT EXISTS charge_projection_clock (

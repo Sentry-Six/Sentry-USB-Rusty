@@ -18,6 +18,7 @@ const sections = [
       "RSYNC_SERVER", "RSYNC_USER", "RSYNC_PATH", "RSYNC_SSH_PORT",
       "RCLONE_DRIVE", "RCLONE_PATH",
       "ARCHIVE_SAVEDCLIPS", "ARCHIVE_SENTRYCLIPS", "ARCHIVE_RECENTCLIPS",
+      "ARCHIVE_RECENTCLIPS_DRIVING_ONLY", "ARCHIVE_RECENTCLIPS_MIN_SPEED_MPS",
     ],
   },
   {
@@ -71,6 +72,10 @@ function formatReviewValue(key: string, value: string, data: StepProps["data"]):
   }
   if (key === "TEMPERATURE_UNIT" || key === "SYSTEM_TEMPERATURE_UNIT") {
     return value === "F" ? "Fahrenheit" : "Celsius"
+  }
+  if (key === "ARCHIVE_RECENTCLIPS_MIN_SPEED_MPS") {
+    const metric = data.DRIVE_MAP_UNIT ? data.DRIVE_MAP_UNIT === "km" : data.TEMPERATURE_UNIT !== "F"
+    return `${Math.round(Number(value) * (metric ? 3.6 : 2.2369362920544))} ${metric ? "km/h" : "mph"}`
   }
   if (key === "CIFS_NOSERVERINO") {
     return ["true", "yes", "1", "on"].includes(value.trim().toLowerCase()) ? "Enabled" : "Disabled"

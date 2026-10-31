@@ -187,6 +187,9 @@ pub async fn save_setup_config(
     State(_s): State<AppState>,
     Json(body): Json<std::collections::HashMap<String, String>>,
 ) -> (StatusCode, Json<serde_json::Value>) {
+    if let Err(error) = sentryusb_config::validate_archive_min_speed(&body) {
+        return crate::json_error(StatusCode::BAD_REQUEST, &error);
+    }
     let _ = sentryusb_shell::run("mount", &["/", "-o", "remount,rw"]).await;
 
     // Archive reachability probes consume ARCHIVE_SERVER; derive it for rsync

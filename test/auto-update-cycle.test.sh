@@ -67,7 +67,7 @@ python3 - "$root/run/archiveloop" "$root/run/post-archive-process.sh" "$work" <<
 import re,sys
 from pathlib import Path
 archive,post,work=map(Path,sys.argv[1:])
-for source,names,dest in [(archive,['log'],'archive-log'),(post,['log','process_clips_dir'],'post-functions')]:
+for source,names,dest in [(archive,['log'],'archive-log'),(post,['log','send_processing_activity','process_clips_dir'],'post-functions')]:
  functions=[]
  for name in names:
   m=re.search(r'^function '+name+r'\s*\([^\n]*\n.*?^}',source.read_text(),re.M|re.S)
@@ -84,6 +84,7 @@ if auto_update_cycle_eligible; then echo 'child failure lost'; exit 1; fi
 rm "$ARCHIVE_STAGE_FAILURE_FILE"
 source "$work/post-functions"
 API_URL=fixture ARCHIVE_CYCLE_QUERY='' POST_ARCHIVE_FAILED=0
+LIVE_ACTIVITY_ACTIVE=0
 sleep() { :; }
 curl() {
   if [[ "$*" == *'/api/drives/process?'* ]]; then

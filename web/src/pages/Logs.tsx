@@ -250,7 +250,9 @@ function FormattedLog({ content }: { content: string }) {
       prevDate = "" // reset — new boot cycle
       inBootCycle = false
       rows.push(
-        <span key={i} className="block border-b border-slate-700/40 my-3" />
+        <span key={i} className="block border-b border-slate-700/40 my-3 pb-1 text-xs text-slate-500">
+          Archiveloop started · startup timestamps may precede clock synchronization
+        </span>
       )
       continue
     }

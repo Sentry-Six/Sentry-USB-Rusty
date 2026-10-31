@@ -81,6 +81,15 @@ export SHARE_PASSWORD='password'
 # and track mode clips.
 #export ARCHIVE_RECENTCLIPS=true
 
+# Optional: archive RecentClips only when embedded metadata shows driving.
+# Requires ARCHIVE_RECENTCLIPS=true; qualifying clips retain all camera angles.
+#export ARCHIVE_RECENTCLIPS_DRIVING_ONLY=true
+# Speed threshold is stored in metres per second (m/s), regardless of display
+# units. The Setup Wizard converts mph or km/h automatically. Default: 0.5 m/s.
+# For manual edits: 5 mph = 2.2352 m/s; 2.24 is a practical approximation.
+# Any non-Park gear sample qualifies independently of the speed threshold.
+#export ARCHIVE_RECENTCLIPS_MIN_SPEED_MPS=0.5
+
 # SavedClips, SentryClips and track mode clips are archived by default, but
 # you can turn that off by uncommenting the settings below
 #export ARCHIVE_SAVEDCLIPS=false

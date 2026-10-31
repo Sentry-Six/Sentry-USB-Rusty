@@ -1744,6 +1744,7 @@ function archive_teslacam_clips () {
   then
     recentclipsopt=("-o" "-path" "./RecentClips/*")
   fi
+  log "Enumerating archive candidate links..."
   (cd "$overlaylower"; find . \( \( "${savedclipsopt[@]}" "${sentryclipsopt[@]}" "${trackmodeclipsopt[@]}" "${recentclipsopt[@]}" \) -type l \) \
         -a -fprintf "$sentrylist" '%P\n')
 
@@ -1775,6 +1776,7 @@ function archive_teslacam_clips () {
   local -r presentlist=/tmp/present_files
   if [ -s "${sentrylist}" ]
   then
+    log "Checking sizes of $(wc -l < "${sentrylist}") archive candidates (may mount snapshots)..."
     (cd "$overlaymerged"; xargs -a "${sentrylist}" -d '\n' stat -L --format='%s %n' 2>/dev/null) \
       | awk -v ignore="${ignorelist}" -v present="${presentlist}" '
           BEGIN { printf "" > ignore; printf "" > present }
@@ -1799,6 +1801,7 @@ function archive_teslacam_clips () {
   true > "${absentlist}"
   if [ -s "${missinglist}" ]
   then
+    log "Rechecking $(wc -l < "${missinglist}") unreadable archive candidates..."
     classify_missing_entries "${missinglist}" "${absentlist}" "${overlaymerged}"
   fi
   local stale_count unknown_count
@@ -1808,7 +1811,30 @@ function archive_teslacam_clips () {
   unknown_count=$(($(wc -l < "${missinglist}") - $(wc -l < "${absentlist}")))
 
   # apply custom removals/additions
+  log "Applying custom archive filter..."
   filterfile "${sentrylist}"
+
+  # Apply after custom additions so the driving-only policy covers every
+  # RecentClips candidate and is shared by all archive backends.
+  if [ "${ARCHIVE_RECENTCLIPS_DRIVING_ONLY:-false}" = "true" ]
+  then
+    log "Checking RecentClips driving metadata across $(wc -l < "${sentrylist}") archive candidates..."
+    if ! /opt/sentryusb/sentryusb filter-archive-recent-driving \
+        --root "$overlaymerged" --input "$sentrylist" --output "${sentrylist}.driving" \
+        --min-speed-mps "${ARCHIVE_RECENTCLIPS_MIN_SPEED_MPS-0.5}"
+    then
+      log "ERROR: driving metadata filter failed; archive deferred"
+      umount "$overlaymerged"
+      return 1
+    fi
+    if ! mv "${sentrylist}.driving" "$sentrylist"
+    then
+      log "ERROR: could not apply driving metadata filter; archive deferred"
+      umount "$overlaymerged"
+      return 1
+    fi
+    log "Finished checking RecentClips driving metadata."
+  fi
 
   local -r sentry_count=$(grep -c -v TeslaTrackMode "$sentrylist")
   local -r trackmode_count=$(grep -c TeslaTrackMode "$sentrylist")
@@ -2411,6 +2437,12 @@ function set_time () {
       local -r uptime_end=$(awk '{print $1}' /proc/uptime)
       local -r clocktime_end=$(date +%s.%N)
       log "$(awk "BEGIN {printf \"Time adjusted by %f seconds after %f seconds\", $clocktime_end-$clocktime_start, $uptime_end-$uptime_start}")"
+      # Save while power is available: car power cuts skip shutdown services.
+      # Setup places fake-hwclock.data on writable /mutable.
+      if command -v fake-hwclock >/dev/null 2>&1
+      then
+        fake-hwclock save || log "Failed to save synchronized time for the next boot"
+      fi
       return
     fi
     log "sntp failed, retrying..."

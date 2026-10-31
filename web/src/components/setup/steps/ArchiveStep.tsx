@@ -11,6 +11,7 @@ import type { StepProps } from "../SetupWizard"
 import { SecretInput } from "../SecretInput"
 import { NasSSHKey } from "../NasSSHKey"
 import { rsyncSshPortError } from "../rsyncPort"
+import { ArchiveSpeedInput } from "../ArchiveSpeedInput"
 import { cn } from "@/lib/utils"
 
 const archiveSystems = [
@@ -313,16 +314,43 @@ export function ArchiveStep({ data, onChange }: StepProps) {
             { field: "ARCHIVE_RECENTCLIPS", label: "Recent Clips", def: "true" },
             { field: "ARCHIVE_TRACKMODECLIPS", label: "Track Mode Clips", def: "true" },
           ].map(({ field, label, def }) => (
-            <label key={field} className="flex items-center gap-2">
-              <input
-                type="checkbox"
-                checked={(data[field] ?? def) === "true"}
-                onChange={(e) => onChange(field, e.target.checked ? "true" : "false")}
-                className="h-4 w-4 rounded border-white/20 bg-white/5 accent-blue-500"
-              />
-              <span className="text-sm text-slate-300">{label}</span>
-            </label>
+            <div key={field} className="space-y-2">
+              <label className="flex items-center gap-2">
+                <input
+                  type="checkbox"
+                  checked={(data[field] ?? def) === "true"}
+                  onChange={(e) => onChange(field, e.target.checked ? "true" : "false")}
+                  className="h-4 w-4 rounded border-white/20 bg-white/5 accent-blue-500"
+                />
+                <span className="text-sm text-slate-300">{label}</span>
+              </label>
+              {field === "ARCHIVE_RECENTCLIPS" && (
+                <>
+                  <label className="ml-6 flex items-center gap-2">
+                    <input
+                      type="checkbox"
+                      checked={(data.ARCHIVE_RECENTCLIPS_DRIVING_ONLY ?? "false") === "true"}
+                      disabled={(data.ARCHIVE_RECENTCLIPS ?? "true") !== "true"}
+                      onChange={(e) => onChange("ARCHIVE_RECENTCLIPS_DRIVING_ONLY", e.target.checked ? "true" : "false")}
+                      className="h-4 w-4 rounded border-white/20 bg-white/5 accent-blue-500 disabled:opacity-40"
+                    />
+                    <span className="text-sm text-slate-300">Recent Clips: only while driving</span>
+                  </label>
+                  <ArchiveSpeedInput
+                    value={data.ARCHIVE_RECENTCLIPS_MIN_SPEED_MPS}
+                    metric={data.DRIVE_MAP_UNIT ? data.DRIVE_MAP_UNIT === "km" : data.TEMPERATURE_UNIT !== "F"}
+                    disabled={(data.ARCHIVE_RECENTCLIPS ?? "true") !== "true" || data.ARCHIVE_RECENTCLIPS_DRIVING_ONLY !== "true"}
+                    onChange={(value) => onChange("ARCHIVE_RECENTCLIPS_MIN_SPEED_MPS", value)}
+                  />
+                  <p className="ml-6 text-xs text-slate-500">
+                    Keep all camera angles when embedded metadata shows driving during the clip.
+                    Parked clips and clips without readable metadata are skipped.
+                  </p>
+                </>
+              )}
+            </div>
           ))}
+
         </div>
       )}
 

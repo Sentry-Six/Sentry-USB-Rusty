@@ -17,6 +17,7 @@ import { NetworkStep } from "./steps/NetworkStep"
 import { StorageStep } from "./steps/StorageStep"
 import { CommunityStep } from "./steps/CommunityStep"
 import { ArchiveStep } from "./steps/ArchiveStep"
+import { archiveSpeedError } from "./archiveSpeed"
 import { rsyncSshPortError } from "./rsyncPort"
 import { KeepAwakeStep } from "./steps/KeepAwakeStep"
 import { NotificationsStep } from "./steps/NotificationsStep"
@@ -65,6 +66,8 @@ function storageError(data: SetupFormData): string | null {
 function archiveError(data: SetupFormData): string | null {
   const system = data.ARCHIVE_SYSTEM ?? "cifs"
   if (system === "none") return null
+  const speedError = archiveSpeedError(data.ARCHIVE_RECENTCLIPS_MIN_SPEED_MPS)
+  if (speedError) return speedError
   if (system === "cifs") {
     if (!data.ARCHIVE_SERVER?.trim()) return "Archive Server is required."
     if (!data.SHARE_NAME?.trim()) return "Share Name is required."
@@ -308,6 +311,8 @@ export function SetupWizard({ initialData, initialStepId, onClose }: SetupWizard
     ARCHIVE_SAVEDCLIPS: "true",
     ARCHIVE_SENTRYCLIPS: "true",
     ARCHIVE_RECENTCLIPS: "true",
+    ARCHIVE_RECENTCLIPS_DRIVING_ONLY: "false",
+    ARCHIVE_RECENTCLIPS_MIN_SPEED_MPS: "0.5",
     ARCHIVE_TRACKMODECLIPS: "true",
     DRIVE_MAP_ENABLED: "true",
     DRIVE_MAP_WHILE_AWAY: "true",

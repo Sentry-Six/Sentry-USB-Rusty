@@ -34,6 +34,7 @@ impl ArchiveSystem {
 
 /// Validate that required config variables are present for the chosen archive system.
 fn validate_archive_config(env: &SetupEnv, system: ArchiveSystem) -> Result<()> {
+    sentryusb_config::validate_archive_min_speed(&env.config).map_err(ConfigError)?;
     let require = |key: &str| -> Result<()> {
         if env.config.get(key).map_or(true, |v| v.is_empty()) {
             return Err(

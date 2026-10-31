@@ -3577,7 +3577,7 @@ fn log_slow_conn(
     }
 }
 
-fn open_connection(path: &str) -> Result<Connection> {
+pub(crate) fn open_connection(path: impl AsRef<std::path::Path>) -> Result<Connection> {
     let conn = Connection::open(path)?;
     apply_pragmas(&conn)?;
     Ok(conn)

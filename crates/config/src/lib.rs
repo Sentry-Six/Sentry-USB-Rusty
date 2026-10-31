@@ -9,6 +9,18 @@ use anyhow::{Context, Result};
 /// Configuration variables as key-value pairs.
 pub type SetupConfig = HashMap<String, String>;
 
+/// Archive speed is stored in SI units independently of display preferences.
+pub fn validate_archive_min_speed(config: &SetupConfig) -> std::result::Result<f32, String> {
+    let raw = config
+        .get("ARCHIVE_RECENTCLIPS_MIN_SPEED_MPS")
+        .map(String::as_str)
+        .unwrap_or("0.5");
+    match raw.parse::<f32>() {
+        Ok(value) if value.is_finite() && value >= 0.0 => Ok(value),
+        _ => Err("Archive speed must be a finite number greater than or equal to zero.".into()),
+    }
+}
+
 /// Opt-in workaround for SMB servers whose file IDs change (e.g. Unraid Mover).
 /// Missing/disabled values keep the kernel's normal server inode behavior.
 pub fn cifs_noserverino_enabled(config: &SetupConfig) -> bool {
@@ -487,5 +499,23 @@ mod tests {
         // fall back to the default instead of failing the transfer.
         assert_eq!(rsync_ssh_port(&cfg_with_port("not-a-port")), None);
         assert_eq!(rsync_ssh_port(&cfg_with_port("23232")), Some(23232));
+    }
+}
+
+#[cfg(test)]
+mod archive_speed_tests {
+    use super::*;
+    #[test]
+    fn validates_archive_speed() {
+        let mut config = SetupConfig::new();
+        assert_eq!(validate_archive_min_speed(&config).unwrap(), 0.5);
+        for raw in ["0", "0.1", "2.7777777778"] {
+            config.insert("ARCHIVE_RECENTCLIPS_MIN_SPEED_MPS".into(), raw.into());
+            assert!(validate_archive_min_speed(&config).is_ok());
+        }
+        for raw in ["", "-1", "NaN", "inf", "1e99", "abc"] {
+            config.insert("ARCHIVE_RECENTCLIPS_MIN_SPEED_MPS".into(), raw.into());
+            assert!(validate_archive_min_speed(&config).is_err());
+        }
     }
 }
