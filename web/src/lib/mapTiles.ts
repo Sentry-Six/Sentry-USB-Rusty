@@ -7,8 +7,8 @@ import type { Map as MapLibreMap } from "maplibre-gl"
 // thumbnails show an image from one shared offscreen renderer
 // (mapSnapshot.ts) so long lists do not open a WebGL context per row.
 //
-// Browsers without WebGL use OpenStreetMap raster tiles instead, so maps
-// such as the Keep Accessory picker stay usable.
+// Browsers without WebGL2 (which MapLibre requires) use OpenStreetMap raster
+// tiles instead, so maps such as the Keep Accessory picker stay usable.
 export const TILE_ORIGIN = "https://tiles.sentryusb.com"
 
 export type MapStyle = "dark" | "streets"
@@ -42,8 +42,7 @@ let webglSupport: boolean | undefined
 export function supportsWebGL(): boolean {
   if (webglSupport !== undefined) return webglSupport
   try {
-    const canvas = document.createElement("canvas")
-    webglSupport = !!(canvas.getContext("webgl2") || canvas.getContext("webgl"))
+    webglSupport = !!document.createElement("canvas").getContext("webgl2")
   } catch {
     webglSupport = false
   }
@@ -59,11 +58,13 @@ function loadLibraries(): Promise<Libraries> {
   libraries ??= Promise.all([
     import("maplibre-gl"),
     import("@maplibre/maplibre-gl-leaflet"),
+    // The worker is a separate module file; Vite emits it as an asset.
+    import("maplibre-gl/dist/maplibre-gl-worker.mjs?url"),
     import("maplibre-gl/dist/maplibre-gl.css"),
-  ]).then(([maplibre, plugin]) => ({
-    maplibregl: (maplibre as unknown as { default?: typeof import("maplibre-gl") }).default ?? maplibre,
-    maplibreGL: plugin.maplibreGL,
-  }))
+  ]).then(([maplibregl, plugin, worker]) => {
+    maplibregl.setWorkerUrl(worker.default)
+    return { maplibregl, maplibreGL: plugin.maplibreGL }
+  })
   libraries.catch(() => { libraries = null })
   return libraries
 }
