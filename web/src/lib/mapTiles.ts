@@ -22,6 +22,8 @@ const OSM_COPYRIGHT = '&copy; <a href="https://www.openstreetmap.org/copyright">
 const VERSATILES = '<a href="https://versatiles.org/">VersaTiles</a>'
 export const MAP_ATTRIBUTION = `${VERSATILES} | ${OSM_COPYRIGHT} contributors`
 export const COMPACT_MAP_ATTRIBUTION = `${VERSATILES} | ${OSM_COPYRIGHT}`
+// List thumbnails are too narrow for more than the OpenStreetMap credit the data license requires.
+export const THUMBNAIL_MAP_ATTRIBUTION = OSM_COPYRIGHT
 
 // Painted under the map so routes stay readable while a style loads or when
 // the map server is unreachable (for example a Pi without internet access).
@@ -125,7 +127,7 @@ export function attachBasemap(
       layer.addTo(map)
       keepMercator(layer.getMaplibreMap())
       glLayer = layer
-    }).catch(() => { /* plain background; routes still draw */ })
+    }).catch((err) => { console.warn("[map] Vector basemap unavailable; routes draw on a plain background:", err) })
   } else {
     rasterLayer = osmRaster(map, attribution, { ...(minZoom ? { minZoom } : {}), className: current === "dark" ? "map-dark-tiles" : "" })
   }
@@ -158,12 +160,12 @@ export function attachStaticBasemap(map: L.Map, style: MapStyle, onSettled: () =
   let active = true
   const settle = () => { if (active) onSettled() }
   if (!supportsWebGL()) {
-    const layer = osmRaster(map, COMPACT_MAP_ATTRIBUTION, { maxZoom: 18, minZoom: 3, className: style === "dark" ? "map-dark-tiles" : "" })
+    const layer = osmRaster(map, THUMBNAIL_MAP_ATTRIBUTION, { maxZoom: 18, minZoom: 3, className: style === "dark" ? "map-dark-tiles" : "" })
     layer.on("load tileerror", settle)
     return () => { active = false; layer.off("load tileerror", settle) }
   }
   map.getContainer().style.background = MAP_BACKGROUNDS[style]
-  map.attributionControl?.addAttribution(COMPACT_MAP_ATTRIBUTION)
+  map.attributionControl?.addAttribution(THUMBNAIL_MAP_ATTRIBUTION)
   let overlay: L.ImageOverlay | null = null
   const size = map.getSize()
   const center = map.getCenter()

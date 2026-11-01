@@ -33,7 +33,8 @@ export default defineConfig({
           if (/[\\/]node_modules[\\/](react|react-dom|react-router|react-router-dom)[\\/]/.test(id)) return 'vendor-react'
           if (/[\\/]node_modules[\\/]recharts[\\/]/.test(id)) return 'vendor-charts'
           if (/[\\/]node_modules[\\/]leaflet[\\/]/.test(id)) return 'vendor-maps'
-          if (/[\\/]node_modules[\\/](maplibre-gl|@maplibre)[\\/]/.test(id)) return 'vendor-maplibre'
+          // MapLibre stays in Rolldown's own lazy chunks: grouping it with its CSS and the
+          // Leaflet plugin resolved `import("maplibre-gl")` to an empty namespace.
           if (/[\\/]node_modules[\\/]@xterm[\\/]/.test(id)) return 'vendor-term'
         // Vendored icons change independently from the views that use them.
           if (/[\\/]src[\\/]components[\\/]icons\.tsx$/.test(id)) return 'vendor-icons'

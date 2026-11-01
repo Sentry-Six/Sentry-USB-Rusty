@@ -83,7 +83,10 @@ export function renderMapSnapshot(view: SnapshotView): Promise<string | null> {
     cache.delete(key); cache.set(key, hit)
     return hit
   }
-  const promise: Promise<string | null> = queue.then(() => render(job)).catch(() => null)
+  const promise: Promise<string | null> = queue.then(() => render(job)).catch((err) => {
+    console.warn("[map] Map snapshot failed:", err)
+    return null
+  })
   queue = promise
   cache.set(key, promise)
   while (cache.size > MAX_CACHED) {
