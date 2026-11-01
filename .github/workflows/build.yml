@@ -466,6 +466,7 @@ jobs:
         uses: softprops/action-gh-release@v3
         with:
           files: release/*
-          generate_release_notes: true
+          # Release notes are written by hand for end users; generated notes would be appended to them.
+          generate_release_notes: false
           # Respect tag convention, the nominated tag, or an existing manual flag.
           prerelease: ${{ contains(github.ref_name, '-') || vars.SENTRYUSB_PRERELEASE_TAG == github.ref_name || steps.relmeta.outputs.prerelease == 'true' }}
