@@ -8,7 +8,7 @@ The Sentry USB web interface — a React single-page application with a dark gla
 - **Vite** — build tooling and dev server
 - **TailwindCSS** — utility-first styling
 - **Material Symbols** — icons, vendored as inline SVG in `src/components/icons.tsx`
-- **Leaflet** — drive map visualization
+- **Leaflet** + **MapLibre GL** — drive maps on OpenStreetMap vector tiles from tiles.sentryusb.com (OpenStreetMap raster tiles in browsers without WebGL)
 
 ## Development
 

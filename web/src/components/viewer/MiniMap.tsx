@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, memo } from "react"
 import L from "leaflet"
 import "leaflet/dist/leaflet.css"
-import { MAP_TILES } from "@/lib/mapTiles"
+import { attachBasemap, COMPACT_MAP_ATTRIBUTION } from "@/lib/mapTiles"
 import { CloseFullscreenIcon, LocationOnIcon, OpenInFullIcon } from "@/components/icons"
 import type { ClipTelemetry, TelemetryFrame } from "@/lib/api"
 import { useDraggable } from "@/hooks/useDraggable"
@@ -30,7 +30,7 @@ export default memo(function MiniMap({ telemetry, currentFrame }: MiniMapProps) 
     }).setView([0, 0], 15)
 
     map.attributionControl.setPrefix(false)
-    L.tileLayer(MAP_TILES.dark.url, MAP_TILES.dark).addTo(map)
+    attachBasemap(map, "dark", { attribution: COMPACT_MAP_ATTRIBUTION })
 
     mapInstance.current = map
 
