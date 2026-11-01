@@ -15,7 +15,7 @@ export type MapStyle = "dark" | "streets"
 
 export const MAP_STYLE_URLS: Record<MapStyle, string> = {
   streets: `${TILE_ORIGIN}/assets/styles/colorful/style.json`,
-  dark: `${TILE_ORIGIN}/assets/styles/colorful-dark/style.json`,
+  dark: `${TILE_ORIGIN}/assets/styles/sentry-dark/style.json`,
 }
 
 const OSM_COPYRIGHT = '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
@@ -25,7 +25,7 @@ export const COMPACT_MAP_ATTRIBUTION = `${VERSATILES} | ${OSM_COPYRIGHT}`
 
 // Painted under the map so routes stay readable while a style loads or when
 // the map server is unreachable (for example a Pi without internet access).
-export const MAP_BACKGROUNDS: Record<MapStyle, string> = { streets: "#f8f4f0", dark: "#282725" }
+export const MAP_BACKGROUNDS: Record<MapStyle, string> = { streets: "#f8f4f0", dark: "#141c21" }
 
 export const OSM_RASTER = {
   url: "https://tile.openstreetmap.org/{z}/{x}/{y}.png",
