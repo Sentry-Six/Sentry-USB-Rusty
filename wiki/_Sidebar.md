@@ -16,6 +16,7 @@
 
 ---
 
-- [sentryusb.com](https://sentryusb.com)
+- [sentry-six.com](https://sentry-six.com/sentry-usb/)
+- [Sentry Cloud](https://sentryusb.com)
 - [Releases](https://github.com/Sentry-Six/Sentry-USB-Rusty/releases/latest)
 - [Discord](https://discord.gg/9QZEzVwdnt)

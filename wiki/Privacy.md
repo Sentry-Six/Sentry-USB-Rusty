@@ -1,6 +1,6 @@
 # Privacy
 
-This page documents every outbound data flow from a SentryUSB device,
+This page documents every outbound data flow from a Sentry USB device,
 the reporting controls, how long the data is retained,
 and how to disable it. If anything you observe on the wire doesn't
 match what's listed here, it's a bug — please open an issue.
@@ -30,7 +30,7 @@ installations without a recorded choice remain off. The reporting setting in
   or update download/availability data is included. Normal source-IP connection metadata
   is visible to the server and briefly used for rate limiting.
 - **Identity:** The ID derives from the board serial and is stable across
-  reinstalls on Raspberry Pi. The salt is public in the open-source code, so
+  reinstalls on Raspberry Pi. The salt is public in the source code, so
   the ID is pseudonymous: anyone who knows a board's serial can compute it.
   Devices without a readable
   hardware serial are not counted; an installation ID is never used as a
@@ -55,11 +55,9 @@ installations without a recorded choice remain off. The reporting setting in
 
 ### 2. Update checks and retired install reporting
 
-GitHub release checks still work with reporting disabled. Current Rusty
-versions do not send update-check telemetry or anonymous install beacons to
-Sentry Six. The legacy `/sentryusb/telemetry` and `/sentryusb/install-beacon`
-endpoints discard reports from old clients; they do not feed the new Rusty
-device count.
+Update checks go to GitHub Releases and work with reporting off. The legacy
+`/sentryusb/telemetry` and `/sentryusb/install-beacon` endpoints discard
+reports from old clients.
 
 ### 3. Time zone detection
 
@@ -81,9 +79,8 @@ device count.
   name, model and original filename for wraps, file size, audio duration for
   lock chimes, and your source IP. The server also generates a submission code
   and records review status and timestamps.
-- **Identifier:** **No device fingerprint.** Older versions sent an
-  `X-Fingerprint` header — that was removed. Abuse handling now goes
-  through the Discord moderation queue plus per-IP rate limits.
+- **Identifier:** No device fingerprint. Abuse handling uses the Discord
+  moderation queue plus per-IP rate limits.
 - **Purpose:** Accepting, reviewing, and publishing your contribution, plus
   proportionate rate limiting, abuse investigation, and moderation.
 - **Legal basis:** Contractual necessity under Art. 6(1)(b) for accepting,
@@ -105,8 +102,7 @@ device count.
   `GET https://api.sentry-six.com/lockchime/download/<code>`
 - **Sent:** Standard HTTP request with no custom or device identifier. The
   source IP is necessarily seen and briefly used for rate limiting.
-- **Identifier:** None is sent by current SentryUSB versions. Older versions
-  may still send a legacy `X-Fingerprint` header; the current client does not.
+- **Identifier:** None.
 - **Purpose:** Fetch the requested asset.
 - **Legal basis:** Contractual necessity — you asked for the file.
 - **Retention:** Current-client source-IP rate-limit entries remain only
@@ -114,6 +110,17 @@ device count.
   older clients may remain until manually deleted; contact
   `privacy@sentry-six.com` to request deletion.
 - **How to disable:** Don't download.
+
+### Maps
+
+- **Endpoint:** `https://tiles.sentryusb.com`, our map server (OpenStreetMap
+  data served through Cloudflare). Browsers without WebGL2 load OpenStreetMap
+  raster tiles from `tile.openstreetmap.org` instead.
+- **When:** While a page with a map is open in your browser.
+- **Sent:** Standard tile requests for the area and zoom level shown, and your
+  browser's IP address. The requests come from your browser, not the Pi.
+- **Purpose:** Drawing the map.
+- **How to disable:** Don't open pages with maps.
 
 ### 6. Sentry Cloud (sync feature, opt-in)
 
@@ -130,7 +137,7 @@ device count.
   otherwise.
 - **Legal basis:** Contractual necessity (Art. 6(1)(b)) — you signed
   up for the service.
-- **Retention:** See the Sentry Cloud terms of service.
+- **Retention:** See the Sentry Cloud [Privacy Policy](https://sentryusb.com/legal/privacy).
 - **How to disable:** Don't pair this Pi, or unpair it.
 
 ### 7. iOS push notification pairing (opt-in)
@@ -212,15 +219,15 @@ device count.
   receipt is removed during the next scheduled cleanup sweep, normally within
   about one additional hour.
 - **How to disable:** Do not start an AI Support conversation. The rest of
-  SentryUSB continues to work without it.
+  Sentry USB continues to work without it.
 
 #### Diagnostic-file requests
 
 The assistant cannot browse the Pi or upload a file by itself. The first
-supported request type is a predefined SentryUSB diagnostics report. It
+supported request type is a predefined Sentry USB diagnostics report. It
 collects the date, hostname, uptime, software/OS and board details, storage
 and USB-gadget state, local network addresses, service state, temperatures,
-and limited tails from designated system and SentryUSB logs, including recent
+and limited tails from designated system and Sentry USB logs, including recent
 `archiveloop.log` entries. It does not search arbitrary files. Log excerpts can incidentally contain local
 addresses, device or vehicle identifiers, error payloads, or location-related
 details; those are not separate fixed fields requested from the vehicle.
@@ -248,7 +255,7 @@ Opening the Discord link does not automatically send the AI transcript or
 uploaded diagnostics to Discord. Anything you choose to post there is a
 separate disclosure to Discord and is governed by Discord's policies.
 
-## Things SentryUSB does **not** do
+## Things Sentry USB does **not** do
 
 - Enable reporting on an existing installation merely because it updates.
 - Send a device report before you choose Yes and continue past Privacy.

@@ -1,6 +1,6 @@
 # Setup Wizard Guide
 
-The Setup Wizard runs the first time you open `http://sentryusb.local`. It walks you through 11 steps. You can re-run it anytime from **Settings** → **Re-run Setup Wizard**.
+The Setup Wizard runs the first time you open `http://sentryusb.local`. It walks you through 11 steps. You can re-run it anytime from **Settings → System → Setup Wizard → Launch Wizard**.
 
 ## 1. Welcome
 

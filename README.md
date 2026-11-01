@@ -105,7 +105,7 @@ Then open `http://sentryusb.local` in a browser and the setup wizard takes you t
 |------|--------|-------|
 | **Recommended** | Raspberry Pi 4B, Raspberry Pi 5 | 1 GB RAM is sufficient. USB 2.0 OTG — fastest archiving, smoothest UI |
 | **Tested** | Raspberry Pi Zero 2 W, Raspberry Pi 3A+ | USB 2.0 OTG — works fine, slower archive speeds. Pi 3A+ needs a USB-A-to-USB-A cable |
-| **Community** | Radxa Rock Pi 4C+, Radxa Zero 3W | USB 3.0 OTG — reported working, not officially supported |
+| **Community** | Radxa Rock 4C+, Radxa Zero 3W | USB 3.0 OTG — reported working, not officially supported |
 | **Not supported** | Raspberry Pi 3B/3B+, Pi 2, Pi Zero W (v1), Pi 1 | 3B/3B+/2/1: USB goes through a hub chip — host-only, can never appear as a drive to the car. Zero W v1: too slow, build retired |
 
 Plus a **high-quality MicroSD card sized for the storage layout you choose** and a **USB 3.0 data cable** (not charge-only) between the Pi and your Tesla. Use a 3.0 cable even on USB 2.0 boards — it delivers more power and keeps lower-end Pis stable.
@@ -129,6 +129,7 @@ Here's everything Sentry USB sends to Sentry Six services:
 | Device statistics (if you choose **Yes, count me**) | Running version; after startup, enabling reporting, and daily. Server keeps first/last report times. A private maintainers' Discord channel gets each new device's version and first-seen time | Pseudonymous device ID (SHA-256 of the board serial with a salt that is public in the source code) |
 | Time zone **Detect automatically** (if chosen) | A lookup to `sentryusb.com` during setup and at boot; the server sees your IP and returns an approximate city, region and time zone | Your IP, rate-limited for 24 hours |
 | Wraps / lock chime submissions | The file, display name and vehicle model + your IP for rate-limiting and abuse handling | No device or hardware fingerprint; the IP may be retained with the submission |
+| Maps in the web UI | Your browser loads map tiles for the area shown from `tiles.sentryusb.com` (OpenStreetMap data via Cloudflare); browsers without WebGL2 load OpenStreetMap tiles from `tile.openstreetmap.org` | Your IP, as with any web request |
 | Sentry Cloud (if paired) | At pairing: the code you enter, the Pi's public keys, hostname, board model, kernel and Sentry USB versions, and the last 4 digits of a MAC address. Then the drive history, charging sessions and Home sync data you sync, encrypted on the Pi | A per-device token linked to your Sentry Cloud account |
 | iOS push pairing (if enabled) | Random pairing ID and secret, the Pi's hostname, and each notification's title and message, relayed via `notifications.sentry-six.com` to Apple. Hostname cleared when the last phone unpairs; inactive unpaired records deleted after 90 days | Random ID |
 | AI Support & Help (if used) | Chat messages, product/software version, and the Pi connection's public IP for abuse prevention; diagnostics only after a separate one-time approval. Processed by Anthropic; redacted chats stored in Canada for 90 days after last activity | Random conversation ID and access token; no hardware fingerprint |
