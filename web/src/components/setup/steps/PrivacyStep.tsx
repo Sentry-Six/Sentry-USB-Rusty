@@ -5,7 +5,6 @@ import { cn } from "@/lib/utils"
 
 export function PrivacyStep({ data, onChange, setupAlreadyFinished, setupStatusKnown = false, registerBeforeContinue }: StepProps) {
   const [savedChoice, setSavedChoice] = useState<boolean | null | "invalid" | undefined>(undefined)
-  const [unsetConfirmed, setUnsetConfirmed] = useState(false)
   const [draft, setDraft] = useState<boolean | undefined>(() =>
     data._analytics_draft === "true" ? true : data._analytics_draft === "false" ? false : undefined)
   const [saving, setSaving] = useState(false)
@@ -14,8 +13,8 @@ export function PrivacyStep({ data, onChange, setupAlreadyFinished, setupStatusK
   const [error, setError] = useState<string | null>(null)
   const saveController = useRef<AbortController | null>(null)
   const newInstallation = setupStatusKnown && !setupAlreadyFinished
-  const defaultSelected = !loading && unsetConfirmed && draft === undefined && savedChoice === null && newInstallation
-  const choice = draft ?? (typeof savedChoice === "boolean" ? savedChoice : defaultSelected ? true : null)
+  // Nothing is preselected: a new installation continues only after an explicit choice.
+  const choice = draft ?? (typeof savedChoice === "boolean" ? savedChoice : null)
 
   useEffect(() => {
     const controller = new AbortController()
@@ -30,7 +29,6 @@ export function PrivacyStep({ data, onChange, setupAlreadyFinished, setupStatusK
         if (controller.signal.aborted) return
         const saved = typeof result.value === "boolean" || result.value === null ? result.value : "invalid"
         setSavedChoice(saved)
-        setUnsetConfirmed(result.value === null && result.is_set === false)
         setError(saved === "invalid" ? "Your saved privacy choice needs confirmation. Choose either option to replace it." : null)
         onChange("_analytics_choice", typeof saved === "boolean" ? String(saved) : "")
         onChange("_analytics_ready", "true")
@@ -38,7 +36,6 @@ export function PrivacyStep({ data, onChange, setupAlreadyFinished, setupStatusK
       .catch(() => {
         if (!cancelled) {
           setSavedChoice(undefined)
-          setUnsetConfirmed(false)
           onChange("_analytics_ready", "false")
           setError("Couldn't load your privacy choice. Reload it to continue.")
         }
@@ -71,7 +68,7 @@ export function PrivacyStep({ data, onChange, setupAlreadyFinished, setupStatusK
         method: "PUT",
         signal: controller.signal,
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ key: "analytics_opt_in", value: choice, ...(defaultSelected ? { only_if_unset: true } : {}) }),
+        body: JSON.stringify({ key: "analytics_opt_in", value: choice }),
       })
       if (!res.ok) {
         const failure = await res.json().catch(() => null)
@@ -79,16 +76,6 @@ export function PrivacyStep({ data, onChange, setupAlreadyFinished, setupStatusK
       }
       const result = await res.json()
       if (result?.success !== true) throw new Error("Privacy choice was not confirmed")
-      if (defaultSelected && typeof result.value !== "boolean") {
-        if (result.is_set === true) {
-          setSavedChoice(result.value === null ? null : "invalid")
-          setUnsetConfirmed(false)
-          setDraft(undefined)
-          onChange("_analytics_draft", "")
-          onChange("_analytics_choice", "")
-        }
-        throw new Error("Privacy choice was not confirmed. Choose an option or reload.")
-      }
       if (controller.signal.aborted) return false
       const actual = typeof result.value === "boolean" ? result.value : choice
       setSavedChoice(actual)
@@ -108,7 +95,7 @@ export function PrivacyStep({ data, onChange, setupAlreadyFinished, setupStatusK
         onChange("_analytics_saving", "false")
       }
     }
-  }, [loading, saving, setupStatusKnown, savedChoice, choice, defaultSelected, newInstallation, onChange])
+  }, [loading, saving, setupStatusKnown, savedChoice, choice, newInstallation, onChange])
 
   useEffect(() => {
     registerBeforeContinue?.(persist)
@@ -161,7 +148,7 @@ export function PrivacyStep({ data, onChange, setupAlreadyFinished, setupStatusK
             : !setupStatusKnown ? "Waiting for this device's setup status."
               : saving ? "Saving your choice…"
                 : savedChoice === "invalid" && draft === undefined ? "Choose either option to replace the saved value."
-                  : defaultSelected ? "On for new installations when you continue. Choose No thanks to keep it off."
+                  : newInstallation && choice === null ? "Choose Yes, count me or No thanks to continue."
                     : draft !== undefined && choice !== savedChoice ? "Your choice is saved when you continue."
                       : typeof savedChoice === "boolean" ? `Saved: ${savedChoice ? "On" : "Off"}.`
                         : "Off. Continue without enabling device counting."}
