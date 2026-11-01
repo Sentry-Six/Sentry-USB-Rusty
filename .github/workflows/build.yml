@@ -358,6 +358,7 @@ jobs:
           bash test/live-activity-processing.test.sh
           bash test/archive-retry.test.sh
           bash test/cifs-compatibility.test.sh
+          bash test/mounted-archive-ownership.test.sh
           bash test/diagnostics-capture.test.sh
           bash test/ap-profile.test.sh
           python3 test/networkd-ap.test.py

@@ -1,5 +1,10 @@
 #!/bin/bash -eu
 
+# MOUNTED_ARCHIVE_VARIANT=cifs
+# MOUNTED_ARCHIVE_CLIPS_V2: rsync leaves owner, group and permissions to
+# the share (--no-o --no-g --no-perms), so the share account only needs
+# to create, write, rename and delete files.
+
 # MOUNTED_ARCHIVE_MONITOR_V1: the connection watchdog lives in
 # mounted-archive-monitor.sh (shared with the NFS variant) and only kills
 # rsync when probes fail AND no file has completed for a grace window —
@@ -26,7 +31,7 @@ do
   # for the full rationale; -c2 -n7 not -c3 so progress is guaranteed).
   # --log-file-format contains %b so records are written at the END of each
   # file's transfer — the watchdog counts them as its progress signal.
-  if ! (ionice -c2 -n7 nice -n19 rsync -avhRL --remove-source-files --temp-dir="$rsynctmp" --no-perms --omit-dir-times --stats \
+  if ! (ionice -c2 -n7 nice -n19 rsync -avhRL --no-o --no-g --remove-source-files --temp-dir="$rsynctmp" --no-perms --omit-dir-times --stats \
         --log-file=/tmp/archive-rsync-cmd.log --log-file-format='%i %b %n%L' --ignore-missing-args \
         --files-from="$2" "$1/" "$ARCHIVE_MOUNT" &> /tmp/rsynclog || [[ "$?" = "24" ]] )
   then

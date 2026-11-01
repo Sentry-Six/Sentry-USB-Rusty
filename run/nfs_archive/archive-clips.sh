@@ -1,5 +1,10 @@
 #!/bin/bash -eu
 
+# MOUNTED_ARCHIVE_VARIANT=nfs
+# MOUNTED_ARCHIVE_CLIPS_V2: rsync leaves owner, group and permissions to
+# the share (--no-o --no-g --no-perms), so the share account only needs
+# to create, write, rename and delete files.
+
 # MOUNTED_ARCHIVE_MONITOR_V1: the connection watchdog lives in
 # mounted-archive-monitor.sh (shared with the CIFS variant) and only kills
 # rsync when probes fail AND no file has completed for a grace window —
@@ -21,7 +26,6 @@ mkdir -p "$ARCHIVE_MOUNT/$rsynctmp"
 
 while [ -n "${1+x}" ]
 do
-  # Using --no-o --no-g to prevent permission errors on NFS root squashed shares
   # Low I/O + CPU priority so the archive reads never starve the car's
   # dashcam writes on the same disk (see run/rsync_archive/archive-clips.sh
   # for the full rationale; -c2 -n7 not -c3 so progress is guaranteed).
