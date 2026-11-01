@@ -734,6 +734,7 @@ impl Processor {
             let clip_file = file.clone();
             let clip_path = full_path.clone();
             let clip = tokio::task::spawn_blocking(move || {
+                let _io = LowIoPriority::enter();
                 process_one_clip(&store, &clip_file, &clip_path)
             })
             .await
@@ -805,7 +806,7 @@ impl Processor {
         // already-processed devices as well as fresh deploys. Best-effort —
         // a manifest write failure only costs playback continuity, never
         // drive data.
-        if let Err(e) = self.update_gapfill_manifest(&recent_ts) {
+        if let Err(e) = self.update_gapfill_manifest(&recent_ts, &event_files) {
             self.archive_control.mark_failed();
             warn!("gap-fill manifest update failed: {}", e);
         }
@@ -900,7 +901,14 @@ impl Processor {
             if self.archive_control.cancelled() { break; }
             let entry = entry?;
             let path = entry.path();
-            if path.is_dir() {
+            // `DirEntry::file_type` doesn't follow symlinks. Every clip in
+            // the link farm is a symlink into a snapshot's autofs mount, and
+            // following one (as `Path::is_dir` does) mounts that snapshot's
+            // image: one scan used to mount hundreds of them while the car
+            // was recording. Only real directories are descended into; a
+            // link is judged by its name alone.
+            let is_real_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
+            if is_real_dir {
                 // Skip Tesla event folders. SavedClips contains user-saved
                 // clips that are byte-identical to RecentClips entries
                 // (different paths the grouper's path-based dedup can't
@@ -981,7 +989,7 @@ impl Processor {
         let mut event_files: Vec<String> = Vec::new();
         for sub in ["SavedClips", "SentryClips"] {
             let dir = std::path::Path::new(&self.clip_dir).join(sub);
-            if dir.is_dir() {
+            if std::fs::symlink_metadata(&dir).is_ok_and(|m| m.is_dir()) {
                 self.scan_dir_inner(&dir, &mut event_files, false)?;
             }
         }
@@ -1004,7 +1012,11 @@ impl Processor {
     ///   marked processed and would otherwise never be reconsidered.
     ///
     /// Skips the write when unchanged to avoid churn.
-    fn update_gapfill_manifest(&self, recent_sorted_ts: &[chrono::NaiveDateTime]) -> Result<()> {
+    fn update_gapfill_manifest(
+        &self,
+        recent_sorted_ts: &[chrono::NaiveDateTime],
+        event_files: &[String],
+    ) -> Result<()> {
         let manifest = match std::path::Path::new(&self.clip_dir).parent() {
             Some(p) => p.join(".gapfill_recent_links"),
             None => return Ok(()),
@@ -1025,7 +1037,8 @@ impl Processor {
             .filter_map(|f| stamp_of(f))
             .collect();
 
-        let event_files = self.scan_event_files()?;
+        // The event tree scanned at the start of this pass; scanning it again
+        // here only repeated that work.
         let cands: Vec<(chrono::NaiveDateTime, &str)> = event_files
             .iter()
             .filter_map(|f| {
@@ -1061,6 +1074,58 @@ impl Processor {
     }
 }
 
+/// Lowers the calling thread's I/O priority to best-effort level 7 until
+/// dropped, so reading clips yields the SSD to the car's USB I/O under bfq.
+/// `who = 0` with `IOPRIO_WHO_PROCESS` names the calling thread only, so a
+/// reused blocking-pool thread gets its priority back afterwards.
+struct LowIoPriority {
+    #[cfg(target_os = "linux")]
+    saved: Option<libc::c_long>,
+}
+
+#[cfg(target_os = "linux")]
+const IOPRIO_WHO_PROCESS: libc::c_long = 1;
+#[cfg(target_os = "linux")]
+const IOPRIO_BE_LOWEST: libc::c_long = (2 << 13) | 7;
+
+/// Idle class (3), or best-effort (2) already at level 7.
+#[cfg(target_os = "linux")]
+fn is_already_lowest(prio: libc::c_long) -> bool {
+    let class = prio >> 13;
+    class == 3 || (class == 2 && (prio & 0x1fff) >= 7)
+}
+
+impl LowIoPriority {
+    fn enter() -> Self {
+        #[cfg(target_os = "linux")]
+        {
+            // SAFETY: ioprio_get/ioprio_set take only integer arguments.
+            let saved = unsafe { libc::syscall(libc::SYS_ioprio_get, IOPRIO_WHO_PROCESS, 0) };
+            // Never raise a thread that already runs lower (idle class, or
+            // best-effort 7).
+            if saved < 0 || is_already_lowest(saved) {
+                return Self { saved: None };
+            }
+            if unsafe { libc::syscall(libc::SYS_ioprio_set, IOPRIO_WHO_PROCESS, 0, IOPRIO_BE_LOWEST) } < 0 {
+                return Self { saved: None };
+            }
+            Self { saved: Some(saved) }
+        }
+        #[cfg(not(target_os = "linux"))]
+        Self {}
+    }
+}
+
+impl Drop for LowIoPriority {
+    fn drop(&mut self) {
+        #[cfg(target_os = "linux")]
+        if let Some(saved) = self.saved {
+            // SAFETY: as in `enter`; restores the exact value read there.
+            unsafe { libc::syscall(libc::SYS_ioprio_set, IOPRIO_WHO_PROCESS, 0, saved) };
+        }
+    }
+}
+
 fn is_event_crosslink(path: &std::path::Path) -> bool {
     let Ok(target) = std::fs::read_link(path) else {
         return false;
@@ -1076,6 +1141,49 @@ fn is_event_crosslink(path: &std::path::Path) -> bool {
 /// duplicate-of-RecentClips entries out of the grouper.
 pub(crate) fn is_event_folder(name: &str) -> bool {
     name == "SavedClips" || name == "SentryClips"
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod io_priority_tests {
+    use super::*;
+
+    fn get() -> libc::c_long {
+        unsafe { libc::syscall(libc::SYS_ioprio_get, IOPRIO_WHO_PROCESS, 0) }
+    }
+    fn set(p: libc::c_long) {
+        assert_eq!(unsafe { libc::syscall(libc::SYS_ioprio_set, IOPRIO_WHO_PROCESS, 0, p) }, 0);
+    }
+
+    #[test]
+    fn low_io_priority_lowers_restores_and_never_raises() {
+        // Run on a fresh thread so the test harness thread is untouched.
+        std::thread::spawn(|| {
+            let before = get();
+            {
+                let _io = LowIoPriority::enter();
+                assert_eq!(get(), IOPRIO_BE_LOWEST);
+            }
+            assert_eq!(get(), before, "restored on drop");
+
+            set(3 << 13); // idle class
+            {
+                let _io = LowIoPriority::enter();
+                assert_eq!(get(), 3 << 13, "idle class is never raised to best-effort");
+            }
+            assert_eq!(get(), 3 << 13);
+
+            set((2 << 13) | 4);
+            let caught = std::panic::catch_unwind(|| {
+                let _io = LowIoPriority::enter();
+                assert_eq!(get(), IOPRIO_BE_LOWEST);
+                panic!("unwind");
+            });
+            assert!(caught.is_err());
+            assert_eq!(get(), (2 << 13) | 4, "restored after unwinding");
+        })
+        .join()
+        .unwrap();
+    }
 }
 
 #[cfg(test)]
@@ -1113,13 +1221,24 @@ mod tests {
             Arc::new(crate::db::DriveStore::open_memory().unwrap()),
             clip_dir.to_string_lossy().to_string(),
         );
+        // A link whose target is a directory: following it (as `is_dir`
+        // would) descends into the target and reports the clip inside; a
+        // scan that never follows links sees only the link's own name.
+        let target_dir = root.path().join("snapshot-mnt");
+        std::fs::create_dir_all(&target_dir).unwrap();
+        std::fs::write(target_dir.join("2026-07-15_04-58-00-front.mp4"), b"inner").unwrap();
+        symlink(&target_dir, recents.join("2026-07-15_04-51-00-front.mp4")).unwrap();
+
         let mut files = Vec::new();
         processor.scan_dir(&clip_dir, &mut files).unwrap();
         files.sort();
 
         assert_eq!(
             files,
-            vec!["RecentClips/2026-07-15/2026-07-15_04-49-00-front.mp4"],
+            vec![
+                "RecentClips/2026-07-15/2026-07-15_04-49-00-front.mp4",
+                "RecentClips/2026-07-15/2026-07-15_04-51-00-front.mp4",
+            ],
             "event-targeting playback aliases must not become timeline anchors or routes"
         );
     }
@@ -1162,7 +1281,8 @@ mod tests {
             chrono::NaiveDateTime::parse_from_str("2026-07-15 05:00:03", "%Y-%m-%d %H:%M:%S")
                 .unwrap(),
         ];
-        processor.update_gapfill_manifest(&recent_ts).unwrap();
+        let event_files = processor.scan_event_files().unwrap();
+        processor.update_gapfill_manifest(&recent_ts, &event_files).unwrap();
 
         let manifest =
             std::fs::read_to_string(root.path().join(".gapfill_recent_links")).unwrap();
