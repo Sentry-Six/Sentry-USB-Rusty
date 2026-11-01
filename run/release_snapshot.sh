@@ -62,7 +62,9 @@ then
         if (dir == "") continue
         toc = dir "/snap.bin.toc"
         hits = 0
+        lines = 0
         while ((r = (getline line < toc)) > 0) {
+          lines++
           sp = index(line, " ")
           if (sp < 2) continue
           size = substr(line, 1, sp - 1)
@@ -72,6 +74,7 @@ then
         }
         close(toc)
         if (r < 0) { skipped++; continue }
+        if (lines == 0) empty++
         snap = dir; sub(/.*\//, "", snap)
         for (j = 1; j <= hits; j++) {
           p = hitpath[j]
@@ -85,7 +88,7 @@ then
         else target = autofs "/" best[rel] "/" rel
         print "L\t" link[k] "\t" target
       }
-      print "S\t" skipped + 0 "\t" unresolved + 0
+      print "S\t" skipped + 0 "\t" unresolved + 0 "\t" empty + 0
     }') || { log "could not plan clip re-points for $NAME"; PLAN=""; }
 fi
 
@@ -100,7 +103,8 @@ find /mutable/TeslaCam/ -lname "*/${NAME}/*" -delete || true
 relinked=0
 skipped=0
 unresolved=0
-while IFS=$'\t' read -r kind link target
+empty=0
+while IFS=$'\t' read -r kind link target extra
 do
   case "$kind" in
     L)
@@ -112,6 +116,7 @@ do
     S)
       skipped=$link
       unresolved=$target
+      empty=${extra:-0}
       ;;
   esac
 done <<< "$PLAN"
@@ -119,9 +124,12 @@ if [ "$relinked" -gt 0 ]
 then
   log "re-pointed $relinked clip link(s) from $NAME at surviving snapshots"
 fi
-if [ "$skipped" -gt 0 ]
+# Unresolved links usually just mean the released snapshot held the last
+# copy. Unreadable or empty survivor TOCs are the cases worth noticing: a
+# power cut can leave a TOC empty while its image still holds the clips.
+if [ "$unresolved" -gt 0 ] || [ "$skipped" -gt 0 ] || [ "$empty" -gt 0 ]
 then
-  log "skipped $skipped surviving snapshot(s) with an unreadable TOC while releasing $NAME; $unresolved clip link(s) found no matching copy in readable TOCs"
+  log "$unresolved clip link(s) from $NAME had no copy in another snapshot's TOC (survivor TOCs: $skipped unreadable, $empty empty)"
 fi
 
 # delete all Sentry, saved and recent folders that are now empty

@@ -95,6 +95,9 @@ pub async fn make_snapshot(skip_fsck: bool) -> Result<Option<String>> {
         let _ = apply_bookworm_32bit_timestamp_fix(&snap_file).await;
     }
 
+    // The live footage is captured; now make links an earlier run still owes.
+    relink_pending_snapshot();
+
     // Start autofs before traversing its snapshot roots.
     wait_for_autofs().await;
 
@@ -105,8 +108,12 @@ pub async fn make_snapshot(skip_fsck: bool) -> Result<Option<String>> {
 
     let toc_path = format!("{}.toc", snap_file);
     let toc_path_tmp = format!("{}_", toc_path);
+    // A partial TOC would hide clips from later re-pointing. Keep the image
+    // without a TOC instead: the next slot pick appends past it and the
+    // boot-time rebuild recovers it.
     if let Err(e) = generate_toc(&snap_mnt, &toc_path_tmp).await {
-        warn!("toc generation failed for {}: {}", snap_mnt, e);
+        let _ = std::fs::remove_file(&toc_path_tmp);
+        bail!("toc generation failed for {}; keeping the image without a TOC: {}", snap_mnt, e);
     }
 
     // Discard snapshots with no TOC changes versus the prior capture.
@@ -132,18 +139,29 @@ pub async fn make_snapshot(skip_fsck: bool) -> Result<Option<String>> {
 
     // Snapshot links intentionally outlive car-initiated or user clip deletions.
 
+    // TOC rename commits the snapshot for reuse and pruning decisions. Commit
+    // before linking, and mark the links owed until they all land, so a stop
+    // in between gets them made by a later run.
+    let pending = Path::new(&snap_dir).join(RELINK_PENDING_SUFFIX);
+    if let Err(e) = std::fs::write(&pending, b"") {
+        bail!("could not mark the links owed for {}: {}", snap_name, e);
+    }
+    if let Err(e) = std::fs::rename(&toc_path_tmp, &toc_path) {
+        bail!("could not commit the TOC for {}: {}", snap_name, e);
+    }
+
     // Create the stable target before per-clip links reference it.
-    if !Path::new(&snap_mnt_link).exists() {
-        #[cfg(unix)]
-        let _ = std::os::unix::fs::symlink(&snap_mnt, &snap_mnt_link);
+    let linked = {
+        let _io = LowIoPriority::enter();
+        ensure_stable_mnt_link(Path::new(&snap_mnt_link), &snap_mnt)
+            .and_then(|()| make_links_for_snapshot(&snap_mnt, &snap_mnt_link))
+    };
+    match linked {
+        Ok(()) => {
+            let _ = std::fs::remove_file(&pending);
+        }
+        Err(e) => warn!("make_links_for_snapshot failed: {}", e),
     }
-
-    if let Err(e) = make_links_for_snapshot(&snap_mnt, &snap_mnt_link) {
-        warn!("make_links_for_snapshot failed: {}", e);
-    }
-
-    // TOC rename commits the snapshot for reuse and pruning decisions.
-    let _ = std::fs::rename(&toc_path_tmp, &toc_path);
 
     if Path::new(REBUILD_FLAG).exists() {
         if let Err(e) = rebuild_all_snapshot_links() {
@@ -162,6 +180,176 @@ pub async fn make_snapshot(skip_fsck: bool) -> Result<Option<String>> {
     }
 
     Ok(Some(snap_name))
+}
+
+/// Marker for a committed snapshot that still owes links: its producer wrote
+/// it before linking, or the boot-time TOC rebuild recovered the snapshot.
+const RELINK_PENDING_SUFFIX: &str = "snap.bin.relink_pending";
+/// A snapshot whose links were just (re)made, checked once more after the
+/// next boot: a power cut can keep its state on /backingfiles but lose links
+/// just written to /mutable.
+const RELINK_VERIFY_SUFFIX: &str = "snap.bin.relink_verify";
+/// Where a debt goes after this many failed attempts (one line each in the
+/// pending marker).
+const RELINK_GAVE_UP_SUFFIX: &str = "snap.bin.relink_gave_up";
+const RELINK_MAX_FAILURES: usize = 5;
+const RELINK_BOOT_MARKED: &str = "/tmp/.sentryusb-relink-boot-marked";
+const RELINK_FAILED_THIS_BOOT: &str = "/tmp/.sentryusb-relink-failed";
+
+/// Highest-numbered snapshot with both its image and a committed TOC.
+fn newest_committed_snapshot_in(base: &Path) -> Option<String> {
+    committed_snapshots_newest_first(base).into_iter().next()
+}
+
+fn committed_snapshots_newest_first(base: &Path) -> Vec<String> {
+    let mut names: Vec<String> = std::fs::read_dir(base)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|e| e.file_name().into_string().ok())
+        .filter(|n| {
+            n.strip_prefix("snap-")
+                .is_some_and(|d| !d.is_empty() && d.bytes().all(|b| b.is_ascii_digit()))
+        })
+        .filter(|n| {
+            let dir = base.join(n);
+            dir.join("snap.bin").exists() && dir.join("snap.bin.toc").exists()
+        })
+        .collect();
+    names.sort_by(|a, b| b.cmp(a));
+    names
+}
+
+/// Once per boot: turn last boot's re-checks into debts and mark the newest
+/// snapshot as owing links.
+fn mark_relinks_for_boot_in(base: &Path) {
+    for name in committed_snapshots_newest_first(base) {
+        let dir = base.join(&name);
+        let verify = dir.join(RELINK_VERIFY_SUFFIX);
+        let pending = dir.join(RELINK_PENDING_SUFFIX);
+        if verify.exists() && (pending.exists() || std::fs::write(&pending, b"").is_ok()) {
+            let _ = std::fs::remove_file(&verify);
+        }
+    }
+    if let Some(newest) = newest_committed_snapshot_in(base) {
+        let dir = base.join(newest);
+        let pending = dir.join(RELINK_PENDING_SUFFIX);
+        if !pending.exists() && !dir.join(RELINK_GAVE_UP_SUFFIX).exists() {
+            let _ = std::fs::write(pending, b"");
+        }
+    }
+}
+
+/// Failed attempts recorded in a pending marker (one line each).
+fn relink_failures(marker: &Path) -> usize {
+    std::fs::read_to_string(marker).map(|t| t.lines().count()).unwrap_or(0)
+}
+
+/// The snapshots this run should link, each with whether to only fill in
+/// missing links: the newest and the oldest debt, skipping ones that failed
+/// this boot, so a backlog can't starve across short trips (one that keeps
+/// failing is given up on after [`RELINK_MAX_FAILURES`] attempts). Only the
+/// newest committed snapshot gets a full re-link; older ones keep newer
+/// targets.
+fn pending_relinks_in(base: &Path, failed_this_boot: &HashSet<String>) -> Vec<(String, bool)> {
+    let committed = committed_snapshots_newest_first(base);
+    let Some(newest) = committed.first().cloned() else { return Vec::new() };
+    let owing: Vec<&String> = committed
+        .iter()
+        .filter(|n| base.join(n).join(RELINK_PENDING_SUFFIX).exists() && !failed_this_boot.contains(*n))
+        .collect();
+    let Some(first) = owing.first() else { return Vec::new() };
+    let mut picks = vec![((*first).clone(), **first != newest)];
+    if let Some(oldest) = owing.last().filter(|o| *o != first) {
+        picks.push(((*oldest).clone(), **oldest != newest));
+    }
+    picks
+}
+
+/// Make the links owed by up to two snapshots (see [`pending_relinks_in`]).
+/// Runs after the new capture so footage on the live image is copied first,
+/// and at low I/O priority because it walks snapshot images.
+fn relink_pending_snapshot() {
+    let base = Path::new(SNAPSHOTS_DIR);
+    if !Path::new(RELINK_BOOT_MARKED).exists() {
+        mark_relinks_for_boot_in(base);
+        let _ = std::fs::write(RELINK_BOOT_MARKED, b"");
+    }
+    let failed: HashSet<String> = std::fs::read_to_string(RELINK_FAILED_THIS_BOOT)
+        .unwrap_or_default()
+        .lines()
+        .map(str::to_string)
+        .collect();
+    for (name, fill_only) in pending_relinks_in(base, &failed) {
+        relink_snapshot(base, &name, fill_only);
+    }
+}
+
+fn relink_snapshot(base: &Path, name: &str, fill_only: bool) {
+    let dir = base.join(name);
+    info!(
+        "{} links for {}",
+        if fill_only { "Filling in missing" } else { "Re-making" },
+        name
+    );
+    let autofs_mnt = format!("{}/{}", AUTOFS_SNAPSHOTS, name);
+    let mnt_link = dir.join("mnt");
+    let result = {
+        let _io = LowIoPriority::enter();
+        ensure_stable_mnt_link(&mnt_link, &autofs_mnt)
+            .and_then(|()| {
+                std::fs::read_dir(&autofs_mnt)
+                    .map(|_| ())
+                    .map_err(|e| anyhow::anyhow!("cannot mount {}: {}", name, e))
+            })
+            .and_then(|()| {
+                make_links_for_snapshot_mode(&autofs_mnt, &mnt_link.to_string_lossy(), fill_only)
+            })
+    };
+    let pending = dir.join(RELINK_PENDING_SUFFIX);
+    match result {
+        Ok(made) => {
+            // Links just made get checked once more after the next boot, in
+            // case a power cut takes them with it.
+            if made > 0 {
+                if let Err(e) = std::fs::write(dir.join(RELINK_VERIFY_SUFFIX), b"") {
+                    warn!("could not schedule a re-check of {}: {}; keeping its links owed", name, e);
+                    return;
+                }
+            }
+            let _ = std::fs::remove_file(&pending);
+        }
+        Err(e) => {
+            // Skip it for the rest of this boot so it can't block the others,
+            // and count the failure so a stuck one stops crowding out others.
+            use std::io::Write;
+            let append_line = |path: &Path, line: &str| {
+                if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+                    let _ = writeln!(f, "{}", line);
+                }
+            };
+            append_line(Path::new(RELINK_FAILED_THIS_BOOT), name);
+            append_line(&pending, "failed");
+            if relink_failures(&pending) >= RELINK_MAX_FAILURES {
+                let _ = std::fs::rename(&pending, dir.join(RELINK_GAVE_UP_SUFFIX));
+                warn!("links for {}: {}; giving up after {} attempts", name, e, RELINK_MAX_FAILURES);
+            } else {
+                warn!("links for {}: {}; will retry next boot", name, e);
+            }
+        }
+    }
+}
+
+/// `<snapdir>/mnt` must point at the snapshot's autofs mount before any clip
+/// link targets it.
+fn ensure_stable_mnt_link(mnt_link: &Path, autofs_mnt: &str) -> Result<()> {
+    if std::fs::symlink_metadata(mnt_link).is_ok() {
+        return Ok(());
+    }
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(autofs_mnt, mnt_link)
+        .map_err(|e| anyhow::anyhow!("creating {}: {}", mnt_link.display(), e))?;
+    Ok(())
 }
 
 fn run_link_maintenance_before_duplicate_check(
@@ -241,11 +429,13 @@ fn release_snapshot_files(name: &str, snap_dir: &str) -> Result<()> {
             );
         }
     }
-    if plan.unreadable_tocs > 0 {
+    // Unresolved links usually just mean the released snapshot held the last
+    // copy; unreadable or empty survivor TOCs are the cases worth noticing.
+    if plan.unresolved > 0 || plan.unreadable_tocs > 0 || plan.empty_tocs > 0 {
         warn!(
-            "Skipped {} surviving snapshot(s) with an unreadable TOC while releasing {}; \
-             {} clip link(s) found no matching copy in readable TOCs",
-            plan.unreadable_tocs, name, plan.unresolved
+            "{} clip link(s) from {} had no copy in another snapshot's TOC \
+             (survivor TOCs: {} unreadable, {} empty)",
+            plan.unresolved, name, plan.unreadable_tocs, plan.empty_tocs
         );
     }
     Ok(())
@@ -272,6 +462,12 @@ impl LowIoPriority {
             let saved = unsafe { libc::syscall(libc::SYS_ioprio_get, IOPRIO_WHO_PROCESS, 0) };
             if saved < 0 {
                 warn!("ioprio_get failed: {}", std::io::Error::last_os_error());
+                return Self { saved: None };
+            }
+            // Never raise a thread that already runs lower (idle class, or
+            // best-effort 7).
+            let class = saved >> 13;
+            if class == 3 || (class == 2 && (saved & 0x1fff) >= 7) {
                 return Self { saved: None };
             }
             let set = unsafe {
@@ -342,6 +538,9 @@ struct RelinkPlan {
     unresolved: usize,
     /// Surviving snapshots skipped because their TOC couldn't be read.
     unreadable_tocs: usize,
+    /// Surviving snapshots whose TOC was readable but empty. A power cut can
+    /// leave a TOC empty while its image still holds the clips.
+    empty_tocs: usize,
 }
 
 /// Plan re-pointing links into the released snapshot at another live snapshot
@@ -394,7 +593,8 @@ fn plan_relinks(
         }
         wanted.push((link, stable, clip_rel));
     }
-    let mut plan = RelinkPlan { links: Vec::new(), unresolved: 0, unreadable_tocs: 0 };
+    let mut plan =
+        RelinkPlan { links: Vec::new(), unresolved: 0, unreadable_tocs: 0, empty_tocs: 0 };
     if wanted.is_empty() {
         return plan;
     }
@@ -424,11 +624,13 @@ fn plan_relinks(
         // Commit a survivor's matches only once its whole TOC has been read.
         let mut hits: Vec<(&str, u64)> = Vec::new();
         let mut complete = true;
+        let mut rows = 0usize;
         for line in std::io::BufReader::new(file).lines() {
             let Ok(line) = line else {
                 complete = false;
                 break;
             };
+            rows += 1;
             let Some((size, path)) = line.split_once(' ') else { continue };
             let Ok(size) = size.parse::<u64>() else { continue };
             if let Some((key, _)) = best.get_key_value(path) {
@@ -438,6 +640,9 @@ fn plan_relinks(
         if !complete {
             plan.unreadable_tocs += 1;
             continue;
+        }
+        if rows == 0 {
+            plan.empty_tocs += 1;
         }
         for (rel, size) in hits {
             let slot = best.get_mut(rel).expect("hit keys come from the map");
@@ -838,8 +1043,13 @@ fn pick_next_snapshot_slot_with(
 
     // Reuse the highest slot when no TOC was committed.
     if !prev_toc.exists() || !prev_bin.exists() {
-        // Append instead if the incomplete slot may still be mounted.
-        if has_mounts(base, &prev_name) {
+        // Append instead if the incomplete slot may still be mounted, or if
+        // its image survived without a TOC (failed scan, or power cut before
+        // the TOC was written). The car has likely overwritten that footage
+        // by now, so the image may be the only copy; the boot-time TOC
+        // rebuild recovers it.
+        let mounted = has_mounts(base, &prev_name);
+        if mounted || prev_bin.exists() {
             let next = max_num + 1;
             let backstop = if max_num > 0 {
                 let p = base.join(format!("snap-{:06}/snap.bin.toc", max_num - 1));
@@ -848,8 +1058,10 @@ fn pick_next_snapshot_slot_with(
                 None
             };
             warn!(
-                "slot pick: picker=rust max_seen={} incomplete BUT MOUNTED — appending next={}",
-                max_num, next
+                "slot pick: picker=rust max_seen={} incomplete ({}) — appending next={}",
+                max_num,
+                if mounted { "mounted" } else { "image kept for recovery" },
+                next
             );
             return Ok((next, backstop));
         }
@@ -930,14 +1142,16 @@ async fn wait_for_autofs() {
     warn!("autofs is not active after 30s; symlinks may dangle");
 }
 
-/// Write a `<size> <relative-path>` TOC for files under `root`.
+/// Write a `<size> <relative-path>` TOC for files under `root`. A failed or
+/// timed-out scan is an error, never a shorter TOC. `exec` makes the timeout
+/// kill `find` itself rather than only its shell.
 async fn generate_toc(root: &str, out_path: &str) -> Result<()> {
     let cmd = format!(
-        "find {} -type f -printf '%s %P\\n' > {}",
+        "exec ionice -c2 -n7 nice -n19 find {} -type f -printf '%s %P\\n' > {}",
         shell_escape(root),
         shell_escape(out_path)
     );
-    sentryusb_shell::run("bash", &["-c", &cmd])
+    sentryusb_shell::run_with_timeout(Duration::from_secs(300), "bash", &["-c", &cmd])
         .await
         .map(|_| ())
         .map_err(|e| anyhow::anyhow!("find/toc: {}", e))
@@ -960,14 +1174,73 @@ fn toc_has_additions(old_toc: &str, new_toc: &str) -> Result<bool> {
         .any(|line| !line.is_empty() && !old_set.contains(line)))
 }
 
+/// Link placement for one snapshot. `fill_only` leaves existing links alone,
+/// so re-linking an older recovered snapshot can't undo newer targets.
+/// Failures are counted: a snapshot only stops owing links once every link
+/// landed.
+struct Linker {
+    fill_only: bool,
+    failures: usize,
+    made: usize,
+}
+
+impl Linker {
+    fn dir(&mut self, path: &str) {
+        if let Err(e) = std::fs::create_dir_all(path) {
+            self.failures += 1;
+            warn!("creating {}: {}", path, e);
+        }
+    }
+
+    fn place(&mut self, target: &str, link: &str) {
+        if self.fill_only && std::fs::symlink_metadata(link).is_ok() {
+            return;
+        }
+        let _ = std::fs::remove_file(link);
+        #[cfg(unix)]
+        match std::os::unix::fs::symlink(target, link) {
+            Ok(()) => self.made += 1,
+            Err(_) => self.failures += 1,
+        }
+    }
+
+    /// Entries of a snapshot directory; only a missing directory is normal.
+    fn entries(&mut self, dir: &str) -> Vec<std::fs::DirEntry> {
+        match std::fs::read_dir(dir) {
+            Ok(rd) => rd
+                .filter_map(|entry| match entry {
+                    Ok(entry) => Some(entry),
+                    Err(e) => {
+                        self.failures += 1;
+                        warn!("reading {}: {}", dir, e);
+                        None
+                    }
+                })
+                .collect(),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+            Err(e) => {
+                self.failures += 1;
+                warn!("reading {}: {}", dir, e);
+                Vec::new()
+            }
+        }
+    }
+}
+
 /// Build TeslaCam category links, retargeting initial autofs paths through the
 /// stable `<snapdir>/mnt` symlink.
 fn make_links_for_snapshot(cur_mnt: &str, final_mnt: &str) -> Result<()> {
+    make_links_for_snapshot_mode(cur_mnt, final_mnt, false).map(|_| ())
+}
+
+/// Returns the number of links created.
+fn make_links_for_snapshot_mode(cur_mnt: &str, final_mnt: &str, fill_only: bool) -> Result<usize> {
+    let mut l = Linker { fill_only, failures: 0, made: 0 };
     let saved = format!("{}/SavedClips", TESLACAM);
     let sentry = format!("{}/SentryClips", TESLACAM);
     let track = format!("{}/TeslaTrackMode", TESLACAM);
-    let _ = std::fs::create_dir_all(&saved);
-    let _ = std::fs::create_dir_all(&sentry);
+    l.dir(&saved);
+    l.dir(&sentry);
 
     // Only manifest-listed event timestamps fill RecentClips driving gaps.
     let gapfill = load_gapfill_stamps();
@@ -976,103 +1249,56 @@ fn make_links_for_snapshot(cur_mnt: &str, final_mnt: &str) -> Result<()> {
 
     // Date-bucket flat RecentClips files.
     let recents_root = format!("{}/TeslaCam/RecentClips", cur_mnt);
-    if let Ok(entries) = std::fs::read_dir(&recents_root) {
-        for entry in entries.flatten() {
-            link_clip_into_recents(&entry.path(), cur_mnt, final_mnt);
-        }
+    for entry in l.entries(&recents_root) {
+        link_clip_into_recents(&mut l, &entry.path(), cur_mnt, final_mnt);
     }
 
-    let saved_root = format!("{}/TeslaCam/SavedClips", cur_mnt);
-    if let Ok(events) = std::fs::read_dir(&saved_root) {
-        for evt in events.flatten() {
+    for (root, dest) in [("SavedClips", &saved), ("SentryClips", &sentry)] {
+        let events_root = format!("{}/TeslaCam/{}", cur_mnt, root);
+        for evt in l.entries(&events_root) {
             let evt_path = evt.path();
-            if !evt_path.is_dir() {
-                continue;
-            }
-            let event_time = evt.file_name().to_string_lossy().to_string();
-            let evt_dest = format!("{}/{}", saved, event_time);
-            let _ = std::fs::create_dir_all(&evt_dest);
-
-            if let Ok(clips) = std::fs::read_dir(&evt_path) {
-                for clip in clips.flatten() {
-                    // Keep events out of RecentClips unless the gap manifest lists them.
-                    let link = format!(
-                        "{}/{}",
-                        evt_dest,
-                        clip.file_name().to_string_lossy()
-                    );
-                    let _ = std::fs::remove_file(&link);
-                    #[cfg(unix)]
-                    {
-                        let target = retarget_path(&clip.path(), cur_mnt, final_mnt);
-                        let _ = std::os::unix::fs::symlink(&target, &link);
-                    }
-                    // Cross-link only drive-processor gap fills.
-                    maybe_gapfill_recent_link(&clip.path(), cur_mnt, final_mnt, &gapfill);
+            match evt.file_type() {
+                Ok(t) if t.is_dir() => {}
+                Ok(_) => continue,
+                Err(e) => {
+                    l.failures += 1;
+                    warn!("reading {}: {}", evt_path.display(), e);
+                    continue;
                 }
             }
-        }
-    }
-
-    let sentry_root = format!("{}/TeslaCam/SentryClips", cur_mnt);
-    if let Ok(events) = std::fs::read_dir(&sentry_root) {
-        for evt in events.flatten() {
-            let evt_path = evt.path();
-            if !evt_path.is_dir() {
-                continue;
-            }
             let event_time = evt.file_name().to_string_lossy().to_string();
-            let evt_dest = format!("{}/{}", sentry, event_time);
-            let _ = std::fs::create_dir_all(&evt_dest);
+            let evt_dest = format!("{}/{}", dest, event_time);
+            l.dir(&evt_dest);
 
-            if let Ok(clips) = std::fs::read_dir(&evt_path) {
-                for clip in clips.flatten() {
-                    // Keep ordinary Sentry events in their event folder.
-                    let link = format!(
-                        "{}/{}",
-                        evt_dest,
-                        clip.file_name().to_string_lossy()
-                    );
-                    let _ = std::fs::remove_file(&link);
-                    #[cfg(unix)]
-                    {
-                        let target = retarget_path(&clip.path(), cur_mnt, final_mnt);
-                        let _ = std::os::unix::fs::symlink(&target, &link);
-                    }
-                    // Cross-link only manifest-listed driving-hole fills.
-                    maybe_gapfill_recent_link(&clip.path(), cur_mnt, final_mnt, &gapfill);
-                }
+            for clip in l.entries(&evt_path.to_string_lossy()) {
+                // Keep events in their event folder; RecentClips gets only
+                // the drive processor's manifest-listed gap fills.
+                let link = format!("{}/{}", evt_dest, clip.file_name().to_string_lossy());
+                let target = retarget_path(&clip.path(), cur_mnt, final_mnt);
+                l.place(&target, &link);
+                maybe_gapfill_recent_link(&mut l, &clip.path(), cur_mnt, final_mnt, &gapfill);
             }
         }
     }
 
     // TrackMode remains flat and uses its original mount target.
-    let track_root = format!("{}/TeslaTrackMode", cur_mnt);
-    if let Ok(entries) = std::fs::read_dir(&track_root) {
-        let mut made = false;
-        for entry in entries.flatten() {
-            if !made {
-                let _ = std::fs::create_dir_all(&track);
-                made = true;
-            }
-            let link = format!(
-                "{}/{}",
-                track,
-                entry.file_name().to_string_lossy()
-            );
-            let _ = std::fs::remove_file(&link);
-            #[cfg(unix)]
-            let _ = std::os::unix::fs::symlink(&entry.path(), &link);
-        }
+    let track_entries = l.entries(&format!("{}/TeslaTrackMode", cur_mnt));
+    if !track_entries.is_empty() {
+        l.dir(&track);
+    }
+    for entry in track_entries {
+        let link = format!("{}/{}", track, entry.file_name().to_string_lossy());
+        l.place(&entry.path().to_string_lossy(), &link);
     }
 
+    if l.failures > 0 {
+        bail!("{} link operation(s) failed for {}", l.failures, cur_mnt);
+    }
     info!("Made all links for {}", cur_mnt);
-    Ok(())
+    Ok(l.made)
 }
 
-/// Link one clip into its dated RecentClips bucket.
-#[cfg_attr(not(unix), allow(unused_variables))]
-fn link_clip_into_recents(file: &Path, cur_mnt: &str, final_mnt: &str) {
+fn link_clip_into_recents(l: &mut Linker, file: &Path, cur_mnt: &str, final_mnt: &str) {
     let filename = match file.file_name().map(|s| s.to_string_lossy().to_string()) {
         Some(f) => f,
         None => return,
@@ -1082,20 +1308,13 @@ fn link_clip_into_recents(file: &Path, cur_mnt: &str, final_mnt: &str) {
     }
     let filedate = &filename[..10];
     let recents = format!("{}/RecentClips/{}", TESLACAM, filedate);
-    let _ = std::fs::create_dir_all(&recents);
+    l.dir(&recents);
     let link = format!("{}/{}", recents, filename);
-    let _ = std::fs::remove_file(&link);
-    #[cfg(unix)]
-    {
-        let target = retarget_path(file, cur_mnt, final_mnt);
-        let _ = std::os::unix::fs::symlink(&target, &link);
-    }
+    l.place(&retarget_path(file, cur_mnt, final_mnt), &link);
 }
 
-/// Cross-link a manifest-listed event gap into dated RecentClips; ignore all
-/// other events so parked footage does not flood the continuous timeline.
-#[cfg_attr(not(unix), allow(unused_variables))]
 fn maybe_gapfill_recent_link(
+    l: &mut Linker,
     clip: &Path,
     cur_mnt: &str,
     final_mnt: &str,
@@ -1117,14 +1336,9 @@ fn maybe_gapfill_recent_link(
     }
     let filedate = &filename[..10];
     let recents = format!("{}/RecentClips/{}", TESLACAM, filedate);
-    let _ = std::fs::create_dir_all(&recents);
+    l.dir(&recents);
     let link = format!("{}/{}", recents, filename);
-    let _ = std::fs::remove_file(&link);
-    #[cfg(unix)]
-    {
-        let target = retarget_path(clip, cur_mnt, final_mnt);
-        let _ = std::os::unix::fs::symlink(&target, &link);
-    }
+    l.place(&retarget_path(clip, cur_mnt, final_mnt), &link);
 }
 
 /// Backfill changed manifest entries from existing event links without touching
@@ -1169,12 +1383,17 @@ fn backfill_gapfill_links_in(
     let mut skipped_dead = 0usize;
     let mut retry = 0usize;
     for sub in ["SavedClips", "SentryClips"] {
+        // A real directory only; never follow a link into autofs.
+        if !std::fs::symlink_metadata(teslacam.join(sub)).is_ok_and(|m| m.is_dir()) {
+            continue;
+        }
         let Ok(events) = std::fs::read_dir(teslacam.join(sub)) else {
             continue;
         };
         for evt in events.flatten() {
             let evt_path = evt.path();
-            if !evt_path.is_dir() {
+            // Only real event directories; never follow a link into autofs.
+            if !evt.file_type().is_ok_and(|t| t.is_dir()) {
                 continue;
             }
             if let Ok(clips) = std::fs::read_dir(&evt_path) {
@@ -1955,6 +2174,8 @@ mod tests {
         // No snap.bin: not a live snapshot, never a target.
         std::fs::create_dir_all(snaps.join("snap-000014")).unwrap();
         std::fs::write(snaps.join("snap-000014/snap.bin.toc"), format!("99 {tie}\n")).unwrap();
+        // An empty TOC (what a power cut can leave) is counted, never trusted.
+        write_snap_toc(&snaps, "snap-000015", &[]);
 
         let orphans: Vec<(std::path::PathBuf, String)> = vec![
             ("/farm/a".into(), format!("{s}/snap-000009/mnt/{tie}")),
@@ -1971,7 +2192,7 @@ mod tests {
             ],
             "equal sizes go to the highest slot; autofs-form links keep their form"
         );
-        assert_eq!((plan.unresolved, plan.unreadable_tocs), (1, 1));
+        assert_eq!((plan.unresolved, plan.unreadable_tocs, plan.empty_tocs), (1, 1, 1));
     }
 
     #[cfg(unix)]
@@ -1987,6 +2208,78 @@ mod tests {
         symlink(&fresh, &link).unwrap();
         assert_eq!(apply_relinks(&planned), 0);
         assert_eq!(std::fs::read_link(&link).unwrap(), fresh);
+    }
+
+    #[test]
+    fn newest_committed_snapshot_skips_images_without_a_toc() {
+        let tmp = tempfile::tempdir().unwrap();
+        let snaps = tmp.path();
+        assert_eq!(newest_committed_snapshot_in(snaps), None);
+        write_snap_toc(snaps, "snap-000020", &[]);
+        write_snap_toc(snaps, "snap-000021", &[]);
+        // Newer image whose TOC never landed, and a TOC without its image.
+        std::fs::create_dir_all(snaps.join("snap-000022")).unwrap();
+        std::fs::write(snaps.join("snap-000022/snap.bin"), b"").unwrap();
+        std::fs::create_dir_all(snaps.join("snap-000023")).unwrap();
+        std::fs::write(snaps.join("snap-000023/snap.bin.toc"), b"").unwrap();
+        assert_eq!(newest_committed_snapshot_in(snaps).as_deref(), Some("snap-000021"));
+    }
+
+    #[test]
+    fn relink_scheduling_takes_newest_and_oldest_debts_and_skips_failures() {
+        let tmp = tempfile::tempdir().unwrap();
+        let snaps = tmp.path();
+        let none = HashSet::new();
+        let owe = |n: &str| std::fs::write(snaps.join(n).join(RELINK_PENDING_SUFFIX), b"").unwrap();
+        assert!(pending_relinks_in(snaps, &none).is_empty());
+        for n in ["snap-000030", "snap-000031", "snap-000032", "snap-000033"] {
+            write_snap_toc(snaps, n, &[]);
+        }
+        assert!(pending_relinks_in(snaps, &none).is_empty());
+        // Each boot the newest snapshot is marked as owing links, and an
+        // older repair that created links comes back once as a re-check.
+        std::fs::write(snaps.join("snap-000031").join(RELINK_VERIFY_SUFFIX), b"").unwrap();
+        mark_relinks_for_boot_in(snaps);
+        assert!(!snaps.join("snap-000031").join(RELINK_VERIFY_SUFFIX).exists());
+        assert_eq!(
+            pending_relinks_in(snaps, &none),
+            vec![("snap-000033".into(), false), ("snap-000031".into(), true)],
+            "newest debt in full, oldest debt fill-only"
+        );
+        // A middle debt waits; the oldest is served every run...
+        owe("snap-000030");
+        owe("snap-000032");
+        assert_eq!(
+            pending_relinks_in(snaps, &none),
+            vec![("snap-000033".into(), false), ("snap-000030".into(), true)]
+        );
+        // A past failure doesn't push it back: it stays the oldest debt
+        // until it succeeds or is given up on.
+        std::fs::write(snaps.join("snap-000030").join(RELINK_PENDING_SUFFIX), "failed\n").unwrap();
+        assert_eq!(
+            pending_relinks_in(snaps, &none),
+            vec![("snap-000033".into(), false), ("snap-000030".into(), true)]
+        );
+        // The newest one given up on is not marked again at boot.
+        std::fs::rename(
+            snaps.join("snap-000033").join(RELINK_PENDING_SUFFIX),
+            snaps.join("snap-000033").join(RELINK_GAVE_UP_SUFFIX),
+        )
+        .unwrap();
+        mark_relinks_for_boot_in(snaps);
+        assert!(!snaps.join("snap-000033").join(RELINK_PENDING_SUFFIX).exists());
+        owe("snap-000033");
+        // A snapshot that failed this boot can't block the others.
+        let failed: HashSet<String> = ["snap-000033".to_string(), "snap-000031".to_string()].into();
+        assert_eq!(
+            pending_relinks_in(snaps, &failed),
+            vec![("snap-000032".into(), true), ("snap-000030".into(), true)]
+        );
+        // An image whose TOC never landed is not committed and owes nothing yet.
+        std::fs::create_dir_all(snaps.join("snap-000034")).unwrap();
+        std::fs::write(snaps.join("snap-000034/snap.bin"), b"").unwrap();
+        std::fs::write(snaps.join("snap-000034").join(RELINK_PENDING_SUFFIX), b"").unwrap();
+        assert_eq!(pending_relinks_in(snaps, &none)[0], ("snap-000033".into(), false));
     }
 
     #[test]
@@ -2193,14 +2486,30 @@ mod tests {
         let base = scratch("slot-reuse");
         mk_snap(&base, "snap-000010", Some(1_785_000_000), true);
         std::fs::File::create(base.join("snap-000999")).unwrap();
-        // Reuse an unmounted incomplete slot and retain the prior TOC.
-        mk_snap(&base, "snap-000011", Some(1_785_000_100), false);
+        // Reuse an unmounted slot whose image is gone and retain the prior TOC.
+        mk_snap(&base, "snap-000011", None, false);
 
         let (num, toc) = pick_next_snapshot_slot_with(&base, &|_, _| false).unwrap();
         let dir_gone = !base.join("snap-000011").exists();
         let _ = std::fs::remove_dir_all(&base);
         assert_eq!(num, 11, "incomplete max slot is reused");
         assert!(dir_gone, "incomplete snapshot dir is wiped");
+        assert!(toc.as_deref().is_some_and(|t| t.contains("snap-000010")));
+    }
+
+    #[test]
+    fn pick_next_slot_keeps_an_image_whose_toc_is_missing() {
+        // A power cut can leave the image without a TOC; it may hold the only
+        // copy of an hour of footage, so append past it instead of wiping it.
+        let base = scratch("slot-keep-image");
+        mk_snap(&base, "snap-000010", Some(1_785_000_000), true);
+        mk_snap(&base, "snap-000011", Some(1_785_000_100), false);
+
+        let (num, toc) = pick_next_snapshot_slot_with(&base, &|_, _| false).unwrap();
+        let kept = base.join("snap-000011/snap.bin").exists();
+        let _ = std::fs::remove_dir_all(&base);
+        assert_eq!(num, 12, "must append past the image, not reuse its slot");
+        assert!(kept, "the image without a TOC must survive");
         assert!(toc.as_deref().is_some_and(|t| t.contains("snap-000010")));
     }
 }

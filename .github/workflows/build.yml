@@ -372,6 +372,7 @@ jobs:
           bash -n run/release_snapshot.sh
           bash -n run/make_snapshot.sh
           bash test/release-snapshot.test.sh
+          bash test/snapshot-toc-recovery.test.sh
       - name: Run tests
         run: cargo test --workspace --locked
       - name: Run installer safety regressions

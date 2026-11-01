@@ -40,6 +40,8 @@ snap snap-000036 40 "$full" 30 "$tie" 50 "$gone" 10 "$kept"
 snap snap-000037 10 "$full" 30 "$tie" 10 "$kept"
 snap snap-000038
 rm "$snaps/snap-000038/snap.bin.toc"
+# An empty TOC (what a power cut can leave) is counted, never trusted.
+snap snap-000039
 printf '99 %s\n' "$full" > "$snaps/snap-000037/snap.bin.toc_"
 
 link () { ln -s "$snaps/snap-000036/mnt/$2" "$farm/$1"; }
@@ -61,14 +63,14 @@ PATH=$work/bin:$PATH LOG_FILE=$work/log bash -eu "$work/release.sh" "$snaps/snap
 [[ $(readlink "$farm/RecentClips/2026-10-30/kept.mp4") == "$snaps/snap-000037/mnt/$kept" ]]
 [[ $(readlink "$farm/RecentClips/2026-10-30/kept2.mp4") == "$snaps/snap-000037/mnt/$kept" ]]
 grep -q 're-pointed 3 clip link(s) from snap-000036' "$work/log"
-grep -q 'skipped 1 surviving snapshot(s) with an unreadable TOC while releasing snap-000036; 1 clip link(s)' "$work/log"
+grep -q "1 clip link(s) from snap-000036 had no copy in another snapshot's TOC (survivor TOCs: 1 unreadable, 1 empty)" "$work/log"
 
 # Releasing a snapshot nothing links into reads no TOC and logs no re-point.
 : > "$work/log"
 snap snap-000040
 PATH=$work/bin:$PATH LOG_FILE=$work/log bash -eu "$work/release.sh" snap-000040
 [[ ! -e $snaps/snap-000040 ]]
-! grep -q -e 're-pointed' -e 'skipped' "$work/log"
+! grep -q -e 're-pointed' -e 'had no copy' "$work/log"
 
 # Thousands of survivors must not hit the kernel's per-string size limit.
 : > "$work/log"
