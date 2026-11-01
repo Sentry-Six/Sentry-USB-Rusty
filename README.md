@@ -76,7 +76,7 @@ Sentry USB is one of the free tools for Tesla owners from the [Sentry Six](https
 | **Auto-archive** | CIFS / SMB, rsync, rclone (cloud), NFS — kicks off whenever the Pi sees known WiFi |
 | **Keep awake** | BLE (free, same link as telemetry), TeslaFi, Tessie, or generic webhook |
 | **Sentry Cloud (beta)** | Encrypted cloud sync — drives are encrypted on the Pi before they leave your network |
-| **Notifications** | Pushover, ntfy, Gotify, Discord, Telegram, Slack, Signal, Matrix, AWS SNS, IFTTT, Webhook, iOS app |
+| **Notifications** | Pushover, ntfy, Gotify, Discord, Telegram, Slack, Signal, Matrix, AWS SNS, IFTTT, Webhook, Sentry Connect app |
 | **Privacy controls** | Minimal device statistics, a visible setup choice, and full per-flow disclosure |
 
 ---
@@ -131,7 +131,7 @@ Here's everything Sentry USB sends to Sentry Six services:
 | Wraps / lock chime submissions | The file, display name and vehicle model + your IP for rate-limiting and abuse handling | No device or hardware fingerprint; the IP may be retained with the submission |
 | Maps in the web UI | Your browser loads map tiles for the area shown from `tiles.sentryusb.com` (OpenStreetMap data via Cloudflare); browsers without WebGL2 load OpenStreetMap tiles from `tile.openstreetmap.org` | Your IP, as with any web request |
 | Sentry Cloud (if paired) | At pairing: the code you enter, the Pi's public keys, hostname, board model, kernel and Sentry USB versions, and the last 4 digits of a MAC address. Then the drive history, charging sessions and Home sync data you sync, encrypted on the Pi | A per-device token linked to your Sentry Cloud account |
-| iOS push pairing (if enabled) | Random pairing ID and secret, the Pi's hostname, and each notification's title and message, relayed via `notifications.sentry-six.com` to Apple. Hostname cleared when the last phone unpairs; inactive unpaired records deleted after 90 days | Random ID |
+| Phone push pairing (if enabled) | Random pairing ID and secret, the Pi's hostname, and each notification's title and message, relayed via `notifications.sentry-six.com` to Apple (iPhone) or Google (Android). Hostname cleared when the last phone unpairs; inactive unpaired records deleted after 90 days | Random ID |
 | AI Support & Help (if used) | Chat messages, product/software version, and the Pi connection's public IP for abuse prevention; diagnostics only after a separate one-time approval. Processed by Anthropic; redacted chats stored in Canada for 90 days after last activity | Random conversation ID and access token; no hardware fingerprint |
 
 New installations choose **Yes, count me** or **No thanks** on the Privacy step. Existing installations keep their saved choice (off if none). Change reporting later under **Settings → System → Device counting**. Full disclosure, retention, and controls for each flow are documented in [`wiki/Privacy.md`](wiki/Privacy.md).

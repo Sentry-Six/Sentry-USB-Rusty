@@ -140,16 +140,17 @@ reports from old clients.
 - **Retention:** See the Sentry Cloud [Privacy Policy](https://sentryusb.com/legal/privacy).
 - **How to disable:** Don't pair this Pi, or unpair it.
 
-### 7. iOS push notification pairing (opt-in)
+### 7. Phone push notification pairing (opt-in)
 
 - **Endpoint:** `POST https://notifications.sentry-six.com/register-code`,
   then `https://notifications.sentry-six.com/send` for each notification.
 - **Sent:** A `device_id` (64 random hex characters generated on this Pi),
   `device_secret`, your chosen pairing code, and your Pi's hostname. When a
-  phone pairs, the Sentry Connect app registers its Apple push (APNs) token,
-  a device name (such as "iPhone") and platform. Each notification's title
-  and message text pass through `notifications.sentry-six.com` to Apple
-  (APNs) for delivery.
+  phone pairs, the Sentry Connect app registers its push token (Apple APNs
+  on iPhone, Google Firebase Cloud Messaging on Android), a device name (such
+  as "iPhone" or the phone model) and platform. Each notification's title and
+  message text pass through `notifications.sentry-six.com` to Apple or Google
+  for delivery.
 - **Identifier:** The `device_id` — but it's a random value created
   locally on first run, **not** derived from your hardware. Resetting
   it generates a new one.
@@ -158,7 +159,7 @@ reports from old clients.
 - **Retention:** When the last phone unpairs, the hostname and device link
   are cleared. Registrations with no paired phone and no activity for 90 days
   are deleted.
-- **How to disable:** Don't pair, or unpair in the iOS app + delete
+- **How to disable:** Don't pair, or unpair in the Sentry Connect app + delete
   the credentials on the Pi.
 
 ### 8. AI Support & Help (user-initiated)

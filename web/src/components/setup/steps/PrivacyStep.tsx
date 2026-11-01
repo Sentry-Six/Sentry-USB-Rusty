@@ -196,9 +196,9 @@ export function PrivacyStep({ data, onChange, setupAlreadyFinished, setupStatusK
             note="No device fingerprint is sent. Your IP is used and retained for rate-limiting and abuse handling."
           />
           <FlowRow
-            when="If you enable iOS push notifications"
+            when="If you enable phone push notifications"
             what="A random pairing ID and secret, the Pi's hostname, and each notification's title and message"
-            why="Routing push notifications to your phone through notifications.sentry-six.com and Apple"
+            why="Routing push notifications to your phone through notifications.sentry-six.com and Apple or Google"
             note="Hostname cleared when the last phone unpairs; inactive unpaired records deleted after 90 days."
           />
         </div>
