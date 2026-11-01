@@ -16,22 +16,20 @@ You'll use **Raspberry Pi Imager** to write Pi OS to your microSD card.
 
 1.  Download [Raspberry Pi Imager](https://www.raspberrypi.com/software/) and open it.
 2.  Insert your microSD card into your computer.
-3.  Click **Choose Device** → pick your Pi model.
-4.  Click **Choose OS** → **Raspberry Pi OS (other)** → **Raspberry Pi OS Lite (64-bit)**.
-5.  Click **Choose Storage** → pick your SD card.
-6.  Click **Next** → **Edit Settings** when it asks about customization.
+3.  On the **Device** step, pick your Pi model, then click **Next**.
+4.  On the **OS** step, pick **Raspberry Pi OS (other)** → **Raspberry Pi OS Lite (64-bit)**, then click **Next**.
+5.  On the **Storage** step, pick your SD card, then click **Next**.
 
-In the customization screen:
+Imager then walks you through the customization steps. Fill in each one and click **Next** (don't click **Skip customisation**):
 
-*   **General tab**:
-    *   Set a **username** and **password**. Write them down.
-    *   Tick **Configure wireless LAN** and enter your WiFi name and password.
-    *   Set your **wireless LAN country**.
-*   **Services tab**:
-    *   Tick **Enable SSH** → **Use password authentication**.
-* **Leave the hostname blank.** Sentry USB sets its own hostname during install.
+*   **Hostname**: **leave it blank.** Sentry USB sets its own hostname during install.
+*   **Localisation**: pick your nearest **capital city**. This also sets your time zone, keyboard layout and WiFi country.
+*   **User**: set a **username** and **password**. Write them down.
+*   **Wi-Fi**: choose **Secure network**, then enter your WiFi name (**SSID**) and password.
+*   **Remote access**: turn on **Enable SSH** → **Use password authentication**.
+*   Leave any other steps (such as **Raspberry Pi Connect**) as they are and click **Next**.
 
-Click **Save**, then **Yes** to apply, then **Yes** to erase the card.
+On the **Writing** step, click **Write**, then **I understand, erase and write**.
 
 ### 2. Boot the Pi
 
