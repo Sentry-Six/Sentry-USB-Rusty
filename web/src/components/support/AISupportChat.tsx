@@ -870,7 +870,7 @@ function DisclosureGate({ onAcknowledge }: { onAcknowledge: () => void }) {
         </span>
         <h2 className="mt-3 text-base font-semibold text-slate-100">Before you chat</h2>
         <p className="mt-2 text-xs leading-relaxed text-slate-400">
-          This is an online AI assistant. Messages, product/version context, SBC model, selected non-secret support settings, and the Pi connection's public IP for abuse prevention are sent to Sentry Six; relevant content is processed by Anthropic. The support settings are limited to Dashcam Size, Travel Mode flags, archive category toggles, and whether Wraps and Lock Chimes are enabled. Redacted chats may be kept for up to 90 days after the last activity and reviewed by authorized maintainers.
+          This is an online AI assistant. Messages, product/version context, SBC model, selected non-secret support settings, and the Pi connection's public IP for abuse prevention are sent to Sentry Six; relevant content is processed by Anthropic. The support settings are limited to Dashcam Size, Travel Mode flags, archive category toggles, and whether Wraps and Lock Chimes are enabled. Redacted chats are stored on Sentry Six servers in Canada for up to 90 days after the last activity and may be reviewed by authorized maintainers.
         </p>
         <p className="mt-2 text-xs leading-relaxed text-slate-500">
           AI can be wrong and cannot approve refunds or commitments. Do not share secrets, and use a trusted local network because your browser may connect to the Pi over HTTP.

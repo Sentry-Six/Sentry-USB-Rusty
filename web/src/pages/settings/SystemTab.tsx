@@ -197,9 +197,9 @@ function PrivacyCards() {
     <Toggle label="Device counting" checked={choice === true} disabled={!loaded || saving} onChange={persist}
       sub={loaded ? choice === null ? "Off by default" : choice ? "On" : "Off" : error ? "Unavailable" : "Loading…"}
       help={<InfoButton title="Device counting">
-        <p>Optional: share a hashed device ID and running software version to count devices and show their latest reported versions.</p>
-        <p>Reports run after startup, when enabled, and daily, with retries if offline. The board serial keeps the ID stable across reinstalls. Devices without a readable hardware serial are not counted.</p>
-        <p>The server keeps the latest version and first/last report times until deletion. Turning this off stops future reports.</p>
+        <p>Optional: share a pseudonymous device ID and running software version to count devices and show their latest reported versions.</p>
+        <p>Reports run after startup, when enabled, and daily, with retries if offline. The ID is a salted hash of the board serial, which keeps it stable across reinstalls; the salt is public in the source code. Devices without a readable hardware serial are not counted.</p>
+        <p>The server keeps the latest version and first/last report times until deletion. A private maintainers' Discord channel gets each new device's version and first-seen time. Turning this off stops future reports.</p>
         <p>Turning this off does not erase data sent earlier. Email <a href="mailto:privacy@sentry-six.com" className="text-blue-400 underline">privacy@sentry-six.com</a> to request deletion.</p>
       </InfoButton>} />
     <div className="flex items-center justify-between gap-2 border-t border-white/10 pt-2">
@@ -208,28 +208,28 @@ function PrivacyCards() {
           <div className="divide-y divide-white/5">
             <FlowRow
               when="Device counting (when enabled)"
-              what="Hashed device ID and running version"
+              what="Pseudonymous device ID and running version"
               note="After startup, when enabled, and daily. Stores the latest version and first/last report times; retries if offline."
             />
             <FlowRow
-              when="Sentry Cloud (if signed in)"
-              what="Account credentials + synced files"
-              note="Stop using Cloud to stop this."
+              when="Sentry Cloud (if paired)"
+              what="Pairing details (code, public keys, hostname, board and version info, last 4 MAC digits) + drive, charging and Home data, encrypted on the Pi"
+              note="Unpair to stop this."
             />
             <FlowRow
               when="AI Support & Help (when used)"
               what="Messages, product/software version, SBC model, selected non-secret support settings, the Pi connection's public IP for abuse prevention + diagnostics you explicitly approve"
-              note="Anthropic processes messages. Redacted chats stay on Sentry Six servers up to 90 days after the last activity and may be reviewed; approved diagnostics stay 7 days."
+              note="Anthropic processes messages. Redacted chats stay on Sentry Six servers in Canada up to 90 days after the last activity and may be reviewed; approved diagnostics stay 7 days."
             />
             <FlowRow
               when="Wraps / lock chime submissions"
-              what="The file + your IP for rate-limiting"
+              what="The file, display name and vehicle model + your IP for rate-limiting"
               note="No device fingerprint."
             />
             <FlowRow
               when="iOS push pairing"
-              what="A random pairing ID"
-              note="Not tied to your hardware."
+              what="Random pairing ID and secret, the Pi's hostname, and notification text (relayed to Apple)"
+              note="Hostname cleared when the last phone unpairs; inactive unpaired records deleted after 90 days."
             />
           </div>
           <div className="tile-divider" />

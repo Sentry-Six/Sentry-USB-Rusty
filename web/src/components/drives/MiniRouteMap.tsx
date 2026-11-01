@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react"
 import L from "leaflet"
 import "leaflet/dist/leaflet.css"
-import { COMPACT_MAP_ATTRIBUTION, MAP_TILES } from "@/lib/mapTiles"
+import { attachStaticBasemap } from "@/lib/mapTiles"
 import { ProgressActivityIcon } from "@/components/icons"
 
 interface MiniRouteMapProps {
@@ -69,16 +69,8 @@ export function MiniRouteMap({ points, source, status }: MiniRouteMapProps) {
       setTiles({ points, source, status, loaded: true })
       clearTimeout(timeout)
     }
-    // A stalled tile server must not hide an available route behind a permanent spinner.
+    // A stalled map server must not hide an available route behind a permanent spinner.
     const timeout = setTimeout(finishLoading, 15_000)
-    const tileLayer = L.tileLayer(MAP_TILES.dark.url, {
-      ...MAP_TILES.dark,
-      attribution: COMPACT_MAP_ATTRIBUTION,
-      maxZoom: 18,
-      minZoom: 3,
-    })
-    tileLayer.on("load tileerror", finishLoading)
-    tileLayer.addTo(map)
 
     const latLngs = points.map(([lat, lng]) => L.latLng(lat, lng))
     L.polyline(latLngs, {
@@ -106,11 +98,13 @@ export function MiniRouteMap({ points, source, status }: MiniRouteMapProps) {
     }
 
     map.fitBounds(L.latLngBounds(latLngs), { padding: [8, 8], maxZoom: 15 })
+    // The basemap renders for the fitted view.
+    const detachBasemap = attachStaticBasemap(map, "dark", finishLoading)
 
     return () => {
       active = false
       clearTimeout(timeout)
-      tileLayer.off("load tileerror", finishLoading)
+      detachBasemap()
       map.remove()
       mapRef.current = null
     }

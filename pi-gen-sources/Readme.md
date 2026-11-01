@@ -2,7 +2,7 @@
 
 > **Prebuilt images aren't offered right now.** Install Sentry USB with the one-liner in the [README](../README.md#install). These image scripts are kept for a future image release and aren't maintained or tested in the meantime.
 
-The Sentry USB image is a custom Raspberry Pi OS image with everything pre-installed. Users just flash it, configure WiFi in Pi Imager, boot, and open the web UI — no SSH required.
+The Sentry USB image is a custom Raspberry Pi OS image with everything pre-installed. Users flash it, boot, and set up WiFi over Bluetooth from the Sentry Connect app; no SSH required.
 
 ### Quick Method (recommended)
 
@@ -32,8 +32,9 @@ Add `--32bit` to build the armhf image instead.
 1. Clone pi-gen: `git clone --branch arm64 https://github.com/RPi-Distro/pi-gen` (omit `--branch arm64` for the 32-bit image)
 2. From the pi-gen folder, run: `bash /path/to/Sentry-USB-Rusty/pi-gen-sources/prepare.sh` (for 32-bit, then copy `pi-gen-config-32bit` over `config`)
 3. Optionally copy local binaries into `stage_sentryusb/00-sentryusb-tweaks/files/` named `sentryusb-<variant>` (e.g. `sentryusb-linux-arm64-a72`); any variant not supplied is downloaded from the latest release
-4. Run `./build-docker.sh` (Docker recommended) or `./build.sh`
-5. Image will be in `deploy/`. Flash with Raspberry Pi Imager.
+4. Raise the Trixie export margin: in `export-image/prerun.sh`, change `200 * 1024 * 1024` to `800 * 1024 * 1024` (`build-image.sh` does this for you)
+5. Run `./build-docker.sh` (Docker recommended) or `./build.sh`
+6. Image will be in `deploy/`. Flash it with Raspberry Pi Imager without OS customization; the image removes Pi Imager's first-boot setup.
 
 ### What's in the image
 
@@ -47,8 +48,8 @@ Add `--32bit` to build the armhf image instead.
 
 ### User experience after flashing
 
-1. User flashes image with Pi Imager, configures WiFi + password in settings
-2. Boots Pi → WiFi connects → Sentry USB web server starts on port 80
+1. User flashes the image and boots the Pi
+2. Sets up WiFi and the hostname over Bluetooth from the Sentry Connect app → Sentry USB web server starts on port 80
 3. User opens `http://sentryusb.local` → sees the dashboard
 4. Completes Setup Wizard → Pi reboots several times (10–20 min) → done
 5. Plugs into Tesla

@@ -926,6 +926,18 @@ pub(crate) fn is_version_newer(candidate: &str, current: &str) -> bool {
     }
 }
 
+/// Prereleases are tagged like stable releases (`v3.27.3`) and flagged only on
+/// GitHub, so the installed tag's own release record decides. A tag missing
+/// from the fetched page is not assumed to be a prerelease.
+fn is_prerelease_install(current: &str, releases: &[ReleaseInfo]) -> bool {
+    let has_suffix = parse_semver(current).is_some_and(|(_, _, _, pre)| !pre.is_empty());
+    let tag = current.trim().trim_start_matches('v');
+    has_suffix
+        || releases
+            .iter()
+            .any(|r| !r.draft && r.prerelease && r.tag_name.trim().trim_start_matches('v') == tag)
+}
+
 pub(crate) fn read_current_version() -> String {
     std::fs::read_to_string("/opt/sentryusb/version")
         .or_else(|_| std::fs::read_to_string("/root/.sentryusb_version"))
@@ -975,9 +987,7 @@ pub async fn check_for_update(
     });
 
     // A prerelease installation may always revert to the latest stable.
-    let on_prerelease = parse_semver(&current)
-        .map(|(_, _, _, pre)| !pre.is_empty())
-        .unwrap_or(false);
+    let on_prerelease = is_prerelease_install(&current, &releases);
 
     if let Some(stable) = latest_stable {
         let stable_available = can_update && is_version_newer(&stable.tag_name, &current);
@@ -1158,5 +1168,49 @@ mod hardware_identity_tests {
         let e = await_reboot_with(ms(1), ms(1), || { polls.set(polls.get() + 1); async { polls.get() < 3 } }).await;
         assert_eq!(e.to_string(), "Device did not reboot after update");
         assert_eq!(polls.get(), 3);
+    }
+}
+
+#[cfg(test)]
+mod prerelease_install_tests {
+    use super::*;
+
+    fn release(tag: &str, prerelease: bool) -> ReleaseInfo {
+        ReleaseInfo { tag_name: tag.into(), html_url: String::new(), body: String::new(), prerelease, draft: false }
+    }
+
+    fn releases() -> Vec<ReleaseInfo> {
+        vec![release("v3.27.3", true), release("v3.27.2", true), release("v3.27.1", true), release("v3.27.0", false), release("v3.26.8", false)]
+    }
+
+    #[test]
+    fn plain_tagged_prerelease_uses_the_github_flag() {
+        assert!(is_prerelease_install("v3.27.1", &releases()));
+        assert!(is_prerelease_install("3.27.3", &releases()));
+    }
+
+    #[test]
+    fn stable_installs_are_not_prereleases() {
+        assert!(!is_prerelease_install("v3.27.0", &releases()));
+        assert!(!is_prerelease_install("v3.26.8", &releases()));
+    }
+
+    #[test]
+    fn a_tag_missing_from_the_page_is_not_assumed_prerelease() {
+        assert!(!is_prerelease_install("v3.20.0", &releases()));
+        assert!(!is_prerelease_install("v3.28.0", &releases()));
+    }
+
+    #[test]
+    fn suffixed_prerelease_still_counts() {
+        assert!(is_prerelease_install("v3.27.0-beta.1", &releases()));
+        assert!(is_prerelease_install("v3.27.1-rc1", &[]));
+    }
+
+    #[test]
+    fn drafts_never_count() {
+        let mut list = releases();
+        list.push(ReleaseInfo { draft: true, ..release("v3.29.0", true) });
+        assert!(!is_prerelease_install("v3.29.0", &list));
     }
 }

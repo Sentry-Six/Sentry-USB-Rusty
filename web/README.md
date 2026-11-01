@@ -8,7 +8,7 @@ The Sentry USB web interface — a React single-page application with a dark gla
 - **Vite** — build tooling and dev server
 - **TailwindCSS** — utility-first styling
 - **Material Symbols** — icons, vendored as inline SVG in `src/components/icons.tsx`
-- **Leaflet** — drive map visualization
+- **Leaflet** + **MapLibre GL** — drive maps on OpenStreetMap vector tiles from tiles.sentryusb.com (OpenStreetMap raster tiles in browsers without WebGL)
 
 ## Development
 
@@ -21,10 +21,13 @@ The dev server proxies `/api/*` (including WebSockets) and `/TeslaCam` to the Ru
 
 ```bash
 cd ..
+mkdir -p crates/sentryusb/static   # the binary embeds this folder; it must exist to compile
 cargo run -p sentryusb -- --dev
 ```
 
-To develop against a real device instead, point the proxy at it with `SENTRYUSB_API`, e.g. `SENTRYUSB_API=http://sentryusb.local npm run dev`. Set `SENTRYUSB_READ_ONLY=1` to block non-GET API requests from the dev server.
+Building the backend on Linux also needs `libdbus-1-dev` and `pkg-config` for Bluetooth support.
+
+To develop against a real device instead, point the proxy at it with `SENTRYUSB_API`, e.g. `SENTRYUSB_API=http://sentryusb.local npm run dev`. Set `SENTRYUSB_READ_ONLY=1` to block API requests other than GET, HEAD and OPTIONS from the dev server.
 
 ## Icons
 
@@ -74,10 +77,10 @@ See [BUILD.md](../BUILD.md) for the full build.
 | **Viewer** | Multi-camera clip viewer with synced playback (6 cameras) |
 | **Drives** | Drive history, per-drive detail, FSD analytics, and safety score estimate |
 | **Charging** | Charge session history and per-session detail |
-| **Files** | Browse/upload/delete TeslaCam, Music, LightShow, Boombox, Wraps, and LockChime files |
+| **Files** | Browse/upload/delete TeslaCam, Lock Sounds, Wraps, License Plates, Music, LightShow, Boombox, and USB Drive files |
 | **Snapshots** | Saved snapshot management |
 | **Notifications** | Notification history, event toggles, and delivery providers |
-| **Logs** | Live-tailing of archiveloop, diagnostics, and Bluetooth logs |
+| **Logs** | Live-tailing of archiveloop, setup, diagnostics, and Bluetooth logs |
 | **Community** | Community wraps and lock chimes |
 | **Support** | AI Support & Help chat |
 | **Terminal** | In-browser shell |

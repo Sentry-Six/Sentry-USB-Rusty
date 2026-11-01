@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react"
 import L from "leaflet"
 import "leaflet/dist/leaflet.css"
-import { MAP_TILES } from "@/lib/mapTiles"
+import { attachBasemap, type Basemap, type MapStyle } from "@/lib/mapTiles"
 import { LayersIcon } from "@/components/icons"
 import { useScrubberState } from "@/hooks/useScrubberSync"
 import type { FsdEvent } from "@/types/drives"
@@ -24,8 +24,6 @@ export interface BatteryPoint {
   ts: number      // unix ms
   batteryPct?: number
 }
-
-type Style = keyof typeof MAP_TILES
 
 // FSD and manual segments use distinct colors; imported routes use violet.
 const COLOR_FSD = "#34d399"
@@ -204,10 +202,12 @@ export function DriveMap({
 }: DriveMapProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const mapRef = useRef<L.Map | null>(null)
-  const tileRef = useRef<L.TileLayer | null>(null)
+  const basemapRef = useRef<Basemap | null>(null)
   const pulseRef = useRef<L.Marker | null>(null)
   const eventsLayerRef = useRef<L.LayerGroup | null>(null)
-  const [style, setStyle] = useState<Style>("dark")
+  const [style, setStyle] = useState<MapStyle>("dark")
+  // The map rebuilds when its route changes; it reopens in the chosen style.
+  const styleRef = useRef<MapStyle>(style)
   const { currentIndex } = useScrubberState()
 
   useEffect(() => {
@@ -222,7 +222,7 @@ export function DriveMap({
     })
     mapRef.current = map
     map.attributionControl.setPrefix(false)
-    tileRef.current = L.tileLayer(MAP_TILES.dark.url, MAP_TILES.dark).addTo(map)
+    basemapRef.current = attachBasemap(map, styleRef.current)
 
     const latLngs = points.map(([lat, lng]) => L.latLng(lat, lng))
 
@@ -312,7 +312,7 @@ export function DriveMap({
     return () => {
       map.remove()
       mapRef.current = null
-      tileRef.current = null
+      basemapRef.current = null
       pulseRef.current = null
       eventsLayerRef.current = null
     }
@@ -321,11 +321,9 @@ export function DriveMap({
   }, [points, fsdStates, source])
 
   useEffect(() => {
-    const map = mapRef.current
-    if (!map || !tileRef.current) return
-    map.removeLayer(tileRef.current)
-    tileRef.current = L.tileLayer(MAP_TILES[style].url, MAP_TILES[style]).addTo(map)
-  }, [style, points, fsdStates, source])
+    styleRef.current = style
+    basemapRef.current?.setStyle(style)
+  }, [style])
 
   useEffect(() => {
     const layer = eventsLayerRef.current
@@ -377,7 +375,7 @@ export function DriveMap({
   }, [currentIndex, points, fsdStates, startTime, metric, batterySeries])
 
   const cycleStyle = () => {
-    setStyle((s) => (s === "dark" ? "streets" : s === "streets" ? "satellite" : "dark"))
+    setStyle((s) => (s === "dark" ? "streets" : "dark"))
   }
 
   return (
