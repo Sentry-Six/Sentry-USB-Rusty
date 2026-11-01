@@ -13,11 +13,11 @@ Click **Get Started**.
 Lists the outbound data flows and shows the device-reporting choice near the top of the page.
 
 - **No thanks** — no device analytics reports are sent. Update checks still work.
-- **Yes, count me** — share a hashed device ID and running software version. This counts unique reporting Pis and shows their latest reported versions. The server keeps first/last report times; the board serial keeps the ID stable across reinstalls.
+- **Yes, count me** — share a pseudonymous device ID (a hash of the board serial with a salt that is public in the source code) and running software version. This counts unique reporting Pis and shows their latest reported versions. The server keeps first/last report times; the board serial keeps the ID stable across reinstalls.
 
-For a **new installation with no saved choice**, Yes is preselected. Select No to opt out before continuing. Neither opening the Privacy step nor changing the selection sends a report: the choice is saved when you click Next or otherwise continue to a later step. If saving fails, the wizard stays on Privacy. Cancelling or going Back leaves the saved setting unchanged.
+For a **new installation with no saved choice**, choose Yes or No before continuing. Neither opening the Privacy step nor changing the selection sends a report: the choice is saved when you click Next or otherwise continue to a later step. If saving fails, the wizard stays on Privacy. Cancelling or going Back leaves the saved setting unchanged.
 
-Existing installations keep their saved choice. An existing installation that never made a choice remains off; reopening the wizard or updating the software does not enable it. A saved No, including one restored from backup or saved in another tab, is never overwritten by the new-install default.
+Existing installations keep their saved choice. An existing installation that never made a choice remains off; reopening the wizard or updating the software does not enable it.
 
 You can change reporting any time at **Settings → System → Device counting**. Full per-flow disclosure is on the [Privacy](Privacy) page.
 
@@ -93,7 +93,7 @@ Leave both empty to disable web auth entirely — only do this if your network i
 
 ## 10. Advanced
 
-- **Timezone** — pick yours from the list (used for log timestamps and notification times).
+- **Timezone** — pick yours from the list (used for log timestamps and notification times). **Detect automatically** asks `sentryusb.com` to estimate your time zone from your public IP address during setup and at boot; see [Privacy](Privacy).
 - **Archive Delay (seconds)** — how long to wait after WiFi connects before archiving starts. Default 20 is fine.
 - **Snapshot Interval (seconds)** — how often the Pi looks for new saved clips to archive. Default works for most users. **EU users: set this to 480** (8 min) because Tesla rotates RecentClips faster in the EU. Rule of thumb: set ~2 minutes shorter than the car's RecentClips retention.
 - **Temperature Unit** — °C or °F for the temperature monitoring widget.

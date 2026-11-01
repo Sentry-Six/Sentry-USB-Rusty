@@ -113,9 +113,10 @@ export function PrivacyStep({ data, onChange, setupAlreadyFinished, setupStatusK
           Help us count devices?
         </h3>
         <p className="mt-2 text-xs leading-relaxed text-slate-400">
-          Share a hashed device ID and running software version so we can count devices
-          without counting reinstalls twice. We keep the first and last report times.
-          You can turn this off in Settings → System.
+          Share a pseudonymous device ID (a salted hash of the board serial) and running
+          software version so we can count devices without counting reinstalls twice. We
+          keep the first and last report times. Nothing is sent unless you choose Yes.
+          Change this any time in Settings → System.
         </p>
 
         <div className="mt-4 flex flex-col gap-2 sm:flex-row" role="group" aria-label="Share installation analytics">
@@ -172,33 +173,33 @@ export function PrivacyStep({ data, onChange, setupAlreadyFinished, setupStatusK
         <div className="divide-y divide-white/5">
           <FlowRow
             when="Device counting (when enabled)"
-            what="Hashed device ID and running software version"
+            what="Pseudonymous device ID and running software version"
             why="Count unique devices and show their latest reported versions"
-            note="Reports run after startup, when enabled, and daily, with retries if offline. The server keeps the latest version and first/last report times until deletion. Turning this off stops future reports."
+            note="Reports run after startup, when enabled, and daily, with retries if offline. The ID's salt is public in the source code. The server keeps the latest version and first/last report times until deletion. A private maintainers' Discord channel gets each new device's version and first-seen time. Turning this off stops future reports."
           />
           <FlowRow
-            when="When you use Sentry Cloud"
-            what="Your account login + the files you sync"
+            when="When you pair with Sentry Cloud"
+            what="Pairing details (code, public keys, hostname, board and version info, last 4 MAC digits) + drive, charging and Home data you sync, encrypted on the Pi"
             why="Sync requires it — the feature can't work otherwise"
-            note="Don't sign in to Cloud if you don't want this."
+            note="Unpair any time to stop this."
           />
           <FlowRow
             when="When you use AI Support & Help"
             what="Messages, product/software version, SBC model, selected non-secret support settings, the Pi connection's public IP for abuse prevention + only diagnostics you explicitly approve"
             why="Generate product-specific troubleshooting help"
-            note="Online AI: messages are processed by Anthropic and stored redacted on Sentry Six servers for up to 90 days after the last activity; maintainers may review them. Approved diagnostics are retained for 7 days."
+            note="Online AI: messages are processed by Anthropic and stored redacted on Sentry Six servers in Canada for up to 90 days after the last activity; maintainers may review them. Approved diagnostics are retained for 7 days."
           />
           <FlowRow
             when="When you submit a wrap or lock chime"
-            what="The file you uploaded + your IP for rate-limiting"
+            what="The file you uploaded, display name and vehicle model + your IP for rate-limiting"
             why="Sharing the submission with the community"
             note="No device fingerprint is sent. Your IP is used and retained for rate-limiting and abuse handling."
           />
           <FlowRow
             when="If you enable iOS push notifications"
-            what="A randomly-generated device pairing ID"
-            why="Routing push notifications to your phone"
-            note="Not tied to your hardware. Cleared when you unpair."
+            what="A random pairing ID and secret, the Pi's hostname, and each notification's title and message"
+            why="Routing push notifications to your phone through notifications.sentry-six.com and Apple"
+            note="Hostname cleared when the last phone unpairs; inactive unpaired records deleted after 90 days."
           />
         </div>
       </details>

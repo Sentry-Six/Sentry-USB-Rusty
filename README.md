@@ -122,17 +122,18 @@ See the [status-light wiki guide](https://github.com/Sentry-Six/Sentry-USB-Rusty
 
 ## Privacy
 
-By default, Sentry USB sends **no device identifier** to our servers. Here's everything it ever sends:
+Here's everything Sentry USB sends to Sentry Six services:
 
 | When | What | Identifier? |
 |---|---|---|
-| Device statistics (when enabled) | Running version; after startup, enabling reporting, and daily. Server keeps first/last report times. | Stable hashed device ID; no raw serial or boot ID |
-| Wraps / lock chime submissions | The file + your IP for rate-limiting and abuse handling | No device or hardware fingerprint; the IP may be retained with the submission |
-| Sentry Cloud (if paired) | At pairing: the code you enter, the Pi's public keys, hostname, board model, kernel and Sentry USB versions, and the last 4 digits of a MAC address. Then the drive and telemetry data you sync, encrypted on the Pi | A per-device token linked to your Sentry Cloud account; your account password never leaves your browser |
-| iOS push pairing (if enabled) | Random pairing ID | Not tied to hardware |
-| AI Support & Help (if used) | Chat messages, product/software version, and the Pi connection's public IP for abuse prevention; diagnostics only after a separate one-time approval | Random conversation ID and access token; no hardware fingerprint |
+| Device statistics (if you choose **Yes, count me**) | Running version; after startup, enabling reporting, and daily. Server keeps first/last report times. A private maintainers' Discord channel gets each new device's version and first-seen time | Pseudonymous device ID (SHA-256 of the board serial with a salt that is public in the source code) |
+| Time zone **Detect automatically** (if chosen) | A lookup to `sentryusb.com` during setup and at boot; the server sees your IP and returns an approximate city, region and time zone | Your IP, rate-limited for 24 hours |
+| Wraps / lock chime submissions | The file, display name and vehicle model + your IP for rate-limiting and abuse handling | No device or hardware fingerprint; the IP may be retained with the submission |
+| Sentry Cloud (if paired) | At pairing: the code you enter, the Pi's public keys, hostname, board model, kernel and Sentry USB versions, and the last 4 digits of a MAC address. Then the drive history, charging sessions and Home sync data you sync, encrypted on the Pi | A per-device token linked to your Sentry Cloud account |
+| iOS push pairing (if enabled) | Random pairing ID and secret, the Pi's hostname, and each notification's title and message, relayed via `notifications.sentry-six.com` to Apple. Hostname cleared when the last phone unpairs; inactive unpaired records deleted after 90 days | Random ID |
+| AI Support & Help (if used) | Chat messages, product/software version, and the Pi connection's public IP for abuse prevention; diagnostics only after a separate one-time approval. Processed by Anthropic; redacted chats stored in Canada for 90 days after last activity | Random conversation ID and access token; no hardware fingerprint |
 
-New installations preselect **Yes, count me** on the Privacy step. Reporting begins only after you continue past that step; choose **No thanks** first to prevent it. Existing installations keep their saved choice, and an existing installation without a choice stays off. Change reporting later under **Settings → System → Device counting**. Full disclosure, retention, and controls for each flow are documented in [`wiki/Privacy.md`](wiki/Privacy.md).
+New installations choose **Yes, count me** or **No thanks** on the Privacy step. Existing installations keep their saved choice (off if none). Change reporting later under **Settings → System → Device counting**. Full disclosure, retention, and controls for each flow are documented in [`wiki/Privacy.md`](wiki/Privacy.md).
 
 ---
 
@@ -145,7 +146,7 @@ New installations preselect **Yes, count me** on the Privacy step. Reporting beg
 
 ## Build from source
 
-Prerequisites: Rust stable (1.85+), Node 20.19+ (or 22.12+), and `cross` (`cargo install cross`).
+Prerequisites: Rust stable (1.89+), Node 20.19+ (or 22.12+), and `cross` (`cargo install cross`).
 
 ```bash
 # Web UI

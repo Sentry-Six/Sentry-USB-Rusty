@@ -7,10 +7,9 @@ match what's listed here, it's a bug — please open an issue.
 
 ## Summary
 
-New installations preselect **Yes, count me** on the Privacy step for minimal
-device statistics. No reporting starts from that default until the user
-continues past the step and the choice is saved. **No thanks** prevents the
-first report. Cancelling or going Back does not save the draft selection.
+A new installation asks you to choose **Yes, count me** or **No thanks** on
+the Privacy step; device counting starts only if you choose Yes. Cancelling or
+going Back does not save a selection.
 
 Existing installations keep their saved choice. Existing opt-outs and existing
 installations without a recorded choice remain off. The reporting setting in
@@ -25,25 +24,29 @@ installations without a recorded choice remain off. The reporting setting in
 - **When:** After startup, after enabling analytics, and daily while enabled.
   Offline attempts retry with bounded backoff. Repeat reports update the same
   device record.
-- **Sent:** `fingerprint` (salted SHA-256 device ID), `current_version`, and
-  `report_kind: running_version` (protocol label).
+- **Sent:** `fingerprint` (a salted SHA-256 hash of the board serial),
+  `current_version`, and `report_kind: running_version` (protocol label).
   No raw hardware serial, board model, boot ID, architecture, files, locations,
   or update download/availability data is included. Normal source-IP connection metadata
   is visible to the server and briefly used for rate limiting.
 - **Identity:** The ID derives from the board serial and is stable across
-  reinstalls on Raspberry Pi. Devices without a readable hardware serial are
-  not counted; an installation ID is never used as a substitute.
+  reinstalls on Raspberry Pi. The salt is public in the open-source code, so
+  the ID is pseudonymous: anyone who knows a board's serial can compute it.
+  Devices without a readable
+  hardware serial are not counted; an installation ID is never used as a
+  substitute.
 - **Purpose:** Count known and recently active devices and show their latest
   reported running versions. The server keeps just the device ID, latest
-  version, and first/last report times. It does not store version history or
-  send automatic per-device notifications to Discord. Authorized maintainers
-  can view the minimal records through restricted administrative tools,
-  including Discord commands. Reports describe the running version,
-  not an offered or downloaded update.
-- **Control:** New installations show Yes preselected on the Privacy step,
-  with an equally accessible No. The selection is saved only when continuing
-  past that step. Existing settings are preserved; existing installations with
-  no choice stay off. Both options provide the same core features and updates.
+  version, and first/last report times. Authorized maintainers can view the
+  minimal records through restricted administrative tools, including Discord
+  commands. Reports describe the running version, not an offered or
+  downloaded update.
+- **New-device notice:** The first time the server sees a device, it posts
+  the software version and first-seen time to a private maintainers' Discord
+  channel. Notices stay there until removed manually.
+- **Control:** New installations choose Yes or No on the Privacy step. The
+  selection is saved when continuing past that step. Existing settings are preserved; existing installations with no
+  choice stay off. Both options provide the same core features and updates.
 - **Retention:** The four-field device summary remains until deleted or
   deletion is requested. Opting out stops future reports; it does not erase
   the existing summary. No report-ID receipts or version-history rows are kept.
@@ -58,7 +61,19 @@ Sentry Six. The legacy `/sentryusb/telemetry` and `/sentryusb/install-beacon`
 endpoints discard reports from old clients; they do not feed the new Rusty
 device count.
 
-### 3. Wraps / lock chime submissions
+### 3. Time zone detection
+
+- **Endpoint:** `GET https://sentryusb.com/api/geoip/me`
+- **When:** Only when the time zone is set to **Detect automatically**:
+  during setup, and at boot while the system time zone is still UTC.
+- **Sent:** An HTTPS request. The server uses your public IP address to look
+  up an approximate city, region and time zone and returns them to the Pi.
+- **Purpose:** Setting the Pi's clock to your local time zone.
+- **Retention:** The endpoint rate-limits lookups by IP address for 24 hours.
+- **How to disable:** Pick your time zone from the list instead of
+  **Detect automatically**.
+
+### 4. Wraps / lock chime submissions
 
 - **Endpoint:** `POST https://api.sentry-six.com/wraps/upload`,
   `POST https://api.sentry-six.com/lockchime/upload`
@@ -84,7 +99,7 @@ device count.
   sends no custom or device identifier; the source IP is necessarily seen
   and briefly used for rate limiting.
 
-### 4. Wraps / lock chime downloads
+### 5. Wraps / lock chime downloads
 
 - **Endpoint:** `GET https://api.sentry-six.com/wraps/download/<code>`,
   `GET https://api.sentry-six.com/lockchime/download/<code>`
@@ -100,14 +115,14 @@ device count.
   `privacy@sentry-six.com` to request deletion.
 - **How to disable:** Don't download.
 
-### 5. Sentry Cloud (sync feature, opt-in)
+### 6. Sentry Cloud (sync feature, opt-in)
 
 - **Endpoint:** Various `https://sentryusb.com/api/pi/...` routes.
 - **Sent:** When you pair, the 6-digit code shown in your browser, the Pi's
   public keys, and device details (hostname, board model, kernel version,
   Sentry USB version, and the last 4 hex digits of a network MAC address).
-  After pairing, the drive-history and telemetry data you choose to sync,
-  encrypted on the Pi before upload. Your Sentry Cloud password is never
+  After pairing, the drive history, charging sessions and Home sync data you
+  choose to sync, encrypted on the Pi before upload. Your Sentry Cloud password is never
   entered on or sent from the Pi. Sentry Cloud does not upload dashcam video.
 - **Identifier:** A per-device token issued at pairing and linked to your
   Sentry Cloud account.
@@ -116,24 +131,30 @@ device count.
 - **Legal basis:** Contractual necessity (Art. 6(1)(b)) — you signed
   up for the service.
 - **Retention:** See the Sentry Cloud terms of service.
-- **How to disable:** Don't sign in to Cloud. The feature is fully
-  opt-in.
+- **How to disable:** Don't pair this Pi, or unpair it.
 
-### 6. iOS push notification pairing (opt-in)
+### 7. iOS push notification pairing (opt-in)
 
-- **Endpoint:** `POST https://notifications.sentry-six.com/register-code`
-- **Sent:** A `device_id` (random UUID generated on this Pi),
-  `device_secret`, your chosen pairing code, and your Pi's hostname.
+- **Endpoint:** `POST https://notifications.sentry-six.com/register-code`,
+  then `https://notifications.sentry-six.com/send` for each notification.
+- **Sent:** A `device_id` (64 random hex characters generated on this Pi),
+  `device_secret`, your chosen pairing code, and your Pi's hostname. When a
+  phone pairs, the Sentry Connect app registers its Apple push (APNs) token,
+  a device name (such as "iPhone") and platform. Each notification's title
+  and message text pass through `notifications.sentry-six.com` to Apple
+  (APNs) for delivery.
 - **Identifier:** The `device_id` — but it's a random value created
   locally on first run, **not** derived from your hardware. Resetting
   it generates a new one.
 - **Purpose:** Routing push notifications from your Pi to your phone.
 - **Legal basis:** Consent — you actively enabled this feature.
-- **Retention:** Kept until you unpair the device.
+- **Retention:** When the last phone unpairs, the hostname and device link
+  are cleared. Registrations with no paired phone and no activity for 90 days
+  are deleted.
 - **How to disable:** Don't pair, or unpair in the iOS app + delete
   the credentials on the Pi.
 
-### 7. AI Support & Help (user-initiated)
+### 8. AI Support & Help (user-initiated)
 
 - **Endpoint:** Your browser talks only to this Pi at
   `/api/support/ai/...`. The Pi proxies the fixed request types to
@@ -158,7 +179,7 @@ device count.
   online AI service; the model is not running solely on your Pi.
 - **Server logging:** A redacted transcript of messages and responses,
   timestamps, product/version context, action decisions, and limited
-  operational metadata is logged on Sentry Six servers. Authorized
+  operational metadata is stored on Sentry Six servers in Canada. Authorized
   maintainers may review it to troubleshoot failures, find hallucinations,
   and improve support quality.
 - **Identifier and local resume data:** To resume a chat, your browser stores
@@ -230,7 +251,7 @@ separate disclosure to Discord and is governed by Discord's policies.
 ## Things SentryUSB does **not** do
 
 - Enable reporting on an existing installation merely because it updates.
-- Send the first report for a preselected new-install choice before it is saved by continuing past Privacy.
+- Send a device report before you choose Yes and continue past Privacy.
 - Send device analytics at startup or in the background when opted out.
 - Send "diagnostics" or "crash reports" in the background. If a crash
   reporter is ever added, it will be its own opt-in.
