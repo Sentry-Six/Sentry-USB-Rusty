@@ -398,6 +398,7 @@ mod tests {
             &agg,
         )
         .unwrap();
+        #[allow(clippy::type_complexity)] // row tuple mirrors the SELECT columns
         let (bs, be, imin, imax, ea, hvac): (
             Option<f64>, Option<f64>, Option<f64>, Option<f64>, Option<f64>, Option<i64>,
         ) = conn.query_row(

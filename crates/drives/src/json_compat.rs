@@ -1669,6 +1669,7 @@ mod import_diagnostics_tests {
         let (stats, _diag) = import_json(&mut conn, path.to_str().unwrap(), |_| {}).unwrap();
         assert_eq!(stats.routes, 1);
 
+        #[allow(clippy::type_complexity)] // row tuple mirrors the SELECT columns
         let (bs, be, hvac, odo_s, odo_e, loc, fl): (
             Option<f64>, Option<f64>, Option<i64>, Option<f64>, Option<f64>,
             Option<String>, Option<f64>,
@@ -1816,6 +1817,7 @@ mod full_db_export_tests {
         assert_eq!(stats.charge_costs, 1);
 
         // Full charging row survives column-for-column.
+        #[allow(clippy::type_complexity)] // row tuple mirrors the SELECT columns
         let (bp, hvac, src, fl, odo, swv, loc, pkw, amps, volts, rate, kwh, lim, range, lat, lng, mins, cs): (
             Option<f64>, Option<i64>, String, Option<f64>, Option<f64>, Option<String>,
             Option<String>, Option<i64>, Option<i64>, Option<i64>, Option<f64>, Option<f64>,

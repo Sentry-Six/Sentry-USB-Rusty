@@ -624,6 +624,7 @@ fn should_refresh_parked_awake(observation: CarState, bc_awake: Option<bool>) ->
 ///
 /// Active → Quiet when parked_polls hits the count; Quiet → Active when
 /// user_presence flips NOT_PRESENT → PRESENT.
+#[allow(clippy::too_many_arguments)] // the poll loop's state, borrowed per tick
 async fn tick(
     conn: &Connection,
     held_radio: &mut bool,

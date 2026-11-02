@@ -156,6 +156,7 @@ fn validate(pending:&Pending,binding:&str,drive:&str)->Result<()> {
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)] // distinct inputs; a parameter struct would only move them
 async fn finish(state:&Arc<CloudStateInner>,client:&CloudClient,creds:&CloudCredentialsV1,pi_key:&[u8;32],
     key:&str,raw:&str,pending:&Pending,attempt_revision:i64)->Result<()> {
     ensure!(state.store.mutable_route_source_revision()?==attempt_revision,"drive sources changed during publication");

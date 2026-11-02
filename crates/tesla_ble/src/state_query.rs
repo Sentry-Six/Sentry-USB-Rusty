@@ -37,6 +37,7 @@ pub enum VehicleDataState {
 impl VehicleDataState {
     /// Parse the CLI / API string form used by tesla-control (`state climate`,
     /// `state charge`, etc.).
+    #[allow(clippy::should_implement_trait)] // unknown names map to None, with no error type
     pub fn from_str(s: &str) -> Option<Self> {
         Some(match s {
             "charge" => Self::Charge,

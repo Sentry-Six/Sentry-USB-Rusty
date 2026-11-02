@@ -1431,6 +1431,7 @@ pub async fn tire_history(
     let body = TIRE_HISTORY_CACHE
         .get(days, move || {
             // Build JSON once; cache hits clone only the `Arc`.
+            #[allow(clippy::type_complexity)] // row tuple mirrors the SELECT columns
             let rows: Vec<(i64, Option<f32>, Option<f32>, Option<f32>, Option<f32>)> = store
                 .with_read_conn(|conn| {
                     let mut stmt = conn.prepare(

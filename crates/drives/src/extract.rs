@@ -67,6 +67,7 @@ pub fn extract_gps_from_file(path: &str) -> Result<ExtractedGps> {
 /// the drive that followed it. The final clip of a session can also carry
 /// far fewer real frames than its 60s container claims (recording stops
 /// early); trailing frames are real data, never junk to trim.
+#[allow(clippy::too_many_arguments)] // distinct inputs; a parameter struct would only move them
 fn assemble_extracted(
     mut points: Vec<GpsPoint>,
     mut gears: Vec<u8>,

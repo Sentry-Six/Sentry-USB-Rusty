@@ -365,6 +365,7 @@ fn shift_chunk_offsets(moov: &mut [u8], delta: u64, head_len: u64, moov_offset: 
 
 /// Visits each box in `buf`, descending into [`CONTAINERS`]; `visit` gets a
 /// leaf's type and body.
+#[allow(clippy::type_complexity)] // the visitor signature is clearest inline
 fn walk(buf: &mut [u8], visit: &mut dyn FnMut(&[u8; 4], &mut [u8]) -> Option<()>) -> Option<()> {
     let mut offset = 0usize;
     while offset < buf.len() {

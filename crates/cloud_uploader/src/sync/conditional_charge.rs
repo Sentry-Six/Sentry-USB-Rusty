@@ -119,6 +119,7 @@ fn fields(value: &Value) -> Result<ChargeMutable> {
     Ok(fields)
 }
 
+#[allow(clippy::too_many_arguments)] // distinct inputs; a parameter struct would only move them
 fn confirm(state: &CloudStateInner, ts: i64, through: i64, id: &str, wrapped: &str,
     uploaded: i64, value: &Value, receipt: Option<(&str,&str)>) -> Result<()> {
     let fields = fields(value)?;

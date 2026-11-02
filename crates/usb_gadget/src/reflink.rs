@@ -297,6 +297,7 @@ pub fn file_identity(path: &std::path::Path) -> Result<FileIdentity> {
     Ok(FileIdentity::default())
 }
 
+#[allow(clippy::type_complexity)] // (measured, failed) pairs read clearer inline
 pub fn measure_all_with<T, F>(
     ids: &[String],
     mut measure: F,
