@@ -1,5 +1,6 @@
 import L from "leaflet"
 import type { Map as MapLibreMap } from "maplibre-gl"
+import { cachedStyle, prefetchStyles } from "@/lib/mapStyleCache"
 
 // Basemaps: OpenStreetMap vector tiles from the SentryUSB VersaTiles server,
 // drawn by MapLibre GL. Interactive maps add the style as a Leaflet layer
@@ -80,6 +81,15 @@ export function keepMercator(glMap: MapLibreMap) {
   glMap.on("style.load", () => glMap.setProjection({ type: "mercator" }))
 }
 
+// Fetch both styles once a map has loaded, so the first switch is instant.
+export function prefetchMapStyles(glMap: MapLibreMap) {
+  glMap.once("load", () => prefetchStyles(Object.values(MAP_STYLE_URLS)))
+}
+
+export function mapStyle(style: MapStyle) {
+  return cachedStyle(MAP_STYLE_URLS[style])
+}
+
 export interface Basemap {
   setStyle(style: MapStyle): void
   remove(): void
@@ -126,6 +136,7 @@ export function attachBasemap(
       } as Parameters<typeof maplibreGL>[0])
       layer.addTo(map)
       keepMercator(layer.getMaplibreMap())
+      prefetchMapStyles(layer.getMaplibreMap())
       glLayer = layer
     }).catch((err) => { console.warn("[map] Vector basemap unavailable; routes draw on a plain background:", err) })
   } else {
@@ -139,7 +150,7 @@ export function attachBasemap(
       current = style
       paint()
       const gl = glLayer as (L.Layer & { getMaplibreMap(): MapLibreMap }) | null
-      gl?.getMaplibreMap()?.setStyle(MAP_STYLE_URLS[current])
+      gl?.getMaplibreMap()?.setStyle(mapStyle(current))
       rasterLayer?.getContainer()?.classList.toggle("map-dark-tiles", current === "dark")
     },
     remove() {

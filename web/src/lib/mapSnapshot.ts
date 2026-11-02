@@ -1,5 +1,5 @@
 import type { Map as MapLibreMap } from "maplibre-gl"
-import { MAP_STYLE_URLS, keepMercator, loadMapLibre, normalizeMapStyle, supportsWebGL, type MapStyle } from "@/lib/mapTiles"
+import { MAP_STYLE_URLS, keepMercator, loadMapLibre, mapStyle, normalizeMapStyle, prefetchMapStyles, supportsWebGL, type MapStyle } from "@/lib/mapTiles"
 
 // One offscreen MapLibre map renders basemap images for list thumbnails.
 // Browsers cap live WebGL contexts at a few dozen, so a map per row would
@@ -42,6 +42,7 @@ async function getRenderer() {
     canvasContextAttributes: { preserveDrawingBuffer: true },
   })
   keepMercator(map)
+  prefetchMapStyles(map)
   renderer = { map, container, style: "dark" }
   return renderer
 }
@@ -61,7 +62,7 @@ async function render(view: SnapshotView) {
   r.map.resize()
   if (r.style !== view.style) {
     r.style = view.style
-    r.map.setStyle(MAP_STYLE_URLS[view.style])
+    r.map.setStyle(mapStyle(view.style))
   }
   r.map.jumpTo({ center: view.center, zoom: view.zoom })
   await waitForIdle(r.map)
