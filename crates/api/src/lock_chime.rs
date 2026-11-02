@@ -1753,17 +1753,7 @@ fn find_subsequence(haystack: &[u8], needle: &[u8]) -> Option<usize> {
 
 fn find_double_newline(data: &[u8]) -> Option<usize> {
     // Find \r\n\r\n or \n\n
-    for i in 0..data.len().saturating_sub(3) {
-        if data[i] == b'\r' && data[i + 1] == b'\n' && data[i + 2] == b'\r' && data[i + 3] == b'\n' {
-            return Some(i);
-        }
-    }
-    for i in 0..data.len().saturating_sub(1) {
-        if data[i] == b'\n' && data[i + 1] == b'\n' {
-            return Some(i);
-        }
-    }
-    None
+    find_subsequence(data, b"\r\n\r\n").or_else(|| find_subsequence(data, b"\n\n"))
 }
 
 fn extract_filename_from_header(header: &str) -> Option<String> {

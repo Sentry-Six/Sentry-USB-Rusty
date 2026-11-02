@@ -648,7 +648,7 @@ fn build_charging_list_with_context(store: &sentryusb_drives::DriveStore, rates:
             summary
         }).collect();
         sessions.extend(kept);
-        sessions.sort_by(|a,b| b.id.cmp(&a.id));
+        sessions.sort_by_key(|s| std::cmp::Reverse(s.id));
         Ok((revision,rewrite,latest_ts,sessions,true))
     })?;
     let body = serde_json::to_string(&sessions)?;

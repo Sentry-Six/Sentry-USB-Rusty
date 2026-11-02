@@ -303,9 +303,7 @@ fn escalation_action(rep_ok: bool, needs_replay: bool, auto: bool, force_allowed
     if rep_ok {
         return Escalation::Proceed;
     }
-    if auto {
-        if force_allowed { Escalation::RunForce } else { Escalation::StopNeedsForce }
-    } else if needs_replay {
+    if auto || needs_replay {
         if force_allowed { Escalation::RunForce } else { Escalation::StopNeedsForce }
     } else {
         Escalation::Fail
