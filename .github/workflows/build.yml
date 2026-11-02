@@ -325,7 +325,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       # Pinned so a new clippy release can't fail CI without a code change; bump deliberately.
-      - uses: dtolnay/rust-toolchain@1.99.0
+      - uses: dtolnay/rust-toolchain@1.120.0
         with:
           components: clippy
       - name: Cache cargo registry + build
