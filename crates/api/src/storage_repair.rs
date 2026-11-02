@@ -128,7 +128,7 @@ async fn run_capture(timeout: Duration, name: &str, args: &[&str]) -> CmdResult 
                 if !s.is_empty() && !s.ends_with('\n') {
                     s.push('\n');
                 }
-                s.push_str(&err);
+                s.push_str(err);
             }
             CmdResult {
                 ok: o.status.success(),
@@ -704,7 +704,7 @@ impl RepairLog {
         self.buf.push('\n');
         self.hub.broadcast(
             "storage_repair",
-            &serde_json::json!({ "status": "running", "phase": phase, "line": line }),
+            serde_json::json!({ "status": "running", "phase": phase, "line": line }),
         );
     }
 
@@ -801,7 +801,7 @@ async fn run_repair(
         Err(error) => {
             log.line("preflight", &error);
             let log_file = persist_log(&log.buf);
-            hub.broadcast("storage_repair", &serde_json::json!({
+            hub.broadcast("storage_repair", serde_json::json!({
                 "status": "error", "device": device, "log_file": log_file,
                 "error": format!("Cannot prepare compatible XFS repair tool: {error}. Storage was not changed."),
             }));
@@ -816,7 +816,7 @@ async fn run_repair(
     log.cmd("preflight", "selected xfs_repair -V", &version);
     if !version.ok {
         let log_file = persist_log(&log.buf);
-        hub.broadcast("storage_repair", &serde_json::json!({
+        hub.broadcast("storage_repair", serde_json::json!({
             "status": "error", "device": device, "log_file": log_file,
             "error": "Selected XFS repair tool cannot run. Storage was not changed.",
         }));
@@ -889,7 +889,7 @@ async fn run_repair(
             let log_file = persist_log(&log.buf);
             hub.broadcast(
                 "storage_repair",
-                &serde_json::json!({
+                serde_json::json!({
                     "status": "needs_force",
                     "device": device,
                     "log_file": log_file,
@@ -920,7 +920,7 @@ async fn run_repair(
         let log_file = persist_log(&log.buf);
         hub.broadcast(
             "storage_repair",
-            &serde_json::json!({
+            serde_json::json!({
                 "status": "error",
                 "device": device,
                 "log_file": log_file,
@@ -962,7 +962,7 @@ async fn run_repair(
     };
     hub.broadcast(
         "storage_repair",
-        &serde_json::json!({
+        serde_json::json!({
             "status": "reboot_required",
             "device": device,
             "cam_disk_present": cam_present,

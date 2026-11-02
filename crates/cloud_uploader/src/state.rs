@@ -207,7 +207,7 @@ impl CloudStateInner {
                     *self.credentials_load_error.lock().await = Some(msg);
                     self.hub.broadcast(
                         "cloud_status_changed",
-                        &serde_json::json!({
+                        serde_json::json!({
                             "paired": false,
                             "reason": "credentials_load_failed",
                         }),
@@ -303,7 +303,7 @@ impl CloudStateInner {
         progress.running=true;
         let ticket=progress.ticket;
         drop(progress);
-        self.hub.broadcast("cloud_sync_changed",&serde_json::json!({"running":true}));
+        self.hub.broadcast("cloud_sync_changed",serde_json::json!({"running":true}));
         Ok(ticket)
     }
 
@@ -319,7 +319,7 @@ impl CloudStateInner {
         progress.failed_stages=failed;
         progress.last_attempt_at=Some(Utc::now());
         drop(progress);
-        self.hub.broadcast("cloud_sync_changed",&serde_json::json!({"running":false}));
+        self.hub.broadcast("cloud_sync_changed",serde_json::json!({"running":false}));
         Ok(true)
     }
 
@@ -331,7 +331,7 @@ impl CloudStateInner {
         let attempt=Arc::new(Notify::new());
         *active=Some(attempt.clone());
         *self.pairing.lock().await=PairingProgress {state:PairingState::Handshaking,error:None};
-        self.hub.broadcast("cloud_status_changed",&serde_json::json!({"pairingState":"handshaking"}));
+        self.hub.broadcast("cloud_status_changed",serde_json::json!({"pairingState":"handshaking"}));
         Ok(attempt)
     }
 
@@ -344,7 +344,7 @@ impl CloudStateInner {
         let mut progress=self.pairing.lock().await;
         if progress.state!=phase || progress.error.is_some() {
             *progress=PairingProgress {state:phase,error:None};
-            self.hub.broadcast("cloud_status_changed",&serde_json::json!({"pairingState":phase}));
+            self.hub.broadcast("cloud_status_changed",serde_json::json!({"pairingState":phase}));
         }
         Ok(())
     }
@@ -360,7 +360,7 @@ impl CloudStateInner {
         *self.pairing.lock().await=PairingProgress {state:PairingState::Complete,error:None};
         *self.credentials_load_error.lock().await=None;
         *self.last_upload_error.lock().await=None;
-        self.hub.broadcast("cloud_status_changed",&serde_json::json!({"paired":true,"pairingState":"complete"}));
+        self.hub.broadcast("cloud_status_changed",serde_json::json!({"paired":true,"pairingState":"complete"}));
         Ok(())
     }
 
@@ -369,7 +369,7 @@ impl CloudStateInner {
         if !active.as_ref().is_some_and(|current|Arc::ptr_eq(current,attempt)) {return}
         *active=None;
         *self.pairing.lock().await=PairingProgress {state:PairingState::Error,error:Some("Pairing failed. Try a new code.".into())};
-        self.hub.broadcast("cloud_status_changed",&serde_json::json!({"pairingState":"error"}));
+        self.hub.broadcast("cloud_status_changed",serde_json::json!({"pairingState":"error"}));
     }
 
     pub async fn cancel_pairing(&self) {
@@ -379,7 +379,7 @@ impl CloudStateInner {
             // network future starts listening; notify_waiters would lose it.
             attempt.notify_one();
             *self.pairing.lock().await=PairingProgress {state:PairingState::Idle,error:Some("cancelled".into())};
-            self.hub.broadcast("cloud_status_changed",&serde_json::json!({"pairingState":"idle"}));
+            self.hub.broadcast("cloud_status_changed",serde_json::json!({"pairingState":"idle"}));
         }
     }
 
@@ -399,7 +399,7 @@ impl CloudStateInner {
 
         self.hub.broadcast(
             "cloud_status_changed",
-            &serde_json::json!({ "paired": false }),
+            serde_json::json!({ "paired": false }),
         );
         Ok(())
     }
@@ -412,7 +412,7 @@ impl CloudStateInner {
         *self.credentials_load_error.lock().await = None;
         self.hub.broadcast(
             "cloud_status_changed",
-            &serde_json::json!({ "paired": true }),
+            serde_json::json!({ "paired": true }),
         );
         Ok(())
     }
@@ -425,7 +425,7 @@ impl CloudStateInner {
         sentryusb_cloud_crypto::credentials::save_atomic(&self.credentials_path,&updated)?;
         *guard=Some(updated);drop(guard);
         *self.credentials_load_error.lock().await=None;
-        self.hub.broadcast("cloud_status_changed",&serde_json::json!({"paired":true}));
+        self.hub.broadcast("cloud_status_changed",serde_json::json!({"paired":true}));
         Ok(true)
     }
 
@@ -454,7 +454,7 @@ impl CloudStateInner {
 
         self.hub.broadcast(
             "cloud_status_changed",
-            &serde_json::json!({ "paired": false, "reason": "revoked" }),
+            serde_json::json!({ "paired": false, "reason": "revoked" }),
         );
         true
     }

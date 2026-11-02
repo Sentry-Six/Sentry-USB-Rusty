@@ -196,7 +196,7 @@ pub async fn ble_pair(State(s): State<AppState>, body: String) -> (StatusCode, J
 
     let hub = s.hub.clone();
     tokio::spawn(async move {
-        hub.broadcast("ble_status", &serde_json::json!({"status": "pairing"}));
+        hub.broadcast("ble_status", serde_json::json!({"status": "pairing"}));
 
         // Prefer the telemetry daemon's existing vehicle connection to avoid
         // consuming another BLE slot; the action binary can connect directly.
@@ -211,7 +211,7 @@ pub async fn ble_pair(State(s): State<AppState>, body: String) -> (StatusCode, J
             Ok(output) => {
                 hub.broadcast(
                     "ble_status",
-                    &serde_json::json!({"status": "waiting", "output": output.trim()}),
+                    serde_json::json!({"status": "waiting", "output": output.trim()}),
                 );
             }
             Err(e) => {
@@ -249,7 +249,7 @@ pub async fn ble_pair(State(s): State<AppState>, body: String) -> (StatusCode, J
                 };
                 hub.broadcast(
                     "ble_status",
-                    &serde_json::json!({"status": "error", "error": msg}),
+                    serde_json::json!({"status": "error", "error": msg}),
                 );
             }
         }

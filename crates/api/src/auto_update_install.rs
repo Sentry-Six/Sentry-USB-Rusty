@@ -118,7 +118,7 @@ pub(super) async fn stage(hub: &sentryusb_ws::Hub, a: &Attempt) -> Result<Staged
     ensure!(available >= 768 * 1024, "At least 768 MiB free space is required for staged automatic updates");
     let dir = PathBuf::from("/opt/sentryusb").join(format!("stage-{}", a.id));
     std::fs::create_dir(&dir)?;
-    hub.broadcast("update_status", &serde_json::json!({"status":"downloading", "message":format!("Preparing {}", a.target)}));
+    hub.broadcast("update_status", serde_json::json!({"status":"downloading", "message":format!("Preparing {}", a.target)}));
     let mut files = Vec::new();
     for component in ["sentryusb", "sentryusb-tesla-telemetry", "sentryusb-ble-action"] {
         let name = format!("{component}-{suffix}");

@@ -255,7 +255,7 @@ async fn sweep_once(state: Arc<CloudStateInner>) -> Result<u32> {
                         Some("user_suspended".to_string());
                     state.hub.broadcast(
                         "cloud_upload",
-                        &serde_json::json!({
+                        serde_json::json!({
                             "uploaded": 0,
                             "pending": db_ext::pending_count(&state.store),
                             "error": "user_suspended",
@@ -360,7 +360,7 @@ async fn sweep_once(state: Arc<CloudStateInner>) -> Result<u32> {
             let pending = db_ext::pending_count(&state.store);
             state.hub.broadcast(
                 "cloud_upload",
-                &serde_json::json!({
+                serde_json::json!({
                     "uploaded": stored_this_batch,
                     "pending": pending,
                     "error": serde_json::Value::Null,

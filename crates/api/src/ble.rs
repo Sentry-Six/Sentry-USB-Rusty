@@ -1143,20 +1143,20 @@ pub async fn ble_install(
         if already_installed {
             hub.broadcast(
                 "ble_install_status",
-                &serde_json::json!({ "status": "done", "already_installed": true }),
+                serde_json::json!({ "status": "done", "already_installed": true }),
             );
             return;
         }
         hub.broadcast(
             "ble_install_status",
-            &serde_json::json!({ "status": "installing" }),
+            serde_json::json!({ "status": "installing" }),
         );
         let hub_progress = hub.clone();
         let result =
             sentryusb_setup::archive::install_tesla_ble_binaries(move |msg| {
                 hub_progress.broadcast(
                     "ble_install_status",
-                    &serde_json::json!({ "status": "progress", "message": msg }),
+                    serde_json::json!({ "status": "progress", "message": msg }),
                 );
             })
             .await;
@@ -1165,13 +1165,13 @@ pub async fn ble_install(
             Ok(()) => {
                 hub.broadcast(
                     "ble_install_status",
-                    &serde_json::json!({ "status": "done", "already_installed": false }),
+                    serde_json::json!({ "status": "done", "already_installed": false }),
                 );
             }
             Err(e) => {
                 hub.broadcast(
                     "ble_install_status",
-                    &serde_json::json!({ "status": "error", "error": e.to_string() }),
+                    serde_json::json!({ "status": "error", "error": e.to_string() }),
                 );
             }
         }

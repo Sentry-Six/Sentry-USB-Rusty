@@ -222,7 +222,7 @@ async fn coordinate(state: &AppState) -> Result<()> {
         // files were installed and the expected reboot has been requested.
         attempt.phase = "awaiting_reboot".into();
         update_attempt::save(&update_attempt::current_path(), &attempt)?;
-        state.hub.broadcast("update_status", &serde_json::json!({"status":"restarting"}));
+        state.hub.broadcast("update_status", serde_json::json!({"status":"restarting"}));
         sentryusb_shell::run("reboot", &[]).await?;
         // Keep admission closed until shutdown; if reboot never happens, report
         // failure instead of leaving an everlasting in-progress state. A slow

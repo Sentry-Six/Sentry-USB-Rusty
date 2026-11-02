@@ -531,7 +531,7 @@ impl Processor {
         };
         self.hub.broadcast(
             "summon_check",
-            &serde_json::json!({
+            serde_json::json!({
                 "status": "complete",
                 "candidateDrives": outcome.candidate_drives,
                 "clipsScanned": outcome.clips_scanned,
@@ -563,7 +563,7 @@ impl Processor {
         if let Err(e) = self.store.save() { self.archive_control.mark_failed(); warn!("processor checkpoint failed: {e}"); }
         let mut status = self.status.lock().await;
         status.current_file = None;
-        self.hub.broadcast("drive_process", &serde_json::json!({
+        self.hub.broadcast("drive_process", serde_json::json!({
             "status": "cancelled",
             "processed": status.processed_files,
             "total": status.total_files,
@@ -701,7 +701,7 @@ impl Processor {
         }
 
         self.progress_clock.lock().unwrap().record(total, 0);
-        self.hub.broadcast("drive_process", &serde_json::json!({
+        self.hub.broadcast("drive_process", serde_json::json!({
             "status": "started",
             "total": total,
         }));
@@ -764,7 +764,7 @@ impl Processor {
             // Broadcast progress every 10 files.
             if (i + 1) % 10 == 0 || i + 1 == total {
                 let progress = self.get_status().await;
-                self.hub.broadcast("drive_process", &serde_json::json!({
+                self.hub.broadcast("drive_process", serde_json::json!({
                     "status": "progress",
                     "current": i + 1,
                     "processed": i + 1,
@@ -850,7 +850,7 @@ impl Processor {
             status.current_file = None;
         }
 
-        self.hub.broadcast("drive_process", &serde_json::json!({
+        self.hub.broadcast("drive_process", serde_json::json!({
             "status": "complete",
             "processed": total,
             "total": total,

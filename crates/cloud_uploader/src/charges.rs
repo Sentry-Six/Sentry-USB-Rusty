@@ -339,7 +339,7 @@ pub async fn sweep_once(state: Arc<CloudStateInner>) -> Result<u32> {
         if total_stored > 0 {
             state.hub.broadcast(
                 "cloud_charge_upload",
-                &serde_json::json!({ "uploaded": total_stored }),
+                serde_json::json!({ "uploaded": total_stored }),
             );
         }
         if outcome.consent_required {

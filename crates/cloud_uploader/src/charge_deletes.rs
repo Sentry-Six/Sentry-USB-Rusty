@@ -140,7 +140,7 @@ pub async fn sweep_once(state: Arc<CloudStateInner>) -> Result<u32> {
     if settled_now > 0 {
         state.hub.broadcast(
             "cloud_charge_delete",
-            &serde_json::json!({ "deleted": settled_now }),
+            serde_json::json!({ "deleted": settled_now }),
         );
     }
     Ok(settled_now)
