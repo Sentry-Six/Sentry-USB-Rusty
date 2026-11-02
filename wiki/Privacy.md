@@ -115,8 +115,9 @@ reports from old clients.
 
 - **Endpoint:** `https://tiles.sentryusb.com`, our map server, served
   through Cloudflare. Its tiles carry OpenStreetMap data, ESA WorldCover land
-  cover, GEBCO bathymetry and Mapzen terrain data. Browsers without WebGL2 load
-  OpenStreetMap raster tiles from `tile.openstreetmap.org` instead.
+  cover, GEBCO bathymetry and Mapzen terrain data. Every map in the web UI
+  loads from this server. In browsers without WebGL2, maps show routes on a
+  plain background and load no tiles.
 - **When:** While a page with a map is open in your browser.
 - **Sent:** Standard tile requests for the area and zoom level shown, and your
   browser's IP address. The requests come from your browser, not the Pi.
