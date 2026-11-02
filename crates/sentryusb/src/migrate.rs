@@ -60,7 +60,8 @@ exit $status
 async fn refresh_tzdata(script: &str, timeout: Duration) -> bool {
     match sentryusb_shell::run_with_timeout(timeout, "bash", &["-c", script]).await {
         Ok(version) => {
-            info!("[migrate] tzdata is {}", version.trim());
+            // apt's own progress lines come first; the version is printed last.
+            info!("[migrate] tzdata is {}", version.lines().last().unwrap_or("").trim());
             true
         }
         Err(error) => {
