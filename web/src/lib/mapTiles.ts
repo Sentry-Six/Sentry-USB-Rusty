@@ -21,8 +21,15 @@ export const MAP_STYLE_URLS: Record<MapStyle, string> = {
 
 const OSM_COPYRIGHT = '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
 const VERSATILES = '<a href="https://versatiles.org/">VersaTiles</a>'
-export const MAP_ATTRIBUTION = `${VERSATILES} | ${OSM_COPYRIGHT} contributors`
-export const COMPACT_MAP_ATTRIBUTION = `${VERSATILES} | ${OSM_COPYRIGHT}`
+// The styles also draw ESA WorldCover land cover (CC BY 4.0), GEBCO ocean
+// depth and Mapzen terrain shading. These strings replace the styles' own
+// source credits, so they name them too.
+const ESA = '<a href="https://esa-worldcover.org/en/data-access">ESA WorldCover</a>'
+const GEBCO = '<a href="https://www.gebco.net/">GEBCO</a>'
+const MAPZEN = '<a href="https://github.com/tilezen/joerd/blob/master/docs/attribution.md">Mapzen</a>'
+const CC_BY = '<a href="https://creativecommons.org/licenses/by/4.0/">CC BY 4.0</a>'
+export const MAP_ATTRIBUTION = `${VERSATILES} | ${OSM_COPYRIGHT} contributors · &copy; ${ESA} (${CC_BY}) · ${GEBCO} · ${MAPZEN}`
+export const COMPACT_MAP_ATTRIBUTION = `${VERSATILES} | ${OSM_COPYRIGHT} · ${ESA} · ${GEBCO} · ${MAPZEN}`
 // List thumbnails are too narrow for more than the OpenStreetMap credit the data license requires.
 export const THUMBNAIL_MAP_ATTRIBUTION = OSM_COPYRIGHT
 
@@ -99,7 +106,7 @@ function osmRaster(map: L.Map, attribution: string, options: L.TileLayerOptions 
   const layer = L.tileLayer(OSM_RASTER.url, {
     maxZoom: OSM_RASTER.maxZoom,
     referrerPolicy: OSM_RASTER.referrerPolicy,
-    attribution: attribution.replace(VERSATILES + " | ", ""),
+    attribution,
     ...options,
   })
   layer.addTo(map)
@@ -140,7 +147,9 @@ export function attachBasemap(
       glLayer = layer
     }).catch((err) => { console.warn("[map] Vector basemap unavailable; routes draw on a plain background:", err) })
   } else {
-    rasterLayer = osmRaster(map, attribution, { ...(minZoom ? { minZoom } : {}), className: current === "dark" ? "map-dark-tiles" : "" })
+    // The raster fallback shows OpenStreetMap's own tiles only.
+    const osmCredit = attribution === COMPACT_MAP_ATTRIBUTION ? OSM_COPYRIGHT : `${OSM_COPYRIGHT} contributors`
+    rasterLayer = osmRaster(map, osmCredit, { ...(minZoom ? { minZoom } : {}), className: current === "dark" ? "map-dark-tiles" : "" })
   }
 
   return {
