@@ -6,6 +6,16 @@ pub mod backfill;
 pub mod blob;
 pub mod calc;
 pub mod charging;
+// Clippy cleanup of db.rs waits for PR #263, which edits it.
+#[allow(
+    clippy::cloned_ref_to_slice_refs,
+    clippy::manual_repeat_n,
+    clippy::nonminimal_bool,
+    clippy::too_many_arguments,
+    clippy::type_complexity,
+    clippy::unnecessary_map_or,
+    clippy::useless_vec
+)]
 pub mod db;
 pub mod drive_edit_scope;
 pub mod drive_tag_migration;

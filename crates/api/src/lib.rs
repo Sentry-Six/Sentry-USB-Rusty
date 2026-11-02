@@ -17,6 +17,8 @@ pub mod travel_mode;
 pub mod notifications;
 pub mod notification_center;
 pub mod notification_providers;
+// Clippy cleanup of setup.rs waits for PR #263, which edits it.
+#[allow(clippy::needless_borrows_for_generic_args, clippy::manual_div_ceil, clippy::unnecessary_map_or)]
 pub mod setup;
 /// Moved into `sentryusb-drives` so the drive-data archive sync can take
 /// the same ownership lock as archiveloop and the backup API. Re-exported

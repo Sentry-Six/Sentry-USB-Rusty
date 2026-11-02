@@ -12,6 +12,8 @@ pub mod error;
 pub mod partition;
 pub mod disk_images;
 pub mod system;
+// Clippy cleanup of archive.rs waits for PR #263, which edits it.
+#[allow(clippy::unnecessary_map_or)]
 pub mod archive;
 pub mod network;
 pub mod readonly;
