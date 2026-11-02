@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
-    "lint": "eslint .",
+    "lint": "eslint . --max-warnings 0",
     "icons": "node scripts/icons/generate.mjs",
     "test": "TSX_TSCONFIG_PATH=tsconfig.app.json node scripts/test-web.mjs",
     "test:ble-health": "node --experimental-strip-types --test src/lib/bleHealth.test.ts",
