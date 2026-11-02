@@ -5,7 +5,7 @@ on:
     tags: ['v*']
   # PRs run tests and web checks; cargo-graph changes also smoke-test ARM.
   pull_request:
-    branches: [main, main-dev]
+    branches: [main]
   workflow_dispatch:
     inputs:
       release_version:

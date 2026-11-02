@@ -5,12 +5,12 @@ name: disk-reader
 
 on:
   push:
-    branches: [main, main-dev, 'feat/disk-reader']
+    branches: [main]
     paths:
       - 'crates/disk_reader/**'
       - '.github/workflows/disk-reader.yml'
   pull_request:
-    branches: [main, main-dev]
+    branches: [main]
     paths:
       - 'crates/disk_reader/**'
       - '.github/workflows/disk-reader.yml'
