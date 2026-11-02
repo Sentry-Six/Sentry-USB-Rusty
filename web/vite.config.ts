@@ -26,8 +26,9 @@ export default defineConfig({
     },
   },
   build: {
-    // Only the lazily loaded MapLibre library (~1,075 kB) exceeds Vite's 500 kB default.
-    chunkSizeWarningLimit: 1100,
+    // Only the lazily loaded MapLibre library (~1,075 kB) exceeds Vite's 500 kB
+    // default. The limit leaves room for MapLibre releases.
+    chunkSizeWarningLimit: 1300,
     rollupOptions: {
       output: {
       // Stable vendor chunks preserve library caches across app-only updates.
