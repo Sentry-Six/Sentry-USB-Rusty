@@ -8,8 +8,9 @@ import { cachedStyle, prefetchStyles } from "@/lib/mapStyleCache"
 // thumbnails show an image from one shared offscreen renderer
 // (mapSnapshot.ts) so long lists do not open a WebGL context per row.
 //
-// Browsers without WebGL2 (which MapLibre requires) use OpenStreetMap raster
-// tiles instead, so maps such as the Keep Accessory picker stay usable.
+// Browsers without WebGL2 (which MapLibre requires) show the style's
+// background colour with the routes and markers on top, and a short notice
+// that the map needs WebGL. They request no tiles.
 export const TILE_ORIGIN = "https://tiles.sentryusb.com"
 
 export type MapStyle = "dark" | "streets"
@@ -33,15 +34,13 @@ export const COMPACT_MAP_ATTRIBUTION = `${VERSATILES} | ${OSM_COPYRIGHT} · ${ES
 // List thumbnails are too narrow for more than the OpenStreetMap credit the data license requires.
 export const THUMBNAIL_MAP_ATTRIBUTION = OSM_COPYRIGHT
 
-// Painted under the map so routes stay readable while a style loads or when
-// the map server is unreachable (for example a Pi without internet access).
+// Painted under the map so routes stay readable while a style loads, when
+// the map server is unreachable (for example a Pi without internet access)
+// and when the browser has no WebGL2.
 export const MAP_BACKGROUNDS: Record<MapStyle, string> = { streets: "#f8f4f0", dark: "#141c21" }
 
-export const OSM_RASTER = {
-  url: "https://tile.openstreetmap.org/{z}/{x}/{y}.png",
-  maxZoom: 19,
-  referrerPolicy: "strict-origin-when-cross-origin",
-} as const
+export const NO_WEBGL_NOTICE = "Map unavailable: this browser can't draw maps (WebGL is turned off)."
+const NO_WEBGL_SHORT_NOTICE = "Map needs WebGL"
 
 // Older builds offered "satellite"; it resolves to the dark default.
 export function normalizeMapStyle(saved: unknown): MapStyle {
@@ -102,15 +101,19 @@ export interface Basemap {
   remove(): void
 }
 
-function osmRaster(map: L.Map, attribution: string, options: L.TileLayerOptions = {}) {
-  const layer = L.tileLayer(OSM_RASTER.url, {
-    maxZoom: OSM_RASTER.maxZoom,
-    referrerPolicy: OSM_RASTER.referrerPolicy,
-    attribution,
-    ...options,
-  })
-  layer.addTo(map)
-  return layer
+// Small corner note shown in place of the basemap when WebGL2 is missing.
+// Thumbnails get a shorter line, with the full text as a tooltip.
+function addNoWebGLNotice(map: L.Map, { compact = false } = {}): L.Control {
+  const control = new L.Control({ position: "bottomleft" })
+  control.onAdd = () => {
+    const el = L.DomUtil.create("div", "map-webgl-notice")
+    el.textContent = compact ? NO_WEBGL_SHORT_NOTICE : NO_WEBGL_NOTICE
+    if (compact) el.title = NO_WEBGL_NOTICE
+    el.setAttribute("role", "note")
+    return el
+  }
+  control.addTo(map)
+  return control
 }
 
 /**
@@ -120,12 +123,12 @@ function osmRaster(map: L.Map, attribution: string, options: L.TileLayerOptions 
 export function attachBasemap(
   map: L.Map,
   style: MapStyle,
-  { attribution = MAP_ATTRIBUTION, minZoom }: { attribution?: string; minZoom?: number } = {},
+  { attribution = MAP_ATTRIBUTION }: { attribution?: string } = {},
 ): Basemap {
   let current = normalizeMapStyle(style)
   let removed = false
   let glLayer: L.Layer | null = null
-  let rasterLayer: L.TileLayer | null = null
+  let notice: L.Control | null = null
   const container = map.getContainer()
   const paint = () => { container.style.background = MAP_BACKGROUNDS[current] }
   paint()
@@ -147,9 +150,8 @@ export function attachBasemap(
       glLayer = layer
     }).catch((err) => { console.warn("[map] Vector basemap unavailable; routes draw on a plain background:", err) })
   } else {
-    // The raster fallback shows OpenStreetMap's own tiles only.
-    const osmCredit = attribution === COMPACT_MAP_ATTRIBUTION ? OSM_COPYRIGHT : `${OSM_COPYRIGHT} contributors`
-    rasterLayer = osmRaster(map, osmCredit, { ...(minZoom ? { minZoom } : {}), className: current === "dark" ? "map-dark-tiles" : "" })
+    // No basemap: the background colour stays, routes and markers draw on top.
+    notice = addNoWebGLNotice(map)
   }
 
   return {
@@ -160,31 +162,32 @@ export function attachBasemap(
       paint()
       const gl = glLayer as (L.Layer & { getMaplibreMap(): MapLibreMap }) | null
       gl?.getMaplibreMap()?.setStyle(mapStyle(current))
-      rasterLayer?.getContainer()?.classList.toggle("map-dark-tiles", current === "dark")
     },
     remove() {
       removed = true
-      for (const layer of [glLayer, rasterLayer]) if (layer) map.removeLayer(layer)
-      glLayer = rasterLayer = null
+      if (glLayer) map.removeLayer(glLayer)
+      notice?.remove()
+      glLayer = null
+      notice = null
     },
   }
 }
 
 /**
  * Basemap for a static thumbnail whose view is already set: an image of the
- * current view from the shared renderer, or OpenStreetMap raster tiles
- * without WebGL. `onSettled` fires once the basemap has loaded or failed.
- * Returns a cleanup function.
+ * current view from the shared renderer, or the style's background colour
+ * and a short notice without WebGL. `onSettled` fires once the basemap has
+ * loaded or failed. Returns a cleanup function.
  */
 export function attachStaticBasemap(map: L.Map, style: MapStyle, onSettled: () => void): () => void {
   let active = true
   const settle = () => { if (active) onSettled() }
-  if (!supportsWebGL()) {
-    const layer = osmRaster(map, THUMBNAIL_MAP_ATTRIBUTION, { maxZoom: 18, minZoom: 3, className: style === "dark" ? "map-dark-tiles" : "" })
-    layer.on("load tileerror", settle)
-    return () => { active = false; layer.off("load tileerror", settle) }
-  }
   map.getContainer().style.background = MAP_BACKGROUNDS[style]
+  if (!supportsWebGL()) {
+    const notice = addNoWebGLNotice(map, { compact: true })
+    queueMicrotask(settle)
+    return () => { active = false; notice.remove() }
+  }
   map.attributionControl?.addAttribution(THUMBNAIL_MAP_ATTRIBUTION)
   let overlay: L.ImageOverlay | null = null
   const size = map.getSize()
