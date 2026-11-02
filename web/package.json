@@ -19,16 +19,16 @@
     "@xterm/xterm": "^6.0.0",
     "clsx": "^2.1.1",
     "leaflet": "^1.9.4",
-    "maplibre-gl": "^6.14.0",
+    "maplibre-gl": "^6.16.0",
     "react": "^19.3.1",
     "react-dom": "^19.3.1",
-    "react-router-dom": "^7.18.4",
+    "react-router-dom": "^7.18.5",
     "recharts": "^3.10.1",
     "tailwind-merge": "^3.7.0"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
-    "@material-symbols/svg-400": "0.48.1",
+    "@material-symbols/svg-400": "0.48.2",
     "@tailwindcss/vite": "^4.3.3",
     "@types/node": "^25.9.9",
     "@types/react": "^19.3.0",
@@ -42,7 +42,7 @@
     "tailwindcss": "^4.3.2",
     "tsx": "^4.23.15",
     "typescript": "~6.0.3",
-    "typescript-eslint": "^8.72.0",
+    "typescript-eslint": "^8.72.1",
     "vite": "^8.3.5"
   },
   "overrides": {
