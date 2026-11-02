@@ -122,162 +122,6 @@ pub fn set_keep_accessory_power(on: bool) -> ActionPayload {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::proto::car_server::{charging_start_stop_action, vehicle_action};
-
-    fn decode_vehicle_action(payload: ActionPayload) -> vehicle_action::VehicleActionMsg {
-        assert_eq!(payload.domain, Domain::Infotainment);
-        let action = Action::decode(payload.inner.as_slice()).unwrap();
-        let action::ActionMsg::VehicleAction(vehicle) = action.action_msg.unwrap();
-        vehicle.vehicle_action_msg.unwrap()
-    }
-
-    #[test]
-    fn wake_payload_is_vcsec_rke_30() {
-        let p = wake_vehicle();
-        assert_eq!(p.domain, Domain::VehicleSecurity);
-        // VCSEC UnsignedMessage { RKEAction = 30 } encodes as:
-        //   tag for field 2 varint (0x10), value 30 (0x1e) = "10 1e"
-        assert_eq!(hex::encode(&p.inner), "101e");
-    }
-
-    #[test]
-    fn sentry_mode_on_routes_to_infotainment() {
-        let p = set_sentry_mode(true);
-        assert_eq!(p.domain, Domain::Infotainment);
-        // Action { VehicleAction { vehicleControlSetSentryModeAction { on=true } } }
-        //   Action.vehicleAction (field 2, length-delimited)
-        //     VehicleAction.vehicleControlSetSentryModeAction (field 30)
-        //       SentryModeAction.on (field 1, varint, true)
-        // We don't pin exact bytes (proto encoding can vary by lib
-        // version on field-tag widths); just sanity-check non-empty.
-        assert!(!p.inner.is_empty());
-    }
-
-    #[test]
-    fn sentry_mode_off_differs_from_on() {
-        // The two states must produce distinct payloads or the car
-        // would arm/disarm the wrong way.
-        assert_ne!(set_sentry_mode(true).inner, set_sentry_mode(false).inner);
-    }
-
-    #[test]
-    fn charge_port_open_close_are_distinct() {
-        assert_ne!(charge_port_open().inner, charge_port_close().inner);
-    }
-
-    #[test]
-    fn charging_start_and_stop_encode_exact_proto_variants() {
-        let vehicle_action::VehicleActionMsg::ChargingStartStopAction(start) =
-            decode_vehicle_action(start_charging())
-        else {
-            panic!("expected ChargingStartStopAction");
-        };
-        assert!(matches!(
-            start.charging_action,
-            Some(charging_start_stop_action::ChargingAction::Start(_))
-        ));
-
-        let vehicle_action::VehicleActionMsg::ChargingStartStopAction(stop) =
-            decode_vehicle_action(stop_charging())
-        else {
-            panic!("expected ChargingStartStopAction");
-        };
-        assert!(matches!(
-            stop.charging_action,
-            Some(charging_start_stop_action::ChargingAction::Stop(_))
-        ));
-    }
-
-    #[test]
-    fn charging_settings_encode_requested_values() {
-        let vehicle_action::VehicleActionMsg::SetChargingAmpsAction(amps) =
-            decode_vehicle_action(set_charging_amps(32))
-        else {
-            panic!("expected SetChargingAmpsAction");
-        };
-        assert_eq!(amps.charging_amps, 32);
-
-        let vehicle_action::VehicleActionMsg::ChargingSetLimitAction(limit) =
-            decode_vehicle_action(set_charge_limit(80))
-        else {
-            panic!("expected ChargingSetLimitAction");
-        };
-        assert_eq!(limit.percent, 80);
-    }
-
-    #[test]
-    fn parameterized_action_verbs_validate_bounds() {
-        assert!(parse_verb("charge-start").is_ok());
-        assert!(parse_verb("charge-stop").is_ok());
-        assert!(parse_verb("set-charging-amps:32").is_ok());
-        assert!(parse_verb("set-charge-limit:80").is_ok());
-        assert!(parse_verb("set-charging-amps:0").is_err());
-        assert!(parse_verb("set-charging-amps:81").is_err());
-        assert!(parse_verb("set-charge-limit:49").is_err());
-        assert!(parse_verb("set-charge-limit:101").is_err());
-        assert!(parse_verb("set-charging-amps:not-a-number").is_err());
-    }
-
-    #[test]
-    fn climate_power_encodes_auto_action_without_override() {
-        let vehicle_action::VehicleActionMsg::HvacAutoAction(on) =
-            decode_vehicle_action(parse_verb("climate-on").unwrap())
-        else {
-            panic!("expected HvacAutoAction");
-        };
-        assert!(on.power_on);
-        assert!(!on.manual_override);
-
-        let vehicle_action::VehicleActionMsg::HvacAutoAction(off) =
-            decode_vehicle_action(parse_verb("climate-off").unwrap())
-        else {
-            panic!("expected HvacAutoAction");
-        };
-        assert!(!off.power_on);
-        assert!(!off.manual_override);
-    }
-
-    #[test]
-    fn climate_temp_sets_both_front_zones() {
-        let vehicle_action::VehicleActionMsg::HvacTemperatureAdjustmentAction(temp) =
-            decode_vehicle_action(parse_verb("climate-set-temp:21.5").unwrap())
-        else {
-            panic!("expected HvacTemperatureAdjustmentAction");
-        };
-        assert_eq!(temp.driver_temp_celsius, 21.5);
-        assert_eq!(temp.passenger_temp_celsius, 21.5);
-        assert!(matches!(
-            temp.level.and_then(|l| l.r#type),
-            Some(hvac_temperature_adjustment_action::temperature::Type::TempMax(_))
-        ));
-    }
-
-    #[test]
-    fn climate_temp_verb_validates_range_and_precision() {
-        assert!(parse_verb("climate-set-temp:15").is_ok());
-        assert!(parse_verb("climate-set-temp:28.0").is_ok());
-        assert!(parse_verb("climate-set-temp:14.9").is_err());
-        assert!(parse_verb("climate-set-temp:28.1").is_err());
-        assert!(parse_verb("climate-set-temp:21.25").is_err());
-        assert!(parse_verb("climate-set-temp:2.15e1").is_err());
-        assert!(parse_verb("climate-set-temp:NaN").is_err());
-        assert!(parse_verb("climate-set-temp:").is_err());
-    }
-
-    #[test]
-    fn only_user_commands_wake_the_car_first() {
-        assert!(wakes_car_first("set-charge-limit:80"));
-        assert!(wakes_car_first("climate-on"));
-        assert!(wakes_car_first("climate-set-temp:21"));
-        assert!(!wakes_car_first("wake"));
-        assert!(!wakes_car_first("sentry-on"));
-        assert!(!wakes_car_first("keep-accessory-on"));
-    }
-}
-
 fn charging_start_stop(
     charging_action: charging_start_stop_action::ChargingAction,
 ) -> ActionPayload {
@@ -450,5 +294,161 @@ pub fn parse_verb(verb: &str) -> Result<ActionPayload> {
             }
             bail!("unknown BLE action verb '{other}'")
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::proto::car_server::{charging_start_stop_action, vehicle_action};
+
+    fn decode_vehicle_action(payload: ActionPayload) -> vehicle_action::VehicleActionMsg {
+        assert_eq!(payload.domain, Domain::Infotainment);
+        let action = Action::decode(payload.inner.as_slice()).unwrap();
+        let action::ActionMsg::VehicleAction(vehicle) = action.action_msg.unwrap();
+        vehicle.vehicle_action_msg.unwrap()
+    }
+
+    #[test]
+    fn wake_payload_is_vcsec_rke_30() {
+        let p = wake_vehicle();
+        assert_eq!(p.domain, Domain::VehicleSecurity);
+        // VCSEC UnsignedMessage { RKEAction = 30 } encodes as:
+        //   tag for field 2 varint (0x10), value 30 (0x1e) = "10 1e"
+        assert_eq!(hex::encode(&p.inner), "101e");
+    }
+
+    #[test]
+    fn sentry_mode_on_routes_to_infotainment() {
+        let p = set_sentry_mode(true);
+        assert_eq!(p.domain, Domain::Infotainment);
+        // Action { VehicleAction { vehicleControlSetSentryModeAction { on=true } } }
+        //   Action.vehicleAction (field 2, length-delimited)
+        //     VehicleAction.vehicleControlSetSentryModeAction (field 30)
+        //       SentryModeAction.on (field 1, varint, true)
+        // We don't pin exact bytes (proto encoding can vary by lib
+        // version on field-tag widths); just sanity-check non-empty.
+        assert!(!p.inner.is_empty());
+    }
+
+    #[test]
+    fn sentry_mode_off_differs_from_on() {
+        // The two states must produce distinct payloads or the car
+        // would arm/disarm the wrong way.
+        assert_ne!(set_sentry_mode(true).inner, set_sentry_mode(false).inner);
+    }
+
+    #[test]
+    fn charge_port_open_close_are_distinct() {
+        assert_ne!(charge_port_open().inner, charge_port_close().inner);
+    }
+
+    #[test]
+    fn charging_start_and_stop_encode_exact_proto_variants() {
+        let vehicle_action::VehicleActionMsg::ChargingStartStopAction(start) =
+            decode_vehicle_action(start_charging())
+        else {
+            panic!("expected ChargingStartStopAction");
+        };
+        assert!(matches!(
+            start.charging_action,
+            Some(charging_start_stop_action::ChargingAction::Start(_))
+        ));
+
+        let vehicle_action::VehicleActionMsg::ChargingStartStopAction(stop) =
+            decode_vehicle_action(stop_charging())
+        else {
+            panic!("expected ChargingStartStopAction");
+        };
+        assert!(matches!(
+            stop.charging_action,
+            Some(charging_start_stop_action::ChargingAction::Stop(_))
+        ));
+    }
+
+    #[test]
+    fn charging_settings_encode_requested_values() {
+        let vehicle_action::VehicleActionMsg::SetChargingAmpsAction(amps) =
+            decode_vehicle_action(set_charging_amps(32))
+        else {
+            panic!("expected SetChargingAmpsAction");
+        };
+        assert_eq!(amps.charging_amps, 32);
+
+        let vehicle_action::VehicleActionMsg::ChargingSetLimitAction(limit) =
+            decode_vehicle_action(set_charge_limit(80))
+        else {
+            panic!("expected ChargingSetLimitAction");
+        };
+        assert_eq!(limit.percent, 80);
+    }
+
+    #[test]
+    fn parameterized_action_verbs_validate_bounds() {
+        assert!(parse_verb("charge-start").is_ok());
+        assert!(parse_verb("charge-stop").is_ok());
+        assert!(parse_verb("set-charging-amps:32").is_ok());
+        assert!(parse_verb("set-charge-limit:80").is_ok());
+        assert!(parse_verb("set-charging-amps:0").is_err());
+        assert!(parse_verb("set-charging-amps:81").is_err());
+        assert!(parse_verb("set-charge-limit:49").is_err());
+        assert!(parse_verb("set-charge-limit:101").is_err());
+        assert!(parse_verb("set-charging-amps:not-a-number").is_err());
+    }
+
+    #[test]
+    fn climate_power_encodes_auto_action_without_override() {
+        let vehicle_action::VehicleActionMsg::HvacAutoAction(on) =
+            decode_vehicle_action(parse_verb("climate-on").unwrap())
+        else {
+            panic!("expected HvacAutoAction");
+        };
+        assert!(on.power_on);
+        assert!(!on.manual_override);
+
+        let vehicle_action::VehicleActionMsg::HvacAutoAction(off) =
+            decode_vehicle_action(parse_verb("climate-off").unwrap())
+        else {
+            panic!("expected HvacAutoAction");
+        };
+        assert!(!off.power_on);
+        assert!(!off.manual_override);
+    }
+
+    #[test]
+    fn climate_temp_sets_both_front_zones() {
+        let vehicle_action::VehicleActionMsg::HvacTemperatureAdjustmentAction(temp) =
+            decode_vehicle_action(parse_verb("climate-set-temp:21.5").unwrap())
+        else {
+            panic!("expected HvacTemperatureAdjustmentAction");
+        };
+        assert_eq!(temp.driver_temp_celsius, 21.5);
+        assert_eq!(temp.passenger_temp_celsius, 21.5);
+        assert!(matches!(
+            temp.level.and_then(|l| l.r#type),
+            Some(hvac_temperature_adjustment_action::temperature::Type::TempMax(_))
+        ));
+    }
+
+    #[test]
+    fn climate_temp_verb_validates_range_and_precision() {
+        assert!(parse_verb("climate-set-temp:15").is_ok());
+        assert!(parse_verb("climate-set-temp:28.0").is_ok());
+        assert!(parse_verb("climate-set-temp:14.9").is_err());
+        assert!(parse_verb("climate-set-temp:28.1").is_err());
+        assert!(parse_verb("climate-set-temp:21.25").is_err());
+        assert!(parse_verb("climate-set-temp:2.15e1").is_err());
+        assert!(parse_verb("climate-set-temp:NaN").is_err());
+        assert!(parse_verb("climate-set-temp:").is_err());
+    }
+
+    #[test]
+    fn only_user_commands_wake_the_car_first() {
+        assert!(wakes_car_first("set-charge-limit:80"));
+        assert!(wakes_car_first("climate-on"));
+        assert!(wakes_car_first("climate-set-temp:21"));
+        assert!(!wakes_car_first("wake"));
+        assert!(!wakes_car_first("sentry-on"));
+        assert!(!wakes_car_first("keep-accessory-on"));
     }
 }
