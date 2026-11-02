@@ -16,6 +16,8 @@ pub mod session;
 pub mod state_query;
 pub mod transport;
 
+// prost-generated code; lint the hand-written crate only.
+#[allow(clippy::all)]
 pub mod proto {
     pub mod universal_message {
         include!(concat!(env!("OUT_DIR"), "/universal_message.rs"));
