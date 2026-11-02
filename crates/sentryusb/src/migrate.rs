@@ -37,6 +37,39 @@ async fn prepare_upgrade_repair_tool(selector: &str, timeout: Duration) -> bool 
     }
 }
 
+// Time zone rules change between releases (BC, Alberta, the Northwest
+// Territories and Manitoba all dropped clock changes in 2026). Clip times
+// become real times through the Pi's own tzdata, and setup is never rerun, so
+// each release refreshes the package once. Unlock root only if it was locked.
+const TZDATA_REFRESH: &str = r#"ro_before=no
+findmnt -no OPTIONS / 2>/dev/null | grep -qE '(^|,)ro(,|$)' && ro_before=yes
+if [ "$ro_before" = yes ]; then
+  { [ -x /root/bin/remountfs_rw ] && /root/bin/remountfs_rw >/dev/null 2>&1; } || mount -o remount,rw / || exit 1
+fi
+status=0
+if dpkg-query -W -f='${Status}' tzdata 2>/dev/null | grep -q 'ok installed'; then
+  export DEBIAN_FRONTEND=noninteractive
+  apt-get -o DPkg::Lock::Timeout=60 -qq update \
+    && apt-get -o DPkg::Lock::Timeout=60 -y -qq install --only-upgrade tzdata || status=$?
+fi
+if [ "$ro_before" = yes ]; then sync; mount -o remount,ro / 2>/dev/null || true; fi
+dpkg-query -W -f='${Version}' tzdata 2>/dev/null || true
+exit $status
+"#;
+
+async fn refresh_tzdata(script: &str, timeout: Duration) -> bool {
+    match sentryusb_shell::run_with_timeout(timeout, "bash", &["-c", script]).await {
+        Ok(version) => {
+            info!("[migrate] tzdata is {}", version.trim());
+            true
+        }
+        Err(error) => {
+            warn!("[migrate] tzdata refresh deferred to the next release: {error}");
+            false
+        }
+    }
+}
+
 async fn finish_migration(
     marker_file: &str,
     preparation: impl std::future::Future<Output = bool> + Send + 'static,
@@ -156,9 +189,13 @@ pub async fn run_startup_migration() -> bool {
                 // UI keeps starting, and an unavailable download must not
                 // turn an otherwise successful update into a failed one.
                 let _ = tokio::fs::create_dir_all(MIGRATE_DIR).await;
-                if !finish_migration(&marker_file, prepare_upgrade_repair_tool(
-                    REPAIR_TOOL_SELECTOR, Duration::from_secs(240),
-                )).await {
+                // One task, so the two never toggle the root mount at once.
+                let preparation = async {
+                    let tool = prepare_upgrade_repair_tool(REPAIR_TOOL_SELECTOR, Duration::from_secs(240)).await;
+                    refresh_tzdata(TZDATA_REFRESH, Duration::from_secs(600)).await;
+                    tool
+                };
+                if !finish_migration(&marker_file, preparation).await {
                     return false;
                 }
                 info!("[migrate] Startup migration complete for {}", current_version);
@@ -699,6 +736,26 @@ mod tests {
     async fn upgrade_cache_preparation_has_a_bounded_timeout() {
         let started = std::time::Instant::now();
         assert!(!prepare_upgrade_repair_tool("import time; time.sleep(10)", Duration::from_millis(100)).await);
+        assert!(started.elapsed() < Duration::from_secs(3));
+    }
+
+    #[test]
+    fn tzdata_refresh_is_valid_bash_and_relocks_root() {
+        let mut child = std::process::Command::new("bash").arg("-n")
+            .stdin(std::process::Stdio::piped()).spawn().unwrap();
+        use std::io::Write;
+        child.stdin.take().unwrap().write_all(TZDATA_REFRESH.as_bytes()).unwrap();
+        assert!(child.wait().unwrap().success());
+        assert!(TZDATA_REFRESH.contains("install --only-upgrade tzdata"));
+        assert!(TZDATA_REFRESH.contains("mount -o remount,ro /"));
+    }
+
+    #[tokio::test]
+    async fn tzdata_refresh_failure_is_nonfatal_and_bounded() {
+        assert!(!refresh_tzdata("echo apt unavailable >&2; exit 100", Duration::from_secs(5)).await);
+        assert!(refresh_tzdata("printf 2026f-0+deb13u1", Duration::from_secs(5)).await);
+        let started = std::time::Instant::now();
+        assert!(!refresh_tzdata("sleep 10", Duration::from_millis(100)).await);
         assert!(started.elapsed() < Duration::from_secs(3));
     }
 
