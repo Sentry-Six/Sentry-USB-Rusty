@@ -150,7 +150,10 @@ for failed in download prepare timeout none; do
     grep -q 'Compatible XFS repair tool prepared' "$tmp/xfs-tool-$failed.out"
   else
     grep -q '\[WARN\]' "$tmp/xfs-tool-$failed.out"
-    ! grep -q 'Compatible XFS repair tool prepared' "$tmp/xfs-tool-$failed.out"
+    if grep -q 'Compatible XFS repair tool prepared' "$tmp/xfs-tool-$failed.out"; then
+      echo "XFS tool reported as prepared after a $failed failure" >&2
+      exit 1
+    fi
   fi
 done
 

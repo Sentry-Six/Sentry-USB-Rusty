@@ -91,6 +91,7 @@ travel_mode_active() {
   for conf in /root/sentryusb.conf /boot/firmware/sentryusb.conf /boot/sentryusb.conf
   do
     [ -f "$conf" ] || continue
+    # shellcheck source=/dev/null
     val=$( set +eu; . "$conf" >/dev/null 2>&1; printf '%s' "${TRAVEL_MODE_ENABLED:-}" )
     case "${val,,}" in
       yes|true|1|on) return 0 ;;
