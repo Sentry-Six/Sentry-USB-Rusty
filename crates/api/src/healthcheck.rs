@@ -179,7 +179,6 @@ pub async fn health_check(State(_s): State<AppState>) -> (StatusCode, Json<serde
             ).await;
             let parsed = stat_out.ok().and_then(|out| {
                 let parts: Vec<u64> = out
-                    .trim()
                     .split_whitespace()
                     .filter_map(|p| p.parse().ok())
                     .collect();

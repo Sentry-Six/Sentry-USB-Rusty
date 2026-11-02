@@ -359,7 +359,7 @@ pub(crate) fn parse_wav_duration(data: &[u8]) -> Result<f64, String> {
         }
 
         pos += 8 + chunk_size as usize;
-        if chunk_size % 2 != 0 {
+        if !chunk_size.is_multiple_of(2) {
             pos += 1; // WAV chunk padding byte
         }
     }
@@ -418,7 +418,7 @@ fn parse_wav_info(data: &[u8]) -> Result<WavInfo, String> {
         }
 
         pos += 8 + chunk_size as usize;
-        if chunk_size % 2 != 0 {
+        if !chunk_size.is_multiple_of(2) {
             pos += 1;
         }
     }

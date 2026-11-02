@@ -266,8 +266,7 @@ async fn running_version() -> Option<String> {
     let out = sentryusb_shell::run("dmesg", &[]).await.ok()?;
     let line = out
         .lines()
-        .filter(|l| l.contains("preinit_dcmds: Firmware"))
-        .next_back()?;
+        .rfind(|l| l.contains("preinit_dcmds: Firmware"))?;
     let idx = line.find("version ")?;
     line[idx + "version ".len()..]
         .split_whitespace()

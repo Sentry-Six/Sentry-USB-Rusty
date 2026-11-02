@@ -451,8 +451,8 @@ pub fn find_drive_files(summaries:&[RouteSummary],id:&str)->Option<(usize,Vec<St
     let groups=group_summary_clips(summaries);
     let index=resolve_group_index(summaries,&groups,id,true)?;
     let mut seen=std::collections::HashSet::new();
-    let files=groups[index].iter().filter_map(|clip|
-        seen.insert(clip.summary.file.as_str()).then(||clip.summary.file.clone())).collect();
+    let files=groups[index].iter().filter(|clip| seen.insert(clip.summary.file.as_str()))
+        .map(|clip| clip.summary.file.clone()).collect();
     Some((index,files))
 }
 
@@ -986,7 +986,7 @@ pub fn build_single_drive_from_clips_with_spans(
     if timed.is_empty() {
         return None;
     }
-    timed.sort_by(|a, b| a.timestamp.cmp(&b.timestamp));
+    timed.sort_by_key(|a| a.timestamp);
     // Real clip spans within this drive, so point timestamps and the end
     // time match the list view. Only this drive's clips were fetched, so
     // the final clip keeps the nominal minute — the handler overlays the
@@ -1513,7 +1513,7 @@ fn group_clips(routes: Vec<Route>) -> Vec<Vec<TimedRoute>> {
         return Vec::new();
     }
 
-    timed.sort_by(|a, b| a.timestamp.cmp(&b.timestamp));
+    timed.sort_by_key(|a| a.timestamp);
 
     // Gap-fill: admit event routes whose CLIP timestamp (filename, not
     // event-folder name) fills a RecentClips gap — interior hole or a
@@ -1560,7 +1560,7 @@ fn group_clips(routes: Vec<Route>) -> Vec<Vec<TimedRoute>> {
         }
         filtered_event_folder += cands.iter().filter(|(_, r)| r.is_some()).count();
         if gap_filled > 0 {
-            timed.sort_by(|a, b| a.timestamp.cmp(&b.timestamp));
+            timed.sort_by_key(|a| a.timestamp);
             info!(
                 "group_clips: gap-filled {} event route(s) into RecentClips holes",
                 gap_filled
@@ -1783,7 +1783,7 @@ pub(crate) fn plan_overviews(metas: &[OverviewClipMeta]) -> Vec<PlannedDrive> {
             timed.push(TimedMeta { idx: i, ts, clip_span_ms: CLIP_DURATION_MS });
         }
     }
-    timed.sort_by(|a, b| a.ts.cmp(&b.ts));
+    timed.sort_by_key(|a| a.ts);
 
     if !events.is_empty() {
         let recent_ts: Vec<NaiveDateTime> = timed.iter().map(|t| t.ts).collect();
@@ -1814,7 +1814,7 @@ pub(crate) fn plan_overviews(metas: &[OverviewClipMeta]) -> Vec<PlannedDrive> {
             admitted += 1;
         }
         if admitted > 0 {
-            timed.sort_by(|a, b| a.ts.cmp(&b.ts));
+            timed.sort_by_key(|a| a.ts);
         }
     }
     if timed.is_empty() {
@@ -3008,7 +3008,7 @@ fn build_drive_stats(
 
         if has_sei_speeds {
             let speed = all_points[i].sei_speed as f64;
-            if speed >= 0.0 && speed < 100.0 {
+            if (0.0..100.0).contains(&speed) {
                 speeds_vec.push(speed);
                 if speed > max_speed_mps {
                     max_speed_mps = speed;
@@ -3881,7 +3881,7 @@ fn group_summary_clips_with_clock<'a>(summaries: &'a [RouteSummary], actual_span
     if timed.is_empty() && event_candidates.is_empty() {
         return Vec::new();
     }
-    timed.sort_by(|a, b| a.timestamp.cmp(&b.timestamp));
+    timed.sort_by_key(|a| a.timestamp);
 
     // Gap-fill admission — see group_clips for the rationale. Clip
     // timestamps come from the filename component (the event-folder name
@@ -3911,7 +3911,7 @@ fn group_summary_clips_with_clock<'a>(summaries: &'a [RouteSummary], actual_span
                     clip_span_ms: CLIP_DURATION_MS,
                 });
             }
-            timed.sort_by(|a, b| a.timestamp.cmp(&b.timestamp));
+            timed.sort_by_key(|a| a.timestamp);
         }
     }
 
@@ -4591,7 +4591,7 @@ fn build_summary_from_aggregates(
         .summary
         .source
         .as_deref()
-        .map_or(true, |s| s.is_empty() || s == "sei");
+        .is_none_or(|s| s.is_empty() || s == "sei");
     let safety_totals = crate::safety::SafetyTotals {
         distance_mi: total_dist_m / calc::M_PER_MILE,
         assisted_mi: assisted_dist_m / calc::M_PER_MILE,

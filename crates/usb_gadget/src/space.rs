@@ -122,7 +122,7 @@ impl StallGuard {
 /// as satisfied rather than evicting on unknown data; matches the bash
 /// script skipping the check when stat fails).
 fn targets_met(free: u64, reserve: u64, free_inodes: Option<u64>, ireserve: u64) -> bool {
-    free >= reserve && free_inodes.map_or(true, |f| f > ireserve)
+    free >= reserve && free_inodes.is_none_or(|f| f > ireserve)
 }
 
 /// Headroom for one recording cycle and the next snapshot's COW growth.
@@ -390,7 +390,7 @@ fn get_space(path: &str) -> Result<(u64, u64)> {
 
     // Malformed filesystem data is an error, not an empty filesystem.
     let s = String::from_utf8_lossy(&output.stdout);
-    let parts: Vec<&str> = s.trim().split_whitespace().collect();
+    let parts: Vec<&str> = s.split_whitespace().collect();
     if parts.len() < 3 {
         anyhow::bail!("unexpected stat output for {}: {:?}", path, s.trim());
     }
@@ -431,7 +431,7 @@ fn get_inodes(path: &str) -> Result<(u64, u64)> {
     }
 
     let s = String::from_utf8_lossy(&output.stdout);
-    let parts: Vec<&str> = s.trim().split_whitespace().collect();
+    let parts: Vec<&str> = s.split_whitespace().collect();
     if parts.len() < 2 {
         anyhow::bail!("unexpected stat output for {}: {:?}", path, s.trim());
     }

@@ -759,7 +759,7 @@ async fn check_root_shrink(env: &SetupEnv, emitter: &SetupEmitter) -> Result<boo
         .get("INCREASE_ROOT_SIZE")
         .filter(|s| !s.trim().is_empty())
         .and_then(|s| crate::disk_images::dehumanize(s).ok())
-        .map(|kb_in_gb_units| (kb_in_gb_units + (1024 * 1024 - 1)) / (1024 * 1024))
+        .map(|kb_in_gb_units| kb_in_gb_units.div_ceil(1024 * 1024))
         .unwrap_or(0);
 
     let target_gb = ((used_kb / 1024 / 1024) + 2 + extra_gb).max(6);

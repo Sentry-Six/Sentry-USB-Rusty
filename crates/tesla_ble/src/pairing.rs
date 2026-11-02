@@ -92,7 +92,7 @@ mod tests {
     fn assert_pairing_payload(role: PairingRole, expected_role: Role) {
         // 65-byte uncompressed P-256 point shape (0x04 || 64 bytes).
         let mut pubkey = vec![0x04u8];
-        pubkey.extend(std::iter::repeat(0xABu8).take(64));
+        pubkey.extend(std::iter::repeat_n(0xABu8, 64));
 
         let bytes = build_add_key_request(&pubkey, role);
         // Decodes as a ToVCSECMessage with a PRESENT_KEY signed message.

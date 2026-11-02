@@ -603,7 +603,7 @@ fn latest_repair_log() -> Option<String> {
             .and_then(|x| x.strip_suffix(".log"))
             .and_then(|x| x.parse::<u64>().ok())
         {
-            if best.as_ref().map_or(true, |(b, _)| ts > *b) {
+            if best.as_ref().is_none_or(|(b, _)| ts > *b) {
                 best = Some((ts, n));
             }
         }

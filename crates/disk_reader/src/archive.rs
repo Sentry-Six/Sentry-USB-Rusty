@@ -80,7 +80,7 @@ pub struct Source {
 /// a past-dated brand-new snapshot, and applying it to merge order would
 /// rank stale high-numbered leftovers last — recreating this very bug.
 fn sort_snapshot_sources(sources: &mut [Source]) {
-    sources.sort_by(|a, b| (a.mtime, a.slot).cmp(&(b.mtime, b.slot)));
+    sources.sort_by_key(|a| (a.mtime, a.slot));
 }
 
 #[derive(Clone, Debug)]

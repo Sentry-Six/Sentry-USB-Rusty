@@ -1602,7 +1602,7 @@ pub fn rebuild_all_snapshot_links() -> Result<()> {
 
         if let Err(e) = make_links_for_snapshot(
             &snap_mnt,
-            &snap_mnt_link.to_string_lossy().to_string(),
+            snap_mnt_link.to_string_lossy().as_ref(),
         ) {
             warn!("rebuild: make_links_for_snapshot {}: {}", snap_name, e);
             continue;

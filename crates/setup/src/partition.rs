@@ -316,7 +316,7 @@ pub async fn setup_sd_card(env: &SetupEnv, emitter: &SetupEmitter) -> Result<boo
     ).await?.trim().parse().context("sfdisk End parse error")?;
 
     // Round up to 1MB boundary
-    let first_bf_sector = ((last_part_end + 1 + 2047) / 2048) * 2048;
+    let first_bf_sector = (last_part_end + 1).div_ceil(2048) * 2048;
     let bf_num_sectors = first_mutable_sector - first_bf_sector;
 
     // Preserve disk identifier for fstab/cmdline.txt

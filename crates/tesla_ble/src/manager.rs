@@ -1899,7 +1899,7 @@ fn note_successful_query(state: &mut SessionState, elapsed_ms: u128) {
     state.recent_latencies_ms.push_back(elapsed_ms);
 
     let n = state.queries_since_connect;
-    if n == 1 || n % STATUS_LOG_EVERY_N_QUERIES == 0 {
+    if n == 1 || n.is_multiple_of(STATUS_LOG_EVERY_N_QUERIES) {
         let uptime = state
             .connected_at
             .map(|t| t.elapsed().as_secs())

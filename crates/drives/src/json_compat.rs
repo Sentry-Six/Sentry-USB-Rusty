@@ -229,7 +229,7 @@ where
                 insert_imported_route(self.0.tx, &route, &agg, self.0.now)
                     .map_err(|e| serde::de::Error::custom(e.to_string()))?;
                 self.0.routes += 1;
-                if self.0.routes % 50 == 0 {
+                if self.0.routes.is_multiple_of(50) {
                     (self.0.on_progress)(self.0.routes);
                 }
             }

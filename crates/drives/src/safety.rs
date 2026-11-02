@@ -306,7 +306,7 @@ pub fn compute_clip_safety(r: &Route) -> ClipSafety {
                     out.night_weighted_ms += (interval_ms as f64 * weight).round() as i64;
                 }
             }
-            if factor_allowed && vc >= SPEEDING_MPS && vc < 100.0 {
+            if factor_allowed && (SPEEDING_MPS..100.0).contains(&vc) {
                 out.speeding_ms += interval_ms;
                 if prefix_idx < out.grace_prefix.len() {
                     out.grace_prefix[prefix_idx].speeding_ms += interval_ms;
@@ -342,7 +342,7 @@ pub fn compute_clip_safety(r: &Route) -> ClipSafety {
                 };
                 in_brake_run = braking_here;
 
-                let turning_here = if lateral < 30.0 && lateral >= ANY_TURN_MPS2 {
+                let turning_here = if (ANY_TURN_MPS2..30.0).contains(&lateral) {
                     out.turn_any_ms += interval_ms;
                     if prefix_idx < out.grace_prefix.len() {
                         out.grace_prefix[prefix_idx].turn_any_ms += interval_ms;
@@ -580,7 +580,7 @@ pub fn mileage_weighted_score(days: &[(f64, f64)]) -> Option<f64> {
 
 /// True when the local wall-clock hour falls in the late-night window.
 pub fn is_night_hour(hour: u32) -> bool {
-    hour >= NIGHT_START_HOUR || hour < NIGHT_END_HOUR
+    !(NIGHT_END_HOUR..NIGHT_START_HOUR).contains(&hour)
 }
 
 #[cfg(test)]

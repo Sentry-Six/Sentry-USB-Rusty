@@ -907,7 +907,7 @@ async fn tick(
                         try_sync_clock(d.meta);
                         let shift_changed_to_drive = d
                             .shift_state
-                            .map_or(false, |s| !s.is_park() && s != sample::ShiftState::Unknown);
+                            .is_some_and(|s| !s.is_park() && s != sample::ShiftState::Unknown);
                         // Persist whatever the drive probe got
                         // (location + odometer freshness even
                         // while parked-with-Sentry).

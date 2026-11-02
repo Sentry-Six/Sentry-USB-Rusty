@@ -37,7 +37,7 @@ pub fn select_pending(store: &DriveStore, limit: i64) -> Result<Vec<PendingRoute
     }
     let file_refs: Vec<&str> = files.iter().map(|(f, _)| f.as_str()).collect();
     let routes: Vec<Route> = store
-        .with_routes_by_files(&file_refs, |rs| rs.iter().cloned().collect::<Vec<_>>())?;
+        .with_routes_by_files(&file_refs, |rs| rs.to_vec())?;
 
     let mut out = Vec::with_capacity(routes.len());
     for ((file, cached_route_id), route) in files.into_iter().zip(routes.into_iter()) {

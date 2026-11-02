@@ -269,7 +269,7 @@ impl KeepAwakeManager {
                 if inner.epoch.load(Ordering::SeqCst) != epoch || inner.state != KaState::Active {
                     return;
                 }
-                let expired = inner.expires_at.map_or(false, |e| SystemTime::now() >= e);
+                let expired = inner.expires_at.is_some_and(|e| SystemTime::now() >= e);
                 (expired, inner.mode.clone(), inner.expires_at)
             };
 
