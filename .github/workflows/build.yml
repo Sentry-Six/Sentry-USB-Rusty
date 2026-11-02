@@ -325,6 +325,8 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
       - name: Cache cargo registry + build
         # Preserve useful compilation state even when tests fail.
         uses: Swatinem/rust-cache@v2
@@ -345,6 +347,8 @@ jobs:
         run: |
           mkdir -p crates/sentryusb/static
           echo '<!DOCTYPE html><html><body>test</body></html>' > crates/sentryusb/static/index.html
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - name: Test release artifact extraction
         run: python3 -m unittest discover -s .github/scripts -p test_extract_release_artifacts.py
       - name: Test archive runtime and notifications
