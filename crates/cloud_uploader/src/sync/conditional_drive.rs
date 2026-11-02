@@ -82,7 +82,7 @@ fn prepare_member(local:&Snapshot,file:&str,remote:&Remote,intent:&Intent,throug
     let summary=summary.as_ref().context("drive source summary unavailable for scoped edit")?;
     let decoded:Value=encrypt::open_json_b64(&key,&aad::route_summary(&creds.user_id,&creds.pi_id,id),summary)?;
     ensure!(decoded["file"].as_str()==Some(file) && decoded["gr"]==serde_json::to_value(&source.runs)?,"drive source frames changed");
-    let frames=source.runs.chunks_exact(2).try_fold(0u32,|total,run| {
+    let frames=source.runs.as_chunks::<2>().0.iter().try_fold(0u32,|total,run| {
         ensure!(run[0]<=255 && run[1]>0,"invalid original frame runs");
         total.checked_add(run[1]).context("frame count overflow")
     })?.max(1);

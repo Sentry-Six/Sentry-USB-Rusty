@@ -8,6 +8,7 @@ pub mod calc;
 pub mod charging;
 // Clippy cleanup of db.rs waits for PR #263, which edits it.
 #[allow(
+    clippy::chunks_exact_to_as_chunks,
     clippy::cloned_ref_to_slice_refs,
     clippy::manual_repeat_n,
     clippy::nonminimal_bool,
