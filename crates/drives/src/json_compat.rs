@@ -1695,8 +1695,8 @@ mod import_diagnostics_tests {
     /// The grouper's timestamp filter (grouper.rs `parse_file_timestamp`) is
     /// the most likely cause of "missing drives on import": a route whose
     /// filename lacks YYYY-MM-DD_HH-MM-SS lands in the routes table but
-    /// never appears as a drive. We verify the route IS imported (so logs
-    /// + import-history reflect it) — the grouper-side warn is exercised
+    /// never appears as a drive. We verify the route IS imported (so
+    /// logs + import-history reflect it) — the grouper-side warn is exercised
     /// by integration tests.
     #[test]
     fn route_with_unparseable_filename_still_imports() {

@@ -2,13 +2,13 @@
 //! nudge loop during archive cycles. All are signed messages (same
 //! AES-GCM pipeline as state queries):
 //!
-//! * `wake_vehicle`          → VEHICLE_SECURITY, RKE_ACTION_WAKE_VEHICLE (30).
-//!                             Works even when the main computer is asleep.
-//! * `set_sentry_mode`       → INFOTAINMENT. Used by SENTRY_CASE=1
-//!                             (auto-arm away) and =3 (periodic nudge).
+//! * `wake_vehicle` → VEHICLE_SECURITY, RKE_ACTION_WAKE_VEHICLE (30).
+//!   Works even when the main computer is asleep.
+//! * `set_sentry_mode` → INFOTAINMENT. Used by SENTRY_CASE=1
+//!   (auto-arm away) and =3 (periodic nudge).
 //! * `charge_port_open/close` → INFOTAINMENT, ChargePortDoor{Open,Close}.
 //! * `set_climate` / `set_climate_temp` → INFOTAINMENT, HvacAutoAction /
-//!                             HvacTemperatureAdjustmentAction.
+//!   HvacTemperatureAdjustmentAction.
 
 use anyhow::{Result, bail};
 use prost::Message;

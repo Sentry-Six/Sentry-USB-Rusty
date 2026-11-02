@@ -11,8 +11,8 @@
 //!     kernel modules loaded yet.
 //!   * [`verify_udc`] — at least one UDC driver exposed under
 //!     `/sys/class/udc/`. MUST run **after** the dwc2 overlay phase
-//!     has completed (either "already set" or "just added + rebooted
-//!     + resuming"). On a fresh Pi OS image `dtoverlay=dwc2` isn't
+//!     has completed (either "already set" or "just added +
+//!     rebooted + resuming"). On a fresh Pi OS image `dtoverlay=dwc2` isn't
 //!     in `config.txt` yet, so `/sys/class/udc/` is empty — the
 //!     check would always false-fail on the very first pass.
 //!   * [`verify_disk_space`] — SD card or USB drive has enough room

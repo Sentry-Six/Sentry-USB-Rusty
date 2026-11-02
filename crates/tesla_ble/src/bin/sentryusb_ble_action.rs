@@ -192,8 +192,8 @@ async fn main() -> ExitCode {
 /// Two-axis result for the IPC attempt:
 ///   * `Unavailable` → no daemon listening; fall back to direct BLE
 ///   * `DaemonRejected` → daemon is up but said no; surface the
-///                       error instead of retrying via direct
-///                       (same failure mode would just repeat)
+///     error instead of retrying via direct (same failure mode would
+///     just repeat)
 #[derive(Debug)]
 enum IpcError {
     Unavailable(String),

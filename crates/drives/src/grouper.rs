@@ -2071,8 +2071,8 @@ fn split_by_external_signature(group: Vec<TimedRoute>) -> Vec<Vec<TimedRoute>> {
 // Internal: gear-state splitting
 // ---------------------------------------------------------------------------
 
-/// Split a group of clips into sub-groups when gear state shows a Park period
-/// >= PARK_GAP_SECONDS. Uses GearRuns for sub-clip precision when available,
+/// Split a group of clips into sub-groups when gear state shows a Park
+/// period >= PARK_GAP_SECONDS. Uses GearRuns for sub-clip precision when available,
 /// falls back to clip-level heuristic for legacy data.
 fn split_by_gear_state(group: Vec<TimedRoute>) -> Vec<Vec<TimedRoute>> {
     if group.is_empty() {
