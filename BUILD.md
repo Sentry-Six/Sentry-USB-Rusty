@@ -75,10 +75,11 @@ bash install-pi.sh /tmp/sentryusb
 
 ## Testing
 
-- Rust unit tests: `cargo test`
+- Rust unit tests: `cargo test --workspace --locked` (CI runs them on Linux; a few tests need Linux-only `/proc` and shell tools)
+- Clippy: `cargo +1.99.0 clippy --workspace --all-targets --locked -- -D warnings` (CI pins Rust 1.99.0)
 - Shell and Python harnesses: `test/*.test.sh`, `test/*.test.py`
 - Web: `cd web && npm test && npm run lint`
-- Lint: `./check.sh` (runs ShellCheck against selected runtime scripts)
+- Lint: `bash check.sh` (runs ShellCheck against selected runtime scripts)
 
 ## Releasing
 

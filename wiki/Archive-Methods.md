@@ -22,7 +22,7 @@ For Windows file sharing, macOS file sharing, and most consumer NAS devices (Syn
 If the connection fails, the most common cause is an older NAS that needs `CIFS_VERSION=2.0` set explicitly.
 
 For Unraid shares that report `Stale file handle`, enable **Unraid SMB compatibility**
-in **Settings → Setup Wizard → Archive**, then apply the configuration. This saves
+in the Setup Wizard's Archive step (**Settings → System → Setup Wizard → Launch Wizard**), then apply the configuration. This saves
 `CIFS_NOSERVERINO=true` and adds `noserverino` to the archive and music SMB mounts,
 including connection tests. It survives reboots, updates, and setup reruns. It is
 off by default and has no effect on NFS, rsync, or rclone.
@@ -54,16 +54,20 @@ For Linux/Unix servers. Faster and more reliable than CIFS over the open interne
 | Remote Path | `/home/tesla/dashcam` |
 | SSH Port | leave blank unless your server's SSH daemon listens on a port other than 22 |
 
-**After the wizard finishes**, you need to copy the Pi's SSH public key to the server. SSH into the Pi:
+The wizard's rsync section also has a **NAS SSH Key** card. Click **Generate SSH Key**, copy the public key with the copy button, then SSH into your server as the user above and run:
 
 ```bash
-ssh-copy-id <username>@<server>
-
-# if your server uses a custom SSH port:
-ssh-copy-id -p <port> <username>@<server>
+mkdir -p ~/.ssh && chmod 700 ~/.ssh
+echo "<paste-key-here>" >> ~/.ssh/authorized_keys
+chmod 600 ~/.ssh/authorized_keys
 ```
 
-You'll only have to do this once.
+Click **Test Connection** to confirm. You'll only have to do this once.
+
+> The connection test is permissive about host keys, but scheduled archiving is
+> strict. Setup trusts the server's key for you. If a transfer later fails with
+> *"Host key verification failed"*, verify the server's fingerprint before adding
+> its key to `/root/.ssh/known_hosts` (the Setup Wizard card shows the commands).
 
 ## rclone
 

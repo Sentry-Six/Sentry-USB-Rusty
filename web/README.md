@@ -75,8 +75,9 @@ See [BUILD.md](../BUILD.md) for the full build.
 |------|-------------|
 | **Dashboard** | System status, CPU temp, WiFi, disk space, snapshots, drive map |
 | **Viewer** | Multi-camera clip viewer with synced playback (6 cameras) |
-| **Drives** | Drive history, per-drive detail, FSD analytics, and safety score estimate |
+| **Drives** | Drive history, per-drive detail, and FSD analytics |
 | **Charging** | Charge session history and per-session detail |
+| **Safety Score** | Safety score estimate from drive data |
 | **Files** | Browse/upload/delete TeslaCam, Lock Sounds, Wraps, License Plates, Music, LightShow, Boombox, and USB Drive files |
 | **Snapshots** | Saved snapshot management |
 | **Notifications** | Notification history, event toggles, and delivery providers |

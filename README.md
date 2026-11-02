@@ -71,12 +71,14 @@ Sentry USB is one of the free tools for Tesla owners from the [Sentry Six](https
 | | |
 |---|---|
 | **Drives tracking** | Every trip with route, distance, duration, battery deltas, and FSD usage — plus the dashcam clips one click in |
+| **Charging history** | Every charge session with energy added, duration, cost and charging speed, plus per-tag time-of-use rates |
 | **Tesla BLE telemetry** | Adds battery, HVAC, cabin/exterior temps, TPMS, odometer, and location to each drive — beyond what Tesla's dashcam metadata carries on its own |
 | **Multi-camera viewer** | Synchronized 6-camera playback with HW3-aware adaptive grid and drift correction |
 | **Auto-archive** | CIFS / SMB, rsync, rclone (cloud), NFS — kicks off whenever the Pi sees known WiFi |
 | **Keep awake** | BLE (free, same link as telemetry), TeslaFi, Tessie, or generic webhook |
 | **Sentry Cloud (beta)** | Encrypted cloud sync — drives are encrypted on the Pi before they leave your network |
 | **Notifications** | Pushover, ntfy, Gotify, Discord, Telegram, Slack, Signal, Matrix, AWS SNS, IFTTT, Webhook, Sentry Connect app |
+| **AI Support & Help** | In-app support chat; a diagnostics report is uploaded only after you approve it |
 | **Privacy controls** | Minimal device statistics, a visible setup choice, and full per-flow disclosure |
 
 ---
@@ -176,7 +178,7 @@ Prebuilt images aren't offered right now, and this script isn't maintained or te
 
 ## Based on
 
-A Rust rewrite of the original Go [`Scottmg1/Sentry-USB`](https://github.com/Scottmg1/Sentry-USB), itself a modernized fork of [TeslaUSB](https://github.com/marcone/teslausb) by marcone and contributors.
+A Rust rewrite of the original Go [`Scottmg1/Sentry-USB`](https://github.com/Scottmg1/Sentry-USB) (archived), itself a modernized fork of [TeslaUSB](https://github.com/marcone/teslausb) by marcone and contributors.
 
 ## Community
 
