@@ -21,7 +21,7 @@ use crate::router::AppState;
 pub(crate) const LOCK_CHIME_DIR: &str = "/mutable/LockChime";
 const LOCK_CHIME_TARGET: &str = "/mutable/LockChime.wav";
 const ASS_CHIME_TARGET: &str = "/mutable/ASSChime.wav";
-pub(crate) const LOCK_CHIME_MAX_BYTES: usize = 1 * 1024 * 1024;
+pub(crate) const LOCK_CHIME_MAX_BYTES: usize = 1024 * 1024;
 pub(crate) const LOCK_CHIME_MAX_SECONDS: f64 = 5.0;
 const LOCK_CHIME_CONFIG_FILE: &str = "/mutable/LockChime/.random_config.json";
 const LOCK_CHIME_ACTIVE_FILE: &str = "/mutable/LockChime/.active_name";
@@ -528,7 +528,10 @@ pub(crate) fn ensure_mono_wav(data: &[u8]) -> Result<Vec<u8>, String> {
     out[20..22].copy_from_slice(&1u16.to_le_bytes()); // PCM
     out[22..24].copy_from_slice(&1u16.to_le_bytes()); // mono
     out[24..28].copy_from_slice(&44100u32.to_le_bytes()); // sample rate
+    // Byte rate and block align spell out rate × channels × bits / 8.
+    #[allow(clippy::identity_op)]
     out[28..32].copy_from_slice(&(44100u32 * 1 * 16 / 8).to_le_bytes()); // byte rate
+    #[allow(clippy::identity_op)]
     out[32..34].copy_from_slice(&(1u16 * 16 / 8).to_le_bytes()); // block align
     out[34..36].copy_from_slice(&16u16.to_le_bytes()); // bits per sample
 

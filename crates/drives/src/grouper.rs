@@ -1676,6 +1676,7 @@ pub(crate) fn overview_filter_points(pts: &mut Vec<GpsPoint>) {
                 has_prev && calc::geodesic_m(pts[i - 1][0], pts[i - 1][1], pts[i][0], pts[i][1]) > MAX_JUMP_M;
             let far_from_next =
                 has_next && calc::geodesic_m(pts[i][0], pts[i][1], pts[i + 1][0], pts[i + 1][1]) > MAX_JUMP_M;
+            #[allow(clippy::nonminimal_bool)] // one clause per neighbour case
             if (has_prev && has_next && far_from_prev && far_from_next)
                 || (!has_prev && far_from_next)
                 || (!has_next && far_from_prev)
@@ -2969,6 +2970,7 @@ fn build_drive_stats(
                         all_points[i + 1].lat,
                         all_points[i + 1].lng,
                     ) > MAX_JUMP_M;
+                #[allow(clippy::nonminimal_bool)] // one clause per neighbour case
                 if (has_prev && has_next && far_from_prev && far_from_next)
                     || (!has_prev && far_from_next)
                     || (!has_next && far_from_prev)
@@ -5334,19 +5336,23 @@ mod tests {
 
     #[test]
     fn test_distance_from_summary_clips_includes_inter_clip_gap() {
-        let mut a1 = RouteAggregates::default();
-        a1.distance_m = 100.0;
-        a1.start_lat = Some(37.0000);
-        a1.start_lng = Some(-122.0000);
-        a1.end_lat = Some(37.0009);
-        a1.end_lng = Some(-122.0000);
+        let a1 = RouteAggregates {
+            distance_m: 100.0,
+            start_lat: Some(37.0000),
+            start_lng: Some(-122.0000),
+            end_lat: Some(37.0009),
+            end_lng: Some(-122.0000),
+            ..Default::default()
+        };
 
-        let mut a2 = RouteAggregates::default();
-        a2.distance_m = 200.0;
-        a2.start_lat = Some(37.0020);
-        a2.start_lng = Some(-122.0000);
-        a2.end_lat = Some(37.0030);
-        a2.end_lng = Some(-122.0000);
+        let a2 = RouteAggregates {
+            distance_m: 200.0,
+            start_lat: Some(37.0020),
+            start_lng: Some(-122.0000),
+            end_lat: Some(37.0030),
+            end_lng: Some(-122.0000),
+            ..Default::default()
+        };
 
         let s1 = RouteSummary {
             file: "/cam/2025-01-15_12-00-00-front.mp4".to_string(),
@@ -5417,8 +5423,7 @@ mod tests {
     /// must sum to 60. Aggregate distance is split across the segments
     /// so the fraction-aware aggregator has something to compare.
     fn clip_with_gear_runs(file: &str, runs: &[(u8, u32)], total_distance_m: f64) -> RouteSummary {
-        let mut a = RouteAggregates::default();
-        a.distance_m = total_distance_m;
+        let a = RouteAggregates { distance_m: total_distance_m, ..Default::default() };
         RouteSummary {
             file: file.to_string(),
             date: "2025-01-15".to_string(),

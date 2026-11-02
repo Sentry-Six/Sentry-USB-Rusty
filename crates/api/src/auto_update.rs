@@ -352,7 +352,6 @@ async fn deliver_pending() {
             id: if is_start { format!("{}-start", a.id) } else { a.id.clone() }, timestamp: a.timestamp, event_type: "update".into(), title: "SentryUSB:".into(),
             message: format!("{summary}\n{}", a.detail), summary: Some(summary),
             providers: statuses.keys().cloned().collect(), results: statuses, provider_errors: errors,
-            ..Default::default()
         };
         if !a.history_recorded || !event.provider_errors.is_empty() || a.delivered.len() != delivered.len() {
             a.history_recorded = crate::notification_center::record_update_event(event).is_ok();

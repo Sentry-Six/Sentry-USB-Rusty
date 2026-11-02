@@ -524,10 +524,8 @@ fn decode_sei_gps(data: &[u8]) -> Option<SeiFrame> {
     }
 
     // Validate GPS coordinates
-    let ok = !lat.is_infinite()
-        && !lon.is_infinite()
-        && !lat.is_nan()
-        && !lon.is_nan()
+    let ok = lat.is_finite()
+        && lon.is_finite()
         && !(lat == 0.0 && lon == 0.0)
         && lat.abs() <= 90.0
         && lon.abs() <= 180.0;
