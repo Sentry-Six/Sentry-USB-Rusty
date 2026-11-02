@@ -30,3 +30,6 @@ sentryusb-ws = { path = "../ws", package = "sentryusb-ws" }
 [dev-dependencies]
 tempfile = "3"
 tokio = { workspace = true, features = ["test-util"] }
+
+[lints]
+workspace = true

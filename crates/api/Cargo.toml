@@ -45,3 +45,6 @@ tempfile = "3"
 tower = { version = "0.5", features = ["util"] }
 # Test-only ZIP reader for streaming-writer validation.
 zip = { version = "9", default-features = false, features = ["deflate"] }
+
+[lints]
+workspace = true

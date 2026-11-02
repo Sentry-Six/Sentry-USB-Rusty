@@ -97,3 +97,6 @@ tempfile = "3"
 # check signal clean.
 [package.metadata.cargo-machete]
 ignored = ["prost-types"]
+
+[lints]
+workspace = true

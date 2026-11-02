@@ -21,3 +21,6 @@ sentryusb-config = { path = "../config", package = "sentryusb-config" }
 
 [dev-dependencies]
 tokio = { workspace = true }
+
+[lints]
+workspace = true

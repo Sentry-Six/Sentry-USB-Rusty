@@ -3193,15 +3193,16 @@ fn build_drive_stats(
         }
 
         // Flush pending disengagement at end of drive
-        if pending_disengage && !all_points.is_empty() {
-            if all_points.last().unwrap().gear != GEAR_PARK {
-                fsd_disengagements += 1;
-                fsd_events.push(FsdEvent {
-                    lat: pending_disengage_lat,
-                    lng: pending_disengage_lng,
-                    event_type: "disengagement".to_string(),
-                });
-            }
+        if pending_disengage
+            && !all_points.is_empty()
+            && all_points.last().unwrap().gear != GEAR_PARK
+        {
+            fsd_disengagements += 1;
+            fsd_events.push(FsdEvent {
+                lat: pending_disengage_lat,
+                lng: pending_disengage_lng,
+                event_type: "disengagement".to_string(),
+            });
         }
     }
 

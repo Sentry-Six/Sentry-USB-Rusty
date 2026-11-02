@@ -21,3 +21,6 @@ sentryusb-cloud-crypto = { path = "../cloud_crypto", package = "sentryusb-cloud-
 
 [dev-dependencies]
 tempfile = "3"
+
+[lints]
+workspace = true
