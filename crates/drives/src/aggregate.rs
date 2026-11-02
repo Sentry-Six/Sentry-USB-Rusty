@@ -540,9 +540,7 @@ mod tests {
         // timestamp was unset for engaged-at-start clips, the 3s grace
         // never elapsed, and every such push was silently dropped.
         let mut accel = vec![0.0f32; 61];
-        for i in 30..33 {
-            accel[i] = 30.0;
-        }
+        accel[30..33].fill(30.0);
         let agg =
             compute_route_aggregates(&boundary_route(vec![AUTOPILOT_FSD; 61], vec![4; 61], accel));
         assert_eq!(agg.fsd_accel_pushes, 1);

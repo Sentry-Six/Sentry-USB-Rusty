@@ -1655,9 +1655,9 @@ pub(crate) fn overview_filter_points(pts: &mut Vec<GpsPoint>) {
         let count = q3 - q1 + 1;
         let mut sum_lat: f64 = 0.0;
         let mut sum_lng: f64 = 0.0;
-        for i in q1..=q3 {
-            sum_lat += pts[i][0];
-            sum_lng += pts[i][1];
+        for p in &pts[q1..=q3] {
+            sum_lat += p[0];
+            sum_lng += p[1];
         }
         let med_lat = sum_lat / count as f64;
         let med_lng = sum_lng / count as f64;
@@ -2937,9 +2937,9 @@ fn build_drive_stats(
         let count = q3 - q1 + 1;
         let mut med_lat: f64 = 0.0;
         let mut med_lng: f64 = 0.0;
-        for i in q1..=q3 {
-            med_lat += all_points[i].lat;
-            med_lng += all_points[i].lng;
+        for p in &all_points[q1..=q3] {
+            med_lat += p.lat;
+            med_lng += p.lng;
         }
         med_lat /= count as f64;
         med_lng /= count as f64;
@@ -2979,8 +2979,8 @@ fn build_drive_stats(
                 }
             }
             let mut write = 0;
-            for read in 0..n {
-                if !remove[read] {
+            for (read, &removed) in remove.iter().enumerate() {
+                if !removed {
                     if write != read {
                         // Safe to move since we only write to already-processed indices
                         all_points.swap(write, read);

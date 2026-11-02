@@ -746,13 +746,9 @@ mod tests {
         let mut r = route_with_speeds(vec![25.0; 61]);
         let mut ax = vec![0.0_f32; 61];
         let mut ay = vec![0.0_f32; 61];
-        for k in 30..33 {
-            ay[k] = 4.0; // stored Tesla SEI: positive Y is deceleration
-        }
+        ay[30..33].fill(4.0); // stored Tesla SEI: positive Y is deceleration
         ay[40] = 1.5; // 0.15 g — denominator only
-        for k in 45..47 {
-            ax[k] = 5.0; // 0.51 g lateral
-        }
+        ax[45..47].fill(5.0); // 0.51 g lateral
         ax[50] = 2.5; // 0.25 g — denominator only
         r.accel_x = ax;
         r.accel_y = ay;
