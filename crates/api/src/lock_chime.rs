@@ -1155,7 +1155,7 @@ pub async fn upload(
         }
     };
 
-    if let Err(_) = std::fs::write(&dest_path, &data) {
+    if std::fs::write(&dest_path, &data).is_err() {
         return crate::json_error(StatusCode::INTERNAL_SERVER_ERROR, "Failed to save file");
     }
 

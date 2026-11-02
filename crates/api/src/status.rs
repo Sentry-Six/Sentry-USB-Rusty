@@ -1075,7 +1075,7 @@ async fn disk_usage(path: &str) -> i64 {
     tokio::task::spawn_blocking(move || {
         #[cfg(unix)] {
             use std::os::unix::fs::MetadataExt;
-            return std::fs::metadata(path).map(|m| m.blocks().saturating_mul(512) as i64).unwrap_or(0);
+            std::fs::metadata(path).map(|m| m.blocks().saturating_mul(512) as i64).unwrap_or(0)
         }
         #[cfg(not(unix))] { let _ = path; 0 }
     }).await.unwrap_or(0)

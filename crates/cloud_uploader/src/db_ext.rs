@@ -40,7 +40,7 @@ pub fn select_pending(store: &DriveStore, limit: i64) -> Result<Vec<PendingRoute
         .with_routes_by_files(&file_refs, |rs| rs.to_vec())?;
 
     let mut out = Vec::with_capacity(routes.len());
-    for ((file, cached_route_id), route) in files.into_iter().zip(routes.into_iter()) {
+    for ((file, cached_route_id), route) in files.into_iter().zip(routes) {
 
         if route.file != file {
             tracing::warn!(

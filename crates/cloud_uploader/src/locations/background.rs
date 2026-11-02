@@ -73,7 +73,7 @@ async fn snapshot(store: Arc<DriveStore>, file: String) -> Result<Option<Snapsho
         ensure!(route.file == file, "location source path changed");
         let (uploaded, id): (Option<i64>,Option<String>) = conn.query_row(
             "SELECT cloud_uploaded_at,cloud_route_id FROM routes WHERE file=?1", [&file], |row| Ok((row.get(0)?,row.get(1)?)))?;
-        if !uploaded.is_some_and(|at| at > 0) {return Ok(None)}
+        if uploaded.is_none_or(|at| at <= 0) {return Ok(None)}
         ensure!(id.is_none_or(|id| id == ids::route_id_from_path(&file)), "local Cloud route identity changed");
         let readings = for_route_on_conn(conn, &route)?;
         let fingerprint = evidence_fingerprint(&route, readings.as_ref())?;

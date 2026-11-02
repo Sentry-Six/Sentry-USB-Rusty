@@ -660,7 +660,7 @@ mod tests {
         let mutable_1g8 = 1843 * mib; // ~1.8 GiB
         assert_eq!(mutable_inode_count(t7_8tb_sectors, mutable_1g8), mutable_1g8 / 4096);
 
-        let sd_226g_sectors: u64 = 226 * 1024 * mib as u64 / 512;
+        let sd_226g_sectors: u64 = 226 * 1024 * mib / 512;
         assert_eq!(mutable_inode_count(sd_226g_sectors, mutable_1g8), mutable_1g8 / 16384);
 
         // 300 MiB mutable + 500 GB backingfiles: raw value survives.

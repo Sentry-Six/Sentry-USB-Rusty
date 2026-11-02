@@ -494,13 +494,13 @@ fn remove_cmdline_param(path: &str, param: &str) -> Result<()> {
 }
 
 /// Read-modify-write a file line-by-line.
-fn sed_in_place<F>(path: &str, mut f: F) -> Result<()>
+fn sed_in_place<F>(path: &str, f: F) -> Result<()>
 where
     F: FnMut(&str) -> String,
 {
     let content = std::fs::read_to_string(path)?;
     let had_trailing_newline = content.ends_with('\n');
-    let new: Vec<String> = content.lines().map(|l| f(l)).collect();
+    let new: Vec<String> = content.lines().map(f).collect();
     let mut out = new.join("\n");
     if had_trailing_newline {
         out.push('\n');

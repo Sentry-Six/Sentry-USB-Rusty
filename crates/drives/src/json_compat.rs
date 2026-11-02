@@ -1796,7 +1796,7 @@ mod full_db_export_tests {
         store
             .add_route("2025-01-15/clip.mp4", "2025-01-15", &pts, &[4, 4], &[1, 1], &[25.0, 26.0], &[0.5, 0.6], 0, 2, &[], &[])
             .unwrap();
-        store.with_locked_conn(|conn| seed_telemetry(conn));
+        store.with_locked_conn(seed_telemetry);
         store
             .set_charge_tags(1700000000, &["Home".to_string(), "Overnight".to_string()])
             .unwrap();

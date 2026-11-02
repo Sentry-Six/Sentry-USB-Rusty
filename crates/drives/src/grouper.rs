@@ -2677,7 +2677,7 @@ pub(crate) fn detect_summon(
     if clips.is_empty() {
         return false;
     }
-    if !(duration_ms > 0) || duration_ms > SUMMON_MAX_DURATION_MS {
+    if duration_ms <= 0 || duration_ms > SUMMON_MAX_DURATION_MS {
         return false;
     }
 
