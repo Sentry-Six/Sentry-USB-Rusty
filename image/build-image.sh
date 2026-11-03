@@ -244,7 +244,7 @@ python3 -I "$SCRIPT_DIR/imager.py" manifest \
     --extract-sha256 "$EXTRACT_SHA" \
     --version "$TAG" \
     --release-date "$(date -u +%F)" \
-    --icon "https://raw.githubusercontent.com/$REPO/main/image/icon.svg" \
+    --icon "https://raw.githubusercontent.com/$REPO/main/image/icon.png" \
     --out "$OUT_DIR/$MANIFEST_NAME"
 
 info "Done (base $BASE_DATE):"
