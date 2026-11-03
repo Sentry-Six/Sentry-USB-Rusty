@@ -165,14 +165,13 @@ cross build --release --target armv7-unknown-linux-gnueabihf -p sentryusb
 
 See [BUILD.md](BUILD.md) for details.
 
-### Build a full Pi image (advanced)
+### Build the SD card image (advanced)
 
 ```bash
-./build-image.sh                 # 64-bit image (Pi 3A+/4/5/Zero 2)
-./build-image.sh --32bit         # 32-bit image (armhf — Pi 3A+ with 32-bit Pi OS)
+sudo image/build-image.sh --tag v3.29.0   # Linux, arm64 host
 ```
 
-Prebuilt images aren't offered right now, and this script isn't maintained or tested until image builds return. End users should use the curl one-liner install above.
+CI builds and attaches the image to each stable release; see [BUILD.md](BUILD.md#sd-card-image).
 
 ---
 

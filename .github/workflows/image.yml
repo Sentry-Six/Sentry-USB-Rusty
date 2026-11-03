@@ -1,0 +1,160 @@
+name: SD Card Image
+
+# Builds the Raspberry Pi Imager image for a stable release and attaches it
+# once the release is already out, so publishing a release never waits for
+# the image (image/build-image.sh takes a while).
+on:
+  workflow_run:
+    workflows: ['Build & Release']
+    types: [completed]
+  release:
+    # A pre-release promoted to a full release by hand. Releases the build
+    # workflow creates itself don't fire this; workflow_run covers those.
+    types: [released]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag to build the image for (for example v3.29.0)'
+        required: true
+        type: string
+      publish:
+        description: 'Attach the image to the release (off: keep it as a workflow artifact)'
+        type: boolean
+        default: true
+      replace:
+        description: 'Replace an image the release already has'
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: sd-card-image-${{ github.event.workflow_run.head_branch || github.event.release.tag_name || inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  plan:
+    name: Decide whether to build
+    runs-on: ubuntu-24.04
+    outputs:
+      tag: ${{ steps.plan.outputs.tag }}
+      build: ${{ steps.plan.outputs.build }}
+      publish: ${{ steps.plan.outputs.publish }}
+    steps:
+      - name: Decide
+        id: plan
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          EVENT: ${{ github.event_name }}
+          RUN_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+          RUN_EVENT: ${{ github.event.workflow_run.event }}
+          # For a tag push, workflow_run reports the tag as head_branch.
+          RUN_REF: ${{ github.event.workflow_run.head_branch }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          INPUT_TAG: ${{ inputs.tag }}
+          INPUT_PUBLISH: ${{ inputs.publish }}
+          INPUT_REPLACE: ${{ inputs.replace }}
+          # Automatic builds stay off until the repository variable
+          # SENTRYUSB_SD_IMAGE is "auto"; manual runs always work.
+          AUTO: ${{ vars.SENTRYUSB_SD_IMAGE }}
+        run: |
+          skip() { echo "Skipping: $1"; echo "build=false" >> "$GITHUB_OUTPUT"; exit 0; }
+          if [ "$EVENT" != workflow_dispatch ] && [ "$AUTO" != auto ]; then
+            skip "automatic image builds are off (set the SENTRYUSB_SD_IMAGE variable to auto)"
+          fi
+          case "$EVENT" in
+            workflow_run)
+              [ "$RUN_CONCLUSION" = success ] || skip "Build & Release did not succeed"
+              [ "$RUN_EVENT" = push ] && [[ "$RUN_REF" == v* ]] || skip "not a release tag build"
+              tag="$RUN_REF"; publish=true; replace=false ;;
+            release)
+              tag="$RELEASE_TAG"; publish=true; replace=false ;;
+            workflow_dispatch)
+              tag="$INPUT_TAG"; publish="$INPUT_PUBLISH"; replace="$INPUT_REPLACE" ;;
+            *)
+              skip "unexpected event $EVENT" ;;
+          esac
+
+          if ! info=$(gh release view "$tag" --json isPrerelease,isDraft,assets 2>err.txt); then
+            cat err.txt >&2
+            skip "no release $tag"
+          fi
+          # Automatic builds are for stable releases only; a manual run may
+          # build any release, and attaches only when asked to.
+          if [ "$EVENT" != workflow_dispatch ]; then
+            [ "$(jq -r .isPrerelease <<<"$info")" = false ] || skip "$tag is a pre-release"
+            [ "$(jq -r .isDraft <<<"$info")" = false ] || skip "$tag is a draft"
+          fi
+          if [ "$publish" = true ] && [ "$replace" != true ] \
+             && jq -e '.assets[] | select(.name == "Sentry-USB-Raspberry-Pi.img.xz")' <<<"$info" >/dev/null; then
+            skip "$tag already has an image"
+          fi
+
+          {
+            echo "tag=$tag"
+            echo "build=true"
+            echo "publish=$publish"
+          } >> "$GITHUB_OUTPUT"
+          echo "Building the image for $tag (attach: $publish)"
+
+  image:
+    name: Build image for ${{ needs.plan.outputs.tag }}
+    needs: plan
+    if: needs.plan.outputs.build == 'true'
+    # arm64 so the Pi OS chroot runs natively; 24.04's e2fsprogs understands
+    # the ext4 features Trixie's root filesystem uses.
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 120
+    env:
+      TAG: ${{ needs.plan.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Install image tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y zerofree xz-utils fdisk e2fsprogs
+
+      # The release's own installer when it has the image build mode, so the
+      # image installs that release the way its one-liner would; otherwise
+      # this checkout's installer (still pinned to the release's files).
+      - name: Choose installer
+        run: |
+          if git show "refs/tags/$TAG:install-pi.sh" > "$RUNNER_TEMP/install-pi.sh" 2>/dev/null \
+             && grep -q SENTRYUSB_IMAGE_BUILD "$RUNNER_TEMP/install-pi.sh"; then
+            echo "Using install-pi.sh from $TAG"
+          else
+            cp install-pi.sh "$RUNNER_TEMP/install-pi.sh"
+            echo "::notice::$TAG's install-pi.sh has no image build mode; using $(git rev-parse --short HEAD)'s"
+          fi
+
+      - name: Build image
+        run: |
+          sudo env REPO="$GITHUB_REPOSITORY" TMPDIR="$RUNNER_TEMP" \
+            image/build-image.sh --tag "$TAG" \
+              --installer "$RUNNER_TEMP/install-pi.sh" \
+              --out "$RUNNER_TEMP/image"
+          sudo chown -R "$(id -u):$(id -g)" "$RUNNER_TEMP/image"
+
+      - name: Attach to release
+        if: needs.plan.outputs.publish == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload "$TAG" --clobber \
+            "$RUNNER_TEMP/image/Sentry-USB-for-Raspberry-Pi-Imager.rpi-imager-manifest" \
+            "$RUNNER_TEMP/image/Sentry-USB-Raspberry-Pi.img.xz" \
+            "$RUNNER_TEMP/image/Sentry-USB-Raspberry-Pi.img.xz.sha256"
+
+      - name: Keep as workflow artifact
+        if: needs.plan.outputs.publish != 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: sd-card-image-${{ needs.plan.outputs.tag }}
+          path: ${{ runner.temp }}/image/
+          retention-days: 7
+          compression-level: 0

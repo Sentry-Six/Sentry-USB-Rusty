@@ -8,8 +8,8 @@ shellcheck -V
 # Runtime-sourced files are absent in the checkout.
 shellcheck --exclude=SC1091 \
            ./install-pi.sh \
+           ./image/build-image.sh \
            ./setup/pi/setup-sentryusb \
-           ./pi-gen-sources/00-sentryusb-tweaks/files/rc.local \
            ./pi-gen-sources/00-sentryusb-tweaks/files/sentryusb-pick-binary \
            ./run/archiveloop \
            ./run/auto.sentryusb \

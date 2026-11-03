@@ -51,18 +51,25 @@ Binaries land in `target/<target>/release/`.
 cargo build --release
 ```
 
-## Full OS image
+## SD card image
 
-Prebuilt images aren't offered right now; this script is kept for a future image release and isn't maintained or tested in the meantime.
+`image/build-image.sh` takes the newest official Raspberry Pi OS Lite
+(64-bit) image, installs one Sentry USB release into it by running
+`install-pi.sh` in image mode inside a chroot, and writes the image, its
+checksum and a Raspberry Pi Imager manifest. It needs Linux, root, and an
+arm64 host (or qemu-user binfmt for aarch64):
 
-`build-image.sh` wraps pi-gen with the SentryUSB stage overlay:
 ```
-./build-image.sh                  # arm64
-./build-image.sh --32bit          # armhf
-./build-image.sh /path/to/binary  # use a pre-built binary
+sudo image/build-image.sh --tag v3.29.0 --out deploy
 ```
 
-Output: `deploy/sentryusb-*.img.gz`.
+The image keeps Pi OS's first boot as it ships, so the Wi-Fi, user,
+hostname and SSH settings chosen in Imager apply on the user's card. Imager
+2 only offers those settings for images opened through a manifest that
+declares how the image is configured (`init_format`), which is why users
+open the `.rpi-imager-manifest` rather than the `.img.xz` itself;
+`image/imager.py` copies `init_format` and the board list from Raspberry
+Pi's own entry for the base image.
 
 ## Deploy to an existing Pi
 
@@ -84,7 +91,7 @@ bash install-pi.sh /tmp/sentryusb
 ## Releasing
 
 GitHub Releases are expected to host these artifacts (naming consumed by
-`install-pi.sh` and `build-image.sh`):
+`install-pi.sh`):
 
 - `sentryusb-linux-arm64-a53` / `-a72` / `-a76` (per-CPU aarch64 variants)
 - `sentryusb-linux-arm64` (backward-compat alias = a72 build)
@@ -95,6 +102,21 @@ GitHub Releases are expected to host these artifacts (naming consumed by
 The `Build & Release` workflow (`.github/workflows/build.yml`) builds these on
 native arm64 runners (armv7 is cross-compiled with GCC) and attaches them to
 the release.
+
+Once a stable release is out, the `SD Card Image` workflow
+(`.github/workflows/image.yml`) builds the image for it and attaches three
+more files. Publishing the release doesn't wait for it. Their names start
+with `Sentry-USB-` so the release page, which lists files by name, shows
+them first:
+
+- `Sentry-USB-for-Raspberry-Pi-Imager.rpi-imager-manifest` (what users open)
+- `Sentry-USB-Raspberry-Pi.img.xz` and its `.sha256`
+
+Automatic builds run only while the repository variable `SENTRYUSB_SD_IMAGE`
+is `auto`. Pre-releases are skipped, but promoting one to a full release
+builds its image. To rebuild or test, run the workflow by hand with a tag;
+turn off "publish" to keep the result as a workflow artifact instead of
+attaching it.
 
 armv6 (Pi Zero W / Pi 1) is no longer built — the board is too underpowered
 to run the daemon comfortably, and dropping the matrix entry keeps the

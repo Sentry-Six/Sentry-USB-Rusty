@@ -14,11 +14,10 @@ match = re.search(r'^function status_led_archive \(\) \{.*?^\}', source, re.M|re
 assert match, 'archive must publish process-bound status without writing LEDs'
 (scratch/'hint.sh').write_text(match[0].replace('/run/sentryusb-led', str(scratch/'run')))
 assert '$STATUSLED/' not in source, 'archive still owns hardware LEDs'
-for name in ['setup/generic/install.sh', 'setup/pi/setup-sentryusb',
-             'pi-gen-sources/00-sentryusb-tweaks/files/rc.local']:
+for name in ['setup/generic/install.sh', 'setup/pi/setup-sentryusb']:
     text = (root/name).read_text()
     assert not re.search(r'>\s*"?\$(?:led|STATUSLED)/', text), f'{name} still writes LEDs'
-for name in ['install-pi.sh', 'setup/pi/setup-sentryusb', 'pi-gen-sources/00-sentryusb-tweaks/00-run.sh']:
+for name in ['install-pi.sh', 'setup/pi/setup-sentryusb']:
     assert re.search(r'ExecStopPost=-.*status-led-restore', (root/name).read_text()), f'{name} misses crash cleanup'
 assert 'apply_status_led_cleanup' in (root/'setup/pi/apply-runtime-patches.sh').read_text()
 PY

@@ -21,7 +21,6 @@ identified by diffing each file against upstream TeslaUSB; all retain
 substantial verbatim or lightly-adapted upstream content.
 
   check.sh
-  pi-gen-sources/prepare.sh
   setup/generic/install.sh
   tools/debian-resizefs.sh
   tools/resize-image.sh
