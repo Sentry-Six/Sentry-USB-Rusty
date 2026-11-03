@@ -8,6 +8,7 @@ import {
   WarningIcon,
 } from "@/components/icons"
 import { cn } from "@/lib/utils"
+import { createFinalRebootWatch } from "@/lib/finalReboot"
 import { SelectMenu } from "@/components/ui/SelectMenu"
 import { DialogLayer } from "@/components/ui/Modal"
 import { SetupProgress } from "./SetupProgress"
@@ -336,6 +337,8 @@ export function SetupWizard({ initialData, initialStepId, onClose }: SetupWizard
     () => sessionStorage.getItem("sentryusb_device_ip"),
   )
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  // Boot ID when setup reported finished; the final reboot changes it.
+  const finalBootIdRef = useRef<string | undefined>(undefined)
   // Snapshot of the config as it was when the wizard opened (for detecting destructive changes)
   const originalDataRef = useRef<SetupFormData | undefined>(initialData)
   const [destructiveWarning, setDestructiveWarning] = useState<DestructiveChange[] | null>(null)
@@ -483,6 +486,7 @@ export function SetupWizard({ initialData, initialStepId, onClose }: SetupWizard
           setSetupMessage(data.error.message || "Setup failed. Check the log below.")
           if (pollRef.current) clearInterval(pollRef.current)
         } else if (data.setup_finished) {
+          finalBootIdRef.current = data.boot_id
           // Setup scripts are done — the Pi will do a final reboot.
           // Transition to "finalizing" which keeps the spinner and
           // waits for the server to come back before showing dashboard.
@@ -510,29 +514,23 @@ export function SetupWizard({ initialData, initialStepId, onClose }: SetupWizard
     return () => { if (pollRef.current) clearInterval(pollRef.current) }
   }, [phase])
 
-  // Poll during finalizing — wait for server to go DOWN then come back UP.
-  // Without the wentDown gate, the first poll can succeed while the Pi is
-  // still shutting down (exec reboot takes a few seconds to kill the server),
-  // causing a premature "Setup Complete!" before the Pi has actually rebooted.
+  // Poll during finalizing until the Pi is back from its final reboot. The
+  // first poll can still succeed while the Pi is shutting down (exec reboot
+  // takes a few seconds to kill the server), so only a new boot counts.
   useEffect(() => {
     if (phase !== "finalizing") return
-    let wentDown = false
-    const poll = setInterval(async () => {
-      try {
-        const res = await fetch("/api/setup/status")
-        if (res.ok && wentDown) {
-          // Server is back up after confirmed reboot
-          setPhase("complete")
-          setSetupMessage("Setup completed successfully! Your device is ready.")
-          clearInterval(poll)
-        }
-      } catch {
-        // Server unreachable — Pi is rebooting
-        wentDown = true
-        setSetupMessage("Waiting for Sentry USB to come back online after final reboot...")
-      }
-    }, 3000)
-    return () => clearInterval(poll)
+    const rebooted = createFinalRebootWatch({ bootIdBefore: finalBootIdRef.current })
+    let done = false
+    const check = async () => {
+      if (done || !(await rebooted()) || done) return
+      done = true
+      clearInterval(poll)
+      setPhase("complete")
+      setSetupMessage("Setup completed successfully! Your device is ready.")
+    }
+    const poll = setInterval(check, 3000)
+    check()
+    return () => { done = true; clearInterval(poll) }
   }, [phase])
 
   // Also listen to WebSocket for real-time updates (auto-reconnect on drop)

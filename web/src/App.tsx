@@ -1,4 +1,4 @@
-import { useEffect, useState, lazy, Suspense } from "react"
+import { useEffect, useRef, useState, lazy, Suspense } from "react"
 import { BrowserRouter, Routes, Route } from "react-router-dom"
 import { ProgressActivityIcon, WarningIcon } from "@/components/icons"
 import { AppShell } from "@/components/layout/AppShell"
@@ -6,6 +6,7 @@ import { SetupWizard } from "@/components/setup/SetupWizard"
 import { SetupProgress } from "@/components/setup/SetupProgress"
 import { AuthProvider, useAuth } from "@/hooks/useAuth"
 import { ErrorBoundary } from "@/components/ErrorBoundary"
+import { createFinalRebootWatch } from "@/lib/finalReboot"
 
 // Lazy routes — each page becomes its own JS chunk. Visiting the
 // Dashboard no longer pulls in xterm (Terminal), leaflet (Viewer), or
@@ -72,6 +73,8 @@ function CrashScreen({ error }: { error: Error }) {
 function AppContent() {
   const [appState, setAppState] = useState<AppState>("loading")
   const [setupError, setSetupError] = useState<SetupErrorInfo | null>(null)
+  // Boot ID when setup reported finished; the final reboot changes it.
+  const finalBootIdRef = useRef<string | undefined>(undefined)
   const { state: authState, login } = useAuth()
 
   useEffect(() => {
@@ -115,6 +118,7 @@ function AppContent() {
         const res = await fetch("/api/setup/status")
         const data = await res.json()
         if (data.setup_finished) {
+          finalBootIdRef.current = data.boot_id
           setAppState("finalizing")
         } else if (data.error) {
           // Failed mid-run (e.g. a config validation bail) — surface it
@@ -129,26 +133,22 @@ function AppContent() {
     return () => clearInterval(interval)
   }, [appState])
 
-  // Finalizing: wait for the server to drop off (confirming the final
-  // reboot actually started) and then come back before redirecting to
-  // the dashboard. Without the `wentDown` gate we could bounce straight
-  // to "ready" on the very next poll and then lose the connection mid-
-  // navigation when the Pi finally reboots. Matches the same pattern
-  // the SetupWizard's own finalize effect uses.
+  // Finalizing: wait until the Pi is back from its final reboot before
+  // redirecting to the dashboard, or the redirect can land just as the Pi
+  // drops off. Matches the SetupWizard's own finalize effect.
   useEffect(() => {
     if (appState !== "finalizing") return
-    let wentDown = false
-    const id = setInterval(async () => {
-      try {
-        const res = await fetch("/api/setup/status")
-        if (res.ok && wentDown) {
-          setAppState("ready")
-        }
-      } catch {
-        wentDown = true
-      }
-    }, 2000)
-    return () => clearInterval(id)
+    const rebooted = createFinalRebootWatch({ bootIdBefore: finalBootIdRef.current })
+    let done = false
+    const check = async () => {
+      if (done || !(await rebooted()) || done) return
+      done = true
+      clearInterval(id)
+      setAppState("ready")
+    }
+    const id = setInterval(check, 2000)
+    check()
+    return () => { done = true; clearInterval(id) }
   }, [appState])
 
   // Still checking

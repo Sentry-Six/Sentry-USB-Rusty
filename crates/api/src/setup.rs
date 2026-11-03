@@ -144,6 +144,12 @@ pub async fn get_setup_status() -> (StatusCode, Json<serde_json::Value>) {
         "setup_finished": finished,
         "setup_running": effective_running,
     });
+    // Lets the wizard tell that the final reboot has happened even when it
+    // never saw the Pi go offline (a fast reboot can hide behind a request
+    // that waits instead of failing).
+    if let Some(boot_id) = crate::update::read_boot_id() {
+        body["boot_id"] = boot_id.into();
+    }
     if let Some(f) = failure {
         body["error"] = f.to_json();
     }
