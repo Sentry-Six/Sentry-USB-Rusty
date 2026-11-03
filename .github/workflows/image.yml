@@ -88,7 +88,7 @@ jobs:
             [ "$(jq -r .isDraft <<<"$info")" = false ] || skip "$tag is a draft"
           fi
           if [ "$publish" = true ] && [ "$replace" != true ] \
-             && jq -e '.assets[] | select(.name == "Sentry-USB-Raspberry-Pi.img.xz")' <<<"$info" >/dev/null; then
+             && jq -e '.assets[] | select(.name == "sentryusb-raspberry-pi-image.img.xz")' <<<"$info" >/dev/null; then
             skip "$tag already has an image"
           fi
 
@@ -147,8 +147,25 @@ jobs:
         run: |
           gh release upload "$TAG" --clobber \
             "$RUNNER_TEMP/image/Sentry-USB-for-Raspberry-Pi-Imager.rpi-imager-manifest" \
-            "$RUNNER_TEMP/image/Sentry-USB-Raspberry-Pi.img.xz" \
-            "$RUNNER_TEMP/image/Sentry-USB-Raspberry-Pi.img.xz.sha256"
+            "$RUNNER_TEMP/image/sentryusb-raspberry-pi-image.img.xz" \
+            "$RUNNER_TEMP/image/sentryusb-raspberry-pi-image.img.xz.sha256"
+
+      # Point people at the manifest: flashed on its own, the image has no
+      # Wi-Fi or user. Plain text, because Sentry Connect shows release
+      # notes as-is. Added once, above the hand-written notes.
+      - name: Add install line to release notes
+        if: needs.plan.outputs.publish == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          line="Installing on a Raspberry Pi? Download Sentry-USB-for-Raspberry-Pi-Imager.rpi-imager-manifest below and double-click it to open Raspberry Pi Imager."
+          gh release view "$TAG" --json body --jq .body > "$RUNNER_TEMP/notes.md"
+          if grep -qF "$line" "$RUNNER_TEMP/notes.md"; then
+            echo "Release notes already have the install line"
+            exit 0
+          fi
+          { echo "$line"; echo; cat "$RUNNER_TEMP/notes.md"; } > "$RUNNER_TEMP/notes-new.md"
+          gh release edit "$TAG" --notes-file "$RUNNER_TEMP/notes-new.md"
 
       - name: Keep as workflow artifact
         if: needs.plan.outputs.publish != 'true'

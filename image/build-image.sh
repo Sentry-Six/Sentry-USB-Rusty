@@ -6,11 +6,13 @@
 # installs one Sentry USB release into it with install-pi.sh, and writes:
 #
 #   Sentry-USB-for-Raspberry-Pi-Imager.rpi-imager-manifest   users open this
-#   Sentry-USB-Raspberry-Pi.img.xz                           the image
-#   Sentry-USB-Raspberry-Pi.img.xz.sha256                    its checksum
+#   sentryusb-raspberry-pi-image.img.xz                      the image
+#   sentryusb-raspberry-pi-image.img.xz.sha256               its checksum
 #
-# The names start with "Sentry-USB-" so GitHub, which lists release files
-# by name ignoring case, shows them above the sentryusb-* binaries.
+# GitHub lists release files by name, ignoring case. The manifest's
+# "Sentry-USB-" name puts it above everything; the image sorts in among
+# the sentryusb-* binaries, so people open the manifest rather than flash
+# the image without Imager's Wi-Fi and user settings.
 #
 # Pi OS's first boot is left as it ships: it applies the settings chosen in
 # Imager (Wi-Fi, user, hostname, SSH), gives the card its own disk ID and
@@ -31,7 +33,7 @@ OS_LIST="https://downloads.raspberrypi.com/os_list_imagingutility_v4.json"
 GROW_MB=2048        # room to upgrade and install before shrinking back
 HEADROOM_MB=300     # free space left in root for the first boot
 
-IMAGE_NAME="Sentry-USB-Raspberry-Pi.img"
+IMAGE_NAME="sentryusb-raspberry-pi-image.img"
 MANIFEST_NAME="Sentry-USB-for-Raspberry-Pi-Imager.rpi-imager-manifest"
 
 # Tools setup and the installer would otherwise fetch on the user's Pi.

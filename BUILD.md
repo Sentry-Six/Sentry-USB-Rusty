@@ -105,12 +105,15 @@ the release.
 
 Once a stable release is out, the `SD Card Image` workflow
 (`.github/workflows/image.yml`) builds the image for it and attaches three
-more files. Publishing the release doesn't wait for it. Their names start
-with `Sentry-USB-` so the release page, which lists files by name, shows
-them first:
+more files and a first line in the release notes pointing to the manifest.
+Publishing the release doesn't wait for it.
 
-- `Sentry-USB-for-Raspberry-Pi-Imager.rpi-imager-manifest` (what users open)
-- `Sentry-USB-Raspberry-Pi.img.xz` and its `.sha256`
+- `Sentry-USB-for-Raspberry-Pi-Imager.rpi-imager-manifest`: what users
+  download and double-click. Its name puts it at the top of the release
+  page, which lists files by name.
+- `sentryusb-raspberry-pi-image.img.xz` and its `.sha256`: the image the
+  manifest points to. Its name sorts it in among the binaries, so people
+  don't flash it without Imager's Wi-Fi and user settings.
 
 Automatic builds run only while the repository variable `SENTRYUSB_SD_IMAGE`
 is `auto`. Pre-releases are skipped, but promoting one to a full release
