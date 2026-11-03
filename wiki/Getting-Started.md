@@ -36,7 +36,7 @@ On the **Writing** step, click **Write**, then **I understand, erase and write**
 
 1.  Eject the card and put it into the Pi.
 2.  Power on the Pi with any USB power supply. (Later you'll move the Pi to the car and power it from the Tesla using the same port.)
-3.  Wait **3–5 minutes**. The first start sets up the card and joins your WiFi. On a Pi 5 the light then shows red with a short gap every few seconds, which means Sentry USB is running and waiting to be set up.
+3.  Wait about a minute (a couple of minutes on a Pi Zero 2 W or Pi 3A+). The first start sets up the card, restarts once and joins your WiFi. On a Pi 5 the light then shows red with a short gap every few seconds, which means Sentry USB is running and waiting to be set up.
 
 ### 3. Open the web UI
 

@@ -43,7 +43,7 @@ Sentry USB is one of the free tools for Tesla owners from the [Sentry Six](https
 
 1. Download **[Sentry-USB-for-Raspberry-Pi-Imager.rpi-imager-manifest](https://github.com/Sentry-Six/Sentry-USB-Rusty/releases/latest/download/Sentry-USB-for-Raspberry-Pi-Imager.rpi-imager-manifest)** and double-click it to open [Raspberry Pi Imager](https://www.raspberrypi.com/software/).
 2. Pick your Pi, add your Wi-Fi when Imager asks, and write the card.
-3. Boot the Pi and open `http://sentryusb.local` a few minutes later.
+3. Boot the Pi and open `http://sentryusb.local` about a minute later.
 4. Follow the setup wizard, then plug the Pi into your Tesla.
 
 The [Getting Started guide](https://github.com/Sentry-Six/Sentry-USB-Rusty/wiki/Getting-Started) has the click-by-click walkthrough.
