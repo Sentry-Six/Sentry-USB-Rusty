@@ -27,6 +27,15 @@ BASE_NAME = 'Raspberry Pi OS Lite (64-bit)'
 # card without one stops at a console prompt nobody can see.
 CAPABILITIES = ['user_required']
 
+# Raspberry Pi's board descriptions name every model sharing a tag; only
+# these can be a USB drive for the car (README "Supported hardware").
+DEVICE_DESCRIPTIONS = {
+    'Raspberry Pi 5': 'Raspberry Pi 5',
+    'Raspberry Pi 4': 'Raspberry Pi 4 Model B',
+    'Raspberry Pi 3': 'Raspberry Pi 3 Model A+ only. The 3B and 3B+ can\'t '
+                      'act as a USB drive for the car.',
+}
+
 
 def find_entry(os_list, name):
     for entry in os_list:
@@ -58,6 +67,9 @@ def cmd_base(args):
         d for d in data.get('imager', {}).get('devices', [])
         if not d.get('tags') or tags.intersection(d['tags'])
     ]
+    for d in devices:
+        if d.get('name') in DEVICE_DESCRIPTIONS:
+            d['description'] = DEVICE_DESCRIPTIONS[d['name']]
     with open(args.out, 'w') as f:
         json.dump({'entry': entry, 'devices': devices}, f, indent=2)
     if args.field:
