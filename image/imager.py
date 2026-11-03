@@ -93,15 +93,12 @@ def cmd_manifest(args):
     with open(args.base) as f:
         base = json.load(f)
     entry = base['entry']
-    based_on = entry['name']
-    if entry.get('release_date'):
-        based_on += f', {entry["release_date"]}'
     os_entry = {
         'name': f'Sentry USB {args.version}',
         'description': (
-            'Sentry USB for Raspberry Pi 5, 4, 3A+ and Zero 2 W. Set your '
-            'Wi-Fi in the next steps, then open http://sentryusb.local. '
-            f'Based on {based_on}.'
+            'Add your Wi-Fi in the next steps, then finish setup at '
+            'http://sentryusb.local once the Pi starts. '
+            f'Includes {entry["name"]}.'
         ),
         'icon': args.icon,
         'url': args.url,
