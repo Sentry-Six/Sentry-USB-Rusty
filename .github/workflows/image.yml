@@ -148,7 +148,8 @@ jobs:
           gh release upload "$TAG" --clobber \
             "$RUNNER_TEMP/image/Sentry-USB-for-Raspberry-Pi-Imager.rpi-imager-manifest" \
             "$RUNNER_TEMP/image/sentryusb-raspberry-pi-image.img.xz" \
-            "$RUNNER_TEMP/image/sentryusb-raspberry-pi-image.img.xz.sha256"
+            "$RUNNER_TEMP/image/sentryusb-raspberry-pi-image.img.xz.sha256" \
+            "$RUNNER_TEMP/image/sentryusb-imager-os-list.json"
 
       # Point people at the manifest: flashed on its own, the image has no
       # Wi-Fi or user. Plain text, because Sentry Connect shows release

@@ -3,7 +3,8 @@
 
   base      Find the official Raspberry Pi OS entry the image is built
             from, in Raspberry Pi's Imager OS list, and save it.
-  manifest  Write the .rpi-imager-manifest users open in Imager.
+  manifest  Write the .rpi-imager-manifest users open in Imager, and
+            optionally the same entry as a sublist for the official list.
 
 Imager 2 offers its customisation screens (Wi-Fi, user, hostname, SSH)
 only for an OS whose list entry declares an init_format; a file picked
@@ -21,6 +22,7 @@ import urllib.request
 
 OS_LIST_URL = 'https://downloads.raspberrypi.com/os_list_imagingutility_v4.json'
 BASE_NAME = 'Raspberry Pi OS Lite (64-bit)'
+WEBSITE = 'https://sentry-six.com/sentry-usb/'
 
 # Imager options the manifest turns on. user_required makes Imager ask
 # for a user before writing: Pi OS has no default user, and a headless
@@ -115,6 +117,13 @@ def cmd_manifest(args):
     with open(args.out, 'w') as f:
         json.dump(manifest, f, indent=2)
         f.write('\n')
+    if args.os_list_out:
+        # The "subitem JSON" Raspberry Pi's own Imager list loads from us;
+        # same entry, in their sublist format (doc/os-sublist-example.json).
+        listed = dict(os_entry, website=WEBSITE, architecture='armv8')
+        with open(args.os_list_out, 'w') as f:
+            json.dump({'os_list': [listed]}, f, indent=2)
+            f.write('\n')
 
 
 def main():
@@ -144,6 +153,7 @@ def main():
     p.add_argument('--release-date', required=True)
     p.add_argument('--icon', required=True)
     p.add_argument('--out', required=True)
+    p.add_argument('--os-list-out', help='also write the entry for the official Imager list')
     p.set_defaults(func=cmd_manifest)
 
     args = parser.parse_args()

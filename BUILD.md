@@ -114,6 +114,9 @@ Publishing the release doesn't wait for it.
 - `sentryusb-raspberry-pi-image.img.xz` and its `.sha256`: the image the
   manifest points to. Its name sorts it in among the binaries, so people
   don't flash it without Imager's Wi-Fi and user settings.
+- `sentryusb-imager-os-list.json`: the same entry in the format Raspberry
+  Pi's own Imager list loads from us, at
+  `releases/latest/download/sentryusb-imager-os-list.json`.
 
 Automatic builds run only while the repository variable `SENTRYUSB_SD_IMAGE`
 is `auto`. Pre-releases are skipped, but promoting one to a full release

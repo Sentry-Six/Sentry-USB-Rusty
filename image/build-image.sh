@@ -8,6 +8,8 @@
 #   Sentry-USB-for-Raspberry-Pi-Imager.rpi-imager-manifest   users open this
 #   sentryusb-raspberry-pi-image.img.xz                      the image
 #   sentryusb-raspberry-pi-image.img.xz.sha256               its checksum
+#   sentryusb-imager-os-list.json                            the same entry for
+#                                                            Raspberry Pi's own list
 #
 # GitHub lists release files by name, ignoring case. The manifest's
 # "Sentry-USB-" name puts it above everything; the image sorts in among
@@ -35,6 +37,7 @@ HEADROOM_MB=300     # free space left in root for the first boot
 
 IMAGE_NAME="sentryusb-raspberry-pi-image.img"
 MANIFEST_NAME="Sentry-USB-for-Raspberry-Pi-Imager.rpi-imager-manifest"
+OS_LIST_NAME="sentryusb-imager-os-list.json"
 
 # Tools setup and the installer would otherwise fetch on the user's Pi.
 # dnsmasq/hostapd are deliberately absent: setup only needs them without
@@ -247,7 +250,8 @@ python3 -I "$SCRIPT_DIR/imager.py" manifest \
     --version "$TAG" \
     --release-date "$(date -u +%F)" \
     --icon "https://raw.githubusercontent.com/$REPO/main/image/icon.png" \
-    --out "$OUT_DIR/$MANIFEST_NAME"
+    --out "$OUT_DIR/$MANIFEST_NAME" \
+    --os-list-out "$OUT_DIR/$OS_LIST_NAME"
 
 info "Done (base $BASE_DATE):"
-ls -l "$OUT_DIR/$MANIFEST_NAME" "$OUT_DIR/$IMAGE_NAME.xz" "$OUT_DIR/$IMAGE_NAME.xz.sha256"
+ls -l "$OUT_DIR/$MANIFEST_NAME" "$OUT_DIR/$OS_LIST_NAME" "$OUT_DIR/$IMAGE_NAME.xz" "$OUT_DIR/$IMAGE_NAME.xz.sha256"
