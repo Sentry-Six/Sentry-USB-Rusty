@@ -16,10 +16,16 @@ function music_sync_summary {
 DST="/mnt/music"
 LOG="/tmp/rsyncmusiclog.txt"
 
-# Optional non-standard SSH port, via rsync's remote-shell override (see
-# archive-clips.sh). Unset means the SSH default.
+# Remote-shell override (see archive-clips.sh): the optional non-standard
+# SSH port plus keepalives. Music sync runs with the car's drive
+# disconnected, so a session that stops answering must end in ~45 s, not
+# hold the drive until the TCP connection gives up. Music never runs in
+# Travel Mode, so the home settings always apply. A custom RSYNC_RSH is
+# left exactly as it was.
 RSYNC_SSH_ARGS=()
-if [ -n "${RSYNC_SSH_PORT:-}" ]; then
+if [ -z "${RSYNC_RSH:-}" ]; then
+  RSYNC_SSH_ARGS=(-e "ssh${RSYNC_SSH_PORT:+ -p ${RSYNC_SSH_PORT}} -o ServerAliveInterval=15 -o ServerAliveCountMax=3 -o ConnectTimeout=10")
+elif [ -n "${RSYNC_SSH_PORT:-}" ]; then
   RSYNC_SSH_ARGS=(-e "ssh -p ${RSYNC_SSH_PORT}")
 fi
 
@@ -66,7 +72,7 @@ function do_music_sync {
   set +e
   rsync -rum --no-human-readable --exclude=.fseventsd/*** --exclude=*.DS_Store --exclude=.metadata_never_index \
                 --exclude="System Volume Information/***" \
-                --delete --modify-window=2 --info=stats2 \
+                --delete --modify-window=2 --info=stats2 --timeout=60 \
                 ${RSYNC_SSH_ARGS[@]+"${RSYNC_SSH_ARGS[@]}"} \
                 "$RSYNC_USER@$RSYNC_SERVER:$MUSIC_SHARE_NAME/" "$DST" &> "$LOG"
   RSYNC_EXIT=$?

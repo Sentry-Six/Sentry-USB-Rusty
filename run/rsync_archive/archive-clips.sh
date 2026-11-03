@@ -34,9 +34,30 @@ fi
 # permissions", not "port". Unset adds nothing, so the command line is
 # unchanged for servers on the default port.
 RSYNC_SSH_ARGS=()
-if [ -n "${RSYNC_SSH_PORT:-}" ]; then
+if [ "${TRAVEL_MODE_ACTIVE:-0}" != "1" ] && [ -z "${RSYNC_RSH:-}" ]; then
+  # Home mode: SSH keepalives notice a session that stopped answering in
+  # ~45 s. A Wi-Fi link can stay associated and pass pings while one traffic
+  # class is stuck, so the reachability monitor above never fires and only
+  # rsync's 10-minute --timeout would end the hang. Travel Mode keeps its
+  # patient settings for slow VPN links, and a custom RSYNC_RSH is left
+  # exactly as it was.
+  RSYNC_SSH_ARGS=(-e "ssh${RSYNC_SSH_PORT:+ -p ${RSYNC_SSH_PORT}} -o ServerAliveInterval=15 -o ServerAliveCountMax=3 -o ConnectTimeout=10")
+elif [ -n "${RSYNC_SSH_PORT:-}" ]; then
   RSYNC_SSH_ARGS=(-e "ssh -p ${RSYNC_SSH_PORT}")
 fi
+RSYNC_STDERR=/tmp/archive-rsync-stderr.log
+
+# Exit 75 tells archiveloop the transfer died on a stalled connection
+# (rsync's own I/O timeout, or SSH reporting a timeout in this run's
+# stderr), which is worth a transport check. Auth, permission and disk
+# errors stay exit 1.
+function rsync_transport_timeout {
+  local rc=$1 errfile=$2
+  [ "$rc" = 30 ] && return 0
+  case "$rc" in 12|255) ;; *) return 1 ;; esac
+  # Keep in step with archive_ssh_probe in archiveloop.
+  LC_ALL=C grep -Eq '^(Timeout, server [^ ]+ not responding\.?|Read from remote host [^ ]+: Connection timed out|ssh: connect to host [^ ]+ port [0-9]+: Connection timed out|Connection timed out during banner exchange|Connection to [^ ]+ port [0-9]+ timed out)'$'\r''?$' "$errfile" 2>/dev/null
+}
 
 function connectionmonitor {
   while true
@@ -75,13 +96,23 @@ do
   # end up purging footage that was never archived. -c2 -n7 keeps the car's
   # default-priority writes winning while guaranteeing the archive makes
   # progress. Needs the bfq scheduler to have effect (udev rule ships it).
-  if ! (ionice -c2 -n7 nice -n19 rsync -avhRL --timeout=600 --remove-source-files --no-perms --omit-dir-times \
+  # stderr is kept apart so the timeout check only sees this run's SSH and
+  # rsync messages, never clip names from the transfer listing.
+  rsync_rc=0
+  ionice -c2 -n7 nice -n19 rsync -avhRL --timeout=600 --remove-source-files --no-perms --omit-dir-times \
         ${RSYNC_EXTRA[@]+"${RSYNC_EXTRA[@]}"} ${RSYNC_SSH_ARGS[@]+"${RSYNC_SSH_ARGS[@]}"} \
         --stats --log-file=/tmp/archive-rsync-cmd.log --ignore-missing-args \
-        --files-from="$2" "$1" "$RSYNC_USER@$RSYNC_SERVER:$RSYNC_PATH" &> /tmp/rsynclog || [[ "$?" = "24" ]] )
+        --files-from="$2" "$1" "$RSYNC_USER@$RSYNC_SERVER:$RSYNC_PATH" > /tmp/rsynclog 2> "$RSYNC_STDERR" || rsync_rc=$?
+  cat "$RSYNC_STDERR" >> /tmp/rsynclog 2>/dev/null || true
+  if [ "$rsync_rc" != 0 ] && [ "$rsync_rc" != 24 ]
   then
     cat /tmp/archive-rsync-cmd.log /tmp/rsynclog > /tmp/archive-error.log
     kill %1 || true
+    if rsync_transport_timeout "$rsync_rc" "$RSYNC_STDERR"
+    then
+      log "rsync stopped on a connection timeout (rsync exit $rsync_rc)"
+      exit 75
+    fi
     exit 1
   fi
   shift 2

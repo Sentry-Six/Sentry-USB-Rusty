@@ -362,6 +362,8 @@ jobs:
           bash test/archive-cancel.test.sh
           bash test/live-activity-processing.test.sh
           bash test/archive-retry.test.sh
+          bash test/archive-transport-recovery.test.sh
+          bash test/wifi-watchdog.test.sh
           bash test/cifs-compatibility.test.sh
           bash test/mounted-archive-ownership.test.sh
           bash test/diagnostics-capture.test.sh

@@ -781,6 +781,12 @@ function ensure_usb_drives_connected_locked () {
     if ! usb_gadget_is_active; then connect_usb_drives_to_host_locked; fi
     return 0
   fi
+  # After a failed archive the next attempt is minutes away. Leave a working
+  # drive with the car; user media syncs after the next successful archive.
+  if [ "${ARCHIVE_CYCLE_FAILED:-0}" = 1 ] && usb_gadget_is_active; then
+    log "Archive failed; keeping the car's active USB drive (user media sync waits for a successful archive)"
+    return 0
+  fi
   if cam_user_media_may_need_sync
   then
     log "User media changed; cycling gadget once to sync cam image"
@@ -976,6 +982,8 @@ function run_archive_cycle () {
   ARCHIVE_HOME_RETRY_PENDING=0
   ARCHIVE_CYCLE_FAILED=0
   ARCHIVE_DEST_FULL=0
+  # Set by archive_teslacam_clips when the rsync backend reports exit 75.
+  ARCHIVE_RSYNC_TIMEOUT=0
   if archive_cancel_requested; then
     archive_cancel_cleanup
   else
@@ -2150,6 +2158,7 @@ function archive_teslacam_clips () {
       local arc_exit=$?
       message="Error during archiving (archive-clips.sh exit code $arc_exit). "
       archive_success=false
+      if [ "$arc_exit" = 75 ]; then ARCHIVE_RSYNC_TIMEOUT=1; fi
       if archive_cancel_requested; then
         message="Archiving cancelled by user. "
         log "Archive transfer cancelled by user"
@@ -2591,6 +2600,12 @@ function archive_clips () {
   then
     if travel_mode_active; then
       log "Travel Mode: skipping music sync (would disconnect the USB gadget from the car)"
+    elif [ "$clips_ok" = false ]; then
+      # The link that just failed the clip transfer would likely fail music
+      # too, with the car's drive disconnected the whole time. Music syncs
+      # on the next successful cycle.
+      ARCHIVE_ALL_STAGES_OK=0
+      log "Skipping music sync after failed clip archive; keeping the car's USB drive connected"
     else
       log "Copying music..."
       if copy_music_files
@@ -2618,6 +2633,14 @@ function archive_clips () {
     else
       log "Travel Mode: USB gadget already active; skipping reconnect"
     fi
+  elif [ "$clips_ok" = false ]; then
+    # A retry follows within minutes: don't cycle a working drive for
+    # pending user media; only restore one that is down.
+    if ! usb_gadget_is_active; then
+      log "Archive failed: USB gadget inactive; restoring presentation once"
+      ensure_usb_drives_connected || log "ERROR: failed to restore USB gadget after failed archive"
+    fi
+    archive_transport_recover
   else
     ensure_usb_drives_connected || log "ERROR: failed to ensure USB gadget after archive"
   fi
@@ -3211,6 +3234,30 @@ function wifi_watchdog_recover {
 }
 
 function wifi_watchdog_attempt {
+  wifi_recovery_guarded wifi_watchdog_recover_recorded
+}
+
+function wifi_watchdog_recover_recorded {
+  wifi_recovery_record || return 1
+  wifi_watchdog_recover
+}
+
+# Start the shared cooldown. Called by a recovery action right before its
+# real command, so an action that decides to skip doesn't block the other
+# path for 10 minutes. Uses runtime/now from wifi_recovery_guarded.
+function wifi_recovery_record {
+  printf '%s\n' "$now" > "$runtime/sentryusb_wifi_watchdog.attempt" || {
+    log 'Wi-Fi watchdog: could not record cooldown; recovery skipped'
+    return 1
+  }
+}
+
+# Run one Wi-Fi recovery action under the shared lock, the boot-scoped
+# 10-minute cooldown and the firmware-operation guard. Both the kernel
+# error watchdog and the archive transport check come through here, so
+# they can never stack resets on each other. The action must call
+# wifi_recovery_record before it changes anything.
+function wifi_recovery_guarded {
   local runtime=${WIFI_WATCHDOG_RUNTIME_DIR:-/run}
   (
     umask 077
@@ -3221,7 +3268,10 @@ function wifi_watchdog_attempt {
       read -r last < "$runtime/sentryusb_wifi_watchdog.attempt" || true
       [[ $last =~ ^[0-9]+$ ]] || last=-600
     fi
-    [ $((now - last)) -ge 600 ] || exit 0
+    if [ $((now - last)) -lt 600 ]; then
+      log 'Wi-Fi recovery skipped: another recovery ran less than 10 minutes ago'
+      exit 0
+    fi
     if grep -q '"state"[[:space:]]*:[[:space:]]*"running"' /mutable/wifi-firmware/state.json 2>/dev/null; then
       updated=$(stat -c %Y /mutable/wifi-firmware/state.json 2>/dev/null) || updated=0
       if [ $(( $(date +%s) - updated )) -lt 900 ]; then
@@ -3229,9 +3279,142 @@ function wifi_watchdog_attempt {
         exit 0
       fi
     fi
-    printf '%s\n' "$now" > "$runtime/sentryusb_wifi_watchdog.attempt" || { log 'Wi-Fi watchdog: could not record cooldown; recovery skipped'; exit 1; }
-    wifi_watchdog_recover
+    "$@"
   ) 9>"$runtime/sentryusb_wifi_watchdog.lock"
+}
+
+# Bounded ping-only check of the rsync server. archive_is_reachable falls
+# back to SSH, which is exactly what is suspect here and could hang.
+function archive_server_pings {
+  timeout -k 1 4 ping -q -c 1 -W 2 "$RSYNC_SERVER" >/dev/null 2>&1
+}
+
+# Fresh non-interactive SSH session to the rsync server, the same kind of
+# session rsync uses. 0 = it answered; 124 = it timed out (the transport is
+# suspect); anything else (auth, host key, refused, DNS) is not a Wi-Fi
+# problem.
+function archive_ssh_probe {
+  local args=(-nT -o BatchMode=yes -o ConnectTimeout=5 -o ControlMaster=no -o ControlPath=none)
+  if [ -n "${RSYNC_SSH_PORT:-}" ]; then args+=(-p "$RSYNC_SSH_PORT"); fi
+  local err=${ARCHIVE_SSH_PROBE_ERR:-/tmp/archive-ssh-probe.err} rc=0
+  LC_ALL=C timeout -k 2 15 ssh "${args[@]}" "$RSYNC_USER@$RSYNC_SERVER" true 2> "$err" || rc=$?
+  # Same timeout forms as rsync_transport_timeout in rsync_archive/archive-clips.sh.
+  if [ "$rc" = 255 ] &&
+     LC_ALL=C grep -Eq '^(Timeout, server [^ ]+ not responding|Read from remote host [^ ]+: Connection timed out|ssh: connect to host [^ ]+ port [0-9]+: Connection timed out|Connection timed out during banner exchange|Connection to [^ ]+ port [0-9]+ timed out)' "$err" 2>/dev/null; then
+    rc=124
+  fi
+  return "$rc"
+}
+
+# Prints "<interface> <connection uuid>" when the route to the archive
+# server runs over a Wi-Fi station that NetworkManager manages. Ethernet,
+# networkd/Armbian and anything ambiguous print nothing and return 1.
+function archive_wifi_station {
+  local addr dev state uuid
+  command -v nmcli >/dev/null 2>&1 || return 1
+  addr=$(getent ahostsv4 "$RSYNC_SERVER" 2>/dev/null | awk 'NR == 1 {print $1}') || true
+  [ -n "$addr" ] || return 1
+  dev=$(ip -4 -o route get "$addr" 2>/dev/null | awk '{for (i = 1; i < NF; i++) if ($i == "dev") {print $(i + 1); exit}}') || true
+  [ -n "$dev" ] && [ "$dev" != ap0 ] || return 1
+  state=$(timeout -k 1 5 nmcli -t -f DEVICE,TYPE,STATE device status 2>/dev/null | awk -F: -v d="$dev" '$1 == d {print $2 ":" $3; exit}') || true
+  [ "$state" = wifi:connected ] || return 1
+  uuid=$(timeout -k 1 5 nmcli -g GENERAL.CON-UUID device show "$dev" 2>/dev/null) || true
+  [[ $uuid =~ ^[0-9a-fA-F-]{36}$ ]] || return 1
+  printf '%s %s\n' "$dev" "$uuid"
+}
+
+# Runs under wifi_recovery_guarded. One same-connection re-activation:
+# NetworkManager tears the station down and associates again, which
+# cleared the stuck traffic class on 2026-11-02 without a reboot. No
+# explicit disconnect (that would block autoconnect if activation failed),
+# no driver reload, and no AP changes.
+function archive_wifi_reconnect {
+  local iface=$1 uuid=$2 rc=0 started
+  archive_wifi_reconnect_allowed "$iface" "$uuid" || return 0
+  WIFI_WATCHDOG_REASON='archive transport stall' wifi_watchdog_capture
+  # State can change while the probe and diagnostics run; check again
+  # right before touching the radio.
+  archive_wifi_reconnect_allowed "$iface" "$uuid" || return 0
+  wifi_recovery_record || return 1
+  log "Archive transport check: server answers ping but not SSH; reconnecting Wi-Fi on $iface"
+  started=$(wifi_watchdog_uptime)
+  timeout -k 2 35 nmcli --wait 30 connection up uuid "$uuid" ifname "$iface" >> "$LOG_FILE" 2>&1 || rc=$?
+  log "Archive transport check: Wi-Fi reconnect finished (exit $rc) after $(( $(wifi_watchdog_uptime) - started ))s"
+  if iw dev ap0 info >/dev/null 2>&1 || away_mode_active; then
+    log 'Archive transport check: Away Mode started during the reconnect; no further Wi-Fi action'
+    return 0
+  fi
+  if archive_ssh_probe; then
+    log 'Archive transport check: SSH answers again; archive throughput unverified until the retry'
+  else
+    log 'Archive transport check: SSH still not answering after the Wi-Fi reconnect'
+  fi
+}
+
+function archive_wifi_reconnect_allowed {
+  local iface=$1 uuid=$2 current
+  # Slow checks first (a few seconds each), quick state checks last, so a
+  # cancel or mode change during them still stops the reconnect.
+  if ! archive_server_pings; then
+    log 'Archive transport check: server no longer answers ping; not reconnecting Wi-Fi'
+    return 1
+  fi
+  current=$(timeout -k 1 5 nmcli -g GENERAL.CON-UUID device show "$iface" 2>/dev/null) || true
+  if [ "$current" != "$uuid" ]; then
+    log "Archive transport check: $iface changed connection; not reconnecting Wi-Fi"
+    return 1
+  fi
+  if archive_cancel_requested || travel_mode_active; then
+    log 'Archive transport check: archive cancelled or Travel Mode started; not reconnecting Wi-Fi'
+    return 1
+  fi
+  if ! usb_gadget_is_active; then
+    log 'Archive transport check: the USB drive is not presented to the car; not reconnecting Wi-Fi'
+    return 1
+  fi
+  if iw dev ap0 info >/dev/null 2>&1 || away_mode_active; then
+    log 'Archive transport check: Away Mode hotspot is active; not reconnecting Wi-Fi'
+    return 1
+  fi
+}
+
+# After an rsync clip transfer ended on a connection timeout (exit 75):
+# tell a stuck Wi-Fi link apart from a slow or stuck server, and reconnect
+# Wi-Fi only for the former. The failed cycle stays failed; the usual retry
+# pacing runs the next transfer.
+function archive_transport_recover {
+  [ "${ARCHIVE_RSYNC_TIMEOUT:-0}" = 1 ] || return 0
+  [ "${ARCHIVE_SYSTEM:-}" = rsync ] || return 0
+  local rc=0 station
+  if archive_cancel_requested || travel_mode_active; then return 0; fi
+  if [ -n "${RSYNC_RSH:-}" ]; then
+    # The probe can't reproduce a custom remote shell's connection.
+    log 'Archive transport check skipped: custom RSYNC_RSH in use'
+    return 0
+  fi
+  if ! usb_gadget_is_active; then
+    log 'Archive transport check skipped: the USB drive is not presented to the car'
+    return 0
+  fi
+  if ! archive_server_pings; then
+    log 'Archive transport check skipped: server does not answer ping'
+    return 0
+  fi
+  archive_ssh_probe || rc=$?
+  case "$rc" in
+    0)
+      log 'Archive transport check: SSH answers; the stall was on the server side, not resetting Wi-Fi'
+      return 0 ;;
+    124) ;;
+    *)
+      log "Archive transport check: SSH failed with exit $rc (not a timeout); not resetting Wi-Fi"
+      return 0 ;;
+  esac
+  if ! station=$(archive_wifi_station); then
+    log 'Archive transport check: SSH timed out, but the route is not a NetworkManager Wi-Fi station; not resetting Wi-Fi'
+    return 0
+  fi
+  wifi_recovery_guarded archive_wifi_reconnect ${station% *} ${station#* } || true
 }
 
 function wifichecker {
