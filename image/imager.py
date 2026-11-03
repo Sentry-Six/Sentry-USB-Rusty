@@ -22,7 +22,7 @@ import urllib.request
 
 OS_LIST_URL = 'https://downloads.raspberrypi.com/os_list_imagingutility_v4.json'
 BASE_NAME = 'Raspberry Pi OS Lite (64-bit)'
-WEBSITE = 'https://sentry-six.com/sentry-usb/'
+WEBSITE = 'https://github.com/Sentry-Six/Sentry-USB-Rusty'
 
 # Imager options the manifest turns on. user_required makes Imager ask
 # for a user before writing: Pi OS has no default user, and a headless
