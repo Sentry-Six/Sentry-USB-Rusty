@@ -31,26 +31,126 @@ pub(crate) const REFRESH_MIN_INTERVAL_SECS: i64 = 180;
 /// and the fsck and link rebuild.
 const REFRESH_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 
+/// Shell helpers for the refresh, kept separate so the tests can run them
+/// against a fake `/proc` and snapshots dir.
+///
+/// `car_quiet` succeeds when the car has provably stopped writing:
+/// waitforidle only ends early after it has seen a burst followed by quiet,
+/// so a parked car that is not recording always cost its full 90 s (and its
+/// timeout then snapshots without any idle evidence). This check needs seven
+/// consecutive one-second samples of one `file-storage` process whose
+/// `write_bytes` grew by at most 64 KiB each; a recording car writes tens of
+/// MB per second. Any unreadable or non-numeric sample, counter decrease or
+/// PID change restarts the run, and no complete run within 14 samples falls
+/// back to waitforidle. No `file-storage` process at all means the gadget
+/// is not exposing the disk, so nothing can be writing to it.
+///
+/// `committed_snaps` lists slots with a committed TOC; `new_snapshot`
+/// prints the one slot this run committed, or fails when this run left an
+/// uncommitted slot behind: a new slot, or one whose image (inode, mtime,
+/// size) changed, as when make_snapshot reuses a slot. Untouched leftovers,
+/// including a mounted incomplete slot that make_snapshot keeps and appends
+/// after, are not this run's. The helpers always return 0 so `set -e`
+/// callers stay safe.
+macro_rules! refresh_helpers {
+    () => {
+        r#"car_quiet() {
+  local root=${CLIPS_PROC_ROOT:-/proc} nap=${CLIPS_SLEEP:-1}
+  local quiet=0 prev=-1 pid="" out rc w
+  for _ in $(seq 1 14); do
+    sleep "$nap"
+    out=$(pgrep -x file-storage 2>/dev/null); rc=$?
+    if [ "$rc" -eq 1 ] && [ -z "$out" ]; then return 0; fi
+    w=""
+    if [ "$rc" -eq 0 ] && [[ "$out" =~ ^[0-9]+$ ]]; then
+      w=$(awk '$1 == "write_bytes:" { print $2; exit }' "$root/$out/io" 2>/dev/null)
+    fi
+    if ! [[ "$w" =~ ^[0-9]+$ ]] || { [ "$prev" -ge 0 ] && { [ "$out" != "$pid" ] || [ "$w" -lt "$prev" ]; }; }; then
+      quiet=0; prev=-1; pid=""; continue
+    fi
+    if [ "$prev" -lt 0 ]; then prev=$w; pid=$out; continue; fi
+    if [ $((w - prev)) -le 65536 ]; then quiet=$((quiet + 1)); else quiet=0; fi
+    prev=$w
+    [ "$quiet" -ge 7 ] && return 0
+  done
+  return 1
+}
+all_snaps() {
+  local d
+  for d in "${CLIPS_SNAP_DIR:-/backingfiles/snapshots}"/snap-*; do
+    if [[ "${d##*/}" =~ ^snap-[0-9]+$ ]] && [ -d "$d" ]; then echo "${d##*/}"; fi
+  done | LC_ALL=C sort
+  return 0
+}
+committed_snaps() {
+  local n
+  for n in $(all_snaps); do
+    if [ -e "${CLIPS_SNAP_DIR:-/backingfiles/snapshots}/$n/snap.bin.toc" ]; then echo "$n"; fi
+  done
+  return 0
+}
+uncommitted_marks() {
+  local n f dir=${CLIPS_SNAP_DIR:-/backingfiles/snapshots}
+  for n in $(LC_ALL=C comm -23 <(all_snaps) <(committed_snaps)); do
+    f="$dir/$n/snap.bin"
+    if [ ! -e "$f" ]; then f="$dir/$n"; fi
+    echo "$n $(stat -c '%i %y %s' "$f" 2>/dev/null)"
+  done | LC_ALL=C sort
+  return 0
+}
+new_snapshot() {
+  local before_committed=$1 before_marks=$2 new failed
+  new=$(LC_ALL=C comm -13 <(printf '%s\n' "$before_committed" | LC_ALL=C sort) <(committed_snaps))
+  if [ -n "$new" ] && [ "$(wc -l <<< "$new")" -eq 1 ]; then echo "$new"; return 0; fi
+  failed=$(LC_ALL=C comm -13 <(printf '%s\n' "$before_marks" | LC_ALL=C sort) <(uncommitted_marks) | head -1)
+  if [ -n "$failed" ]; then
+    echo "snapshot ${failed%% *} was not completed" >&2
+    return 4
+  fi
+  return 0
+}
+"#
+    };
+}
+
 /// snapshotloop's sequence, with archiveloop's `log` so the steps land in
-/// the same log as scheduled snapshots. An archive cycle that began during
-/// the idle wait keeps its own pre-archive snapshot: the check right before
-/// `make_snapshot.sh` leaves the snapshot lock to it (`/tmp/archive-cycle`
-/// holds `pid:nonce` while a cycle runs, as `ArchiveControl` reads it) and
-/// exits 3, so the attempt does not count as a check of the cam disk.
-const REFRESH_SCRIPT: &str = r#"source /root/bin/envsetup.sh 2>/dev/null || true
+/// the same log as scheduled snapshots, and the quick quiet check from
+/// `refresh_helpers` in front of waitforidle. An archive cycle that began
+/// during the idle wait keeps its own pre-archive snapshot: the check right
+/// before `make_snapshot.sh` leaves the snapshot lock to it
+/// (`/tmp/archive-cycle` holds `pid:nonce` while a cycle runs, as
+/// `ArchiveControl` reads it) and exits 3, so the attempt does not count as
+/// a check of the cam disk. The refresh holds the snapshots-dir lock itself
+/// around `make_snapshot.sh` (which then skips its own lock), so the slot it
+/// reports is the one this run committed.
+const REFRESH_SCRIPT: &str = concat!(
+    r#"source /root/bin/envsetup.sh 2>/dev/null || true
 declare -F log > /dev/null 2>&1 || {
   function log { echo "$(date): $*" >> "${LOG_FILE:-/mutable/archiveloop.log}" 2>/dev/null || true; }
   export -f log
 }
-log "Clips refresh: on-demand snapshot requested"
-/root/bin/waitforidle || true
+"#,
+    refresh_helpers!(),
+    r#"log "Clips refresh: on-demand snapshot requested"
+if car_quiet; then
+  log "Clips refresh: car is not writing, taking the snapshot now"
+else
+  /root/bin/waitforidle || true
+fi
 cycle=$(cat /tmp/archive-cycle 2>/dev/null || true)
 if [ -n "${cycle%%:*}" ] && [ -d "/proc/${cycle%%:*}" ]; then
   log "Clips refresh: an archive cycle started; leaving the snapshot to it"
   exit 3
 fi
-/root/bin/make_snapshot.sh
-"#;
+mkdir -p /backingfiles/snapshots
+exec 9< /backingfiles/snapshots
+flock -E 99 9 || { echo "failed to lock snapshots dir" >&2; exit 99; }
+before_committed=$(committed_snaps)
+before_marks=$(uncommitted_marks)
+FLOCKED=/root/bin/make_snapshot.sh /root/bin/make_snapshot.sh > /dev/null || exit $?
+new_snapshot "$before_committed" "$before_marks"
+"#
+);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct Freshness {
@@ -312,6 +412,148 @@ mod tests {
         ] {
             assert_eq!(may_start(old, &idle(None), conditions, NOW), Err(blocked));
         }
+    }
+
+    fn temp_root(tag: &str) -> std::path::PathBuf {
+        let nonce = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let root = std::env::temp_dir().join(format!("sentryusb-clips-{tag}-{}-{nonce}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        root
+    }
+
+    /// Runs `car_quiet` with a fake `pgrep` that walks `samples`: "none" (no
+    /// process), "err" (pgrep failed), or "pid:value" where value is the
+    /// `write_bytes` count, "unreadable" or any text.
+    fn car_quiet(samples: &[&str]) -> bool {
+        let root = temp_root("quiet");
+        std::fs::write(root.join("samples"), samples.join("\n") + "\n").unwrap();
+        let script = format!(
+            r#"{helpers}
+ROOT='{root}'
+pgrep() {{
+  local i e pid v
+  i=$(cat "$ROOT/i" 2>/dev/null || echo 0); echo $((i + 1)) > "$ROOT/i"
+  e=$(sed -n "$((i + 1))p" "$ROOT/samples")
+  case "$e" in none|"") return 1;; err) return 2;; esac
+  pid=${{e%%:*}}; v=${{e#*:}}
+  mkdir -p "$ROOT/proc/$pid"
+  if [ "$v" = unreadable ]; then rm -f "$ROOT/proc/$pid/io"; else printf 'rchar: 0\nwrite_bytes: %s\n' "$v" > "$ROOT/proc/$pid/io"; fi
+  echo "$pid"
+}}
+CLIPS_PROC_ROOT="$ROOT/proc" CLIPS_SLEEP=0 car_quiet"#,
+            helpers = refresh_helpers!(),
+            root = root.display()
+        );
+        let ok = std::process::Command::new("bash").args(["-c", &script]).status().unwrap().success();
+        std::fs::remove_dir_all(&root).ok();
+        ok
+    }
+
+    fn series(pid: u32, start: u64, step: u64, n: usize) -> Vec<String> {
+        (0..n).map(|i| format!("{pid}:{}", start + step * i as u64)).collect()
+    }
+
+    #[test]
+    fn quiet_check_skips_only_with_clear_evidence() {
+        let run = |v: Vec<String>| car_quiet(&v.iter().map(String::as_str).collect::<Vec<_>>());
+        assert!(car_quiet(&["none"]), "no mass-storage process");
+        assert!(run(series(7, 1000, 0, 8)), "no writes");
+        assert!(run(series(7, 1000, 4096, 8)), "4 KiB/s trickle");
+        assert!(!run(series(7, 1000, 3_000_000, 14)), "recording");
+        assert!(!run(series(7, 1000, 100_000, 14)), "100 KB/s trickle");
+        assert!(!car_quiet(&["err"; 14]), "pgrep failing is not 'no process'");
+        assert!(!car_quiet(&["7\n8:0"; 14]), "two processes");
+    }
+
+    #[test]
+    fn quiet_check_restarts_on_bad_samples() {
+        for (bad, pid, next) in [("7:unreadable", 7, 1000), ("7:abc", 7, 1000), ("7:10", 7, 10), ("9:1000", 9, 1000)] {
+            let mut v: Vec<String> = series(7, 1000, 0, 6);
+            v.push(bad.to_string());
+            v.extend(series(pid, next, 0, 7));
+            assert_eq!(v.len(), 14);
+            assert!(!car_quiet(&v.iter().map(String::as_str).collect::<Vec<_>>()), "{bad} must restart the run");
+        }
+        let mut late: Vec<String> = vec!["7:unreadable".into()];
+        late.extend(series(7, 1000, 0, 8));
+        assert!(car_quiet(&late.iter().map(String::as_str).collect::<Vec<_>>()), "a full run after a bad sample");
+    }
+
+    /// Lays out `before` slots ("name", "name!" for uncommitted), records
+    /// them as the refresh does, then applies `after` (a trailing '*'
+    /// recreates the slot, as make_snapshot does when it reuses one) and
+    /// returns new_snapshot's (exit code, stdout).
+    fn new_snapshot(before: &[&str], after: &[&str]) -> (i32, String) {
+        let root = temp_root("snaps");
+        let lay = |list: &[&str]| {
+            let parsed: Vec<(String, bool, bool)> = list
+                .iter()
+                .map(|s| {
+                    let recreate = s.ends_with('*');
+                    let s = s.trim_end_matches('*');
+                    let committed = !s.ends_with('!');
+                    (s.trim_end_matches('!').to_string(), committed, recreate)
+                })
+                .collect();
+            for e in std::fs::read_dir(&root).unwrap() {
+                let path = e.unwrap().path();
+                let name = path.file_name().unwrap().to_string_lossy().to_string();
+                if !parsed.iter().any(|(n, _, r)| *n == name && !r) {
+                    std::fs::remove_dir_all(&path).unwrap();
+                }
+            }
+            for (name, committed, _) in parsed {
+                let dir = root.join(&name);
+                std::fs::create_dir_all(&dir).unwrap();
+                if !dir.join("snap.bin").exists() {
+                    std::fs::write(dir.join("snap.bin"), b"").unwrap();
+                }
+                let toc = dir.join("snap.bin.toc");
+                if committed {
+                    std::fs::write(&toc, b"").unwrap();
+                } else {
+                    std::fs::remove_file(&toc).ok();
+                }
+            }
+        };
+        let run = |body: &str| {
+            let script = format!("{}\nexport CLIPS_SNAP_DIR='{}'\n{body}", refresh_helpers!(), root.display());
+            std::process::Command::new("bash").args(["-c", &script]).output().unwrap()
+        };
+        lay(before);
+        let committed = String::from_utf8(run("set -e; c=$(committed_snaps); echo \"$c\"").stdout).unwrap();
+        let marks = String::from_utf8(run("set -e; m=$(uncommitted_marks); echo \"$m\"").stdout).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        lay(after);
+        let out = run(&format!("set -e\nnew_snapshot '{}' '{}'", committed.trim_end(), marks.trim_end()));
+        std::fs::remove_dir_all(&root).ok();
+        (out.status.code().unwrap_or(-1), String::from_utf8(out.stdout).unwrap().trim().to_string())
+    }
+
+    #[test]
+    fn snapshot_name_is_only_the_slot_this_run_committed() {
+        let base = ["snap-000001", "snap-000002"];
+        assert_eq!(new_snapshot(&base, &base), (0, String::new()), "identical snapshot discarded");
+        assert_eq!(new_snapshot(&base, &["snap-000001", "snap-000002", "snap-000003"]), (0, "snap-000003".into()));
+        assert_eq!(new_snapshot(&base, &["snap-000002", "snap-000003"]), (0, "snap-000003".into()), "old slot released for space");
+        assert_eq!(new_snapshot(&base, &["snap-000001", "snap-000002", "snap-000003!"]).0, 4, "new slot left uncommitted");
+        assert_eq!(new_snapshot(&["snap-000001", "snap-000002!"], &["snap-000001", "snap-000002!*"]).0, 4, "reused slot failed again");
+        assert_eq!(new_snapshot(&["snap-000001", "snap-000002!"], &["snap-000001", "snap-000002*"]), (0, "snap-000002".into()), "reused slot committed");
+        assert_eq!(
+            new_snapshot(&["snap-000001", "snap-000002!"], &["snap-000001", "snap-000002!", "snap-000003"]),
+            (0, "snap-000003".into()),
+            "mounted incomplete max slot kept, new slot appended and committed"
+        );
+        assert_eq!(
+            new_snapshot(&["snap-000001", "snap-000002!"], &["snap-000001", "snap-000002!"]),
+            (0, String::new()),
+            "mounted incomplete max slot kept, appended snapshot identical"
+        );
+        assert_eq!(
+            new_snapshot(&["snap-000001!", "snap-000002"], &["snap-000001!", "snap-000002", "snap-000003"]),
+            (0, "snap-000003".into()),
+            "an old stale slot is not this run's failure"
+        );
     }
 
     #[test]
