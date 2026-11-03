@@ -975,6 +975,7 @@ function run_archive_cycle () {
   fi
   ARCHIVE_HOME_RETRY_PENDING=0
   ARCHIVE_CYCLE_FAILED=0
+  ARCHIVE_DEST_FULL=0
   if archive_cancel_requested; then
     archive_cancel_cleanup
   else
@@ -1064,6 +1065,60 @@ PY
   rm -f "$response"
 }
 
+# The archive server (or its quota) is full. Retrying can't succeed until
+# someone frees space, so these failures pause automatic retries instead of
+# repeating every few minutes. rsync (cifs, nfs, rsync) reports ENOSPC/EDQUOT
+# in its output; rclone remotes report quota or 507 errors.
+function archive_destination_is_full () {
+  local f
+  for f in /tmp/archive-error.log /tmp/rsynclog; do
+    [ -s "$f" ] || continue
+    if grep -qiE 'No space left on device|Disk quota exceeded|ENOSPC|EDQUOT|Insufficient Storage|quota exceeded|storageQuotaExceeded' "$f"; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+# Remembered across cycles so a full server notifies once, not at every
+# arrival; a repeat goes out at most every 12 hours. A successful archive
+# clears it.
+ARCHIVE_DEST_FULL_MARKER=/mutable/archive_destination_full
+
+function archive_destination_full_notice_due () {
+  [ -e "$ARCHIVE_DEST_FULL_MARKER" ] || return 0
+  [ -z "$(find "$ARCHIVE_DEST_FULL_MARKER" -mmin -720 2>/dev/null)" ]
+}
+
+# After a "destination full" failure: wait for the car to leave (the next
+# arrival tries once more) or for a manual Sync once space has been freed.
+# No timed retries.
+function wait_for_departure_or_manual_sync () {
+  log "Archive destination is full; waiting for departure or a manual sync"
+  local unreachable=0
+  while true; do
+    if [ -e /tmp/archive_is_reachable ] && rm -f -- /tmp/archive_is_reachable; then
+      log "Manual sync requested; retrying the archive"
+      return 0
+    fi
+    if [ -e /tmp/archive_is_unreachable ]; then
+      log "Simulating archive being unreachable."
+      rm -f /tmp/archive_is_unreachable
+      return 0
+    fi
+    if archive_is_reachable; then
+      unreachable=0
+    else
+      unreachable=$((unreachable + 1))
+      if [ "$unreachable" -ge 3 ]; then
+        log "Archive is unreachable."
+        return 0
+      fi
+    fi
+    sleep 1
+  done
+}
+
 function home_archive_retry_pace () {
   # A reachable SMB/NFS port does not mean the mounted share is usable.
   # After a failed transfer, retry without requiring the car to leave home.
@@ -1078,6 +1133,10 @@ function home_archive_retry_pace () {
   ARCHIVE_HOME_RETRY_PENDING=1
   log "Archive transfer failed; automatic retry in ${ARCHIVE_HOME_RETRY_DELAY}s"
   local deadline=$((SECONDS + ARCHIVE_HOME_RETRY_DELAY))
+  # A single failed probe on Wi-Fi is not a departure. Treating it as one
+  # cleared the retry state, so every later failed attempt announced itself
+  # as a fresh cycle.
+  local unreachable=0
   while [ "$SECONDS" -lt "$deadline" ]; do
     if travel_mode_active; then
       ARCHIVE_HOME_RETRY_DELAY=0
@@ -1097,11 +1156,16 @@ function home_archive_retry_pace () {
         return 0
       fi
     fi
-    if ! archive_is_reachable; then
-      ARCHIVE_HOME_RETRY_DELAY=0
-      ARCHIVE_HOME_RETRY_PENDING=0
-      log "Archive unavailable during retry wait; waiting for reconnection"
-      return 0
+    if archive_is_reachable; then
+      unreachable=0
+    else
+      unreachable=$((unreachable + 1))
+      if [ "$unreachable" -ge 3 ]; then
+        ARCHIVE_HOME_RETRY_DELAY=0
+        ARCHIVE_HOME_RETRY_PENDING=0
+        log "Archive unavailable during retry wait; waiting for reconnection"
+        return 0
+      fi
     fi
     sleep 1
   done
@@ -1114,6 +1178,10 @@ function wait_after_archive_cycle () {
     ARCHIVE_HOME_RETRY_DELAY=0
     ARCHIVE_HOME_RETRY_PENDING=0
     wait_for_archive_to_be_unreachable
+  elif [ "${ARCHIVE_DEST_FULL:-0}" = "1" ]; then
+    ARCHIVE_HOME_RETRY_DELAY=0
+    ARCHIVE_HOME_RETRY_PENDING=0
+    wait_for_departure_or_manual_sync
   elif travel_mode_active; then
     ARCHIVE_HOME_RETRY_DELAY=0
     ARCHIVE_HOME_RETRY_PENDING=0
@@ -1184,6 +1252,7 @@ function wifi_cycle () {
 function wait_for_archive_to_be_reachable () {
   log "Waiting for archive to be reachable..."
   local scan_counter=0
+  local -r unreachable_since=$SECONDS
   while true
   do
     if archive_is_reachable
@@ -1191,10 +1260,13 @@ function wait_for_archive_to_be_reachable () {
       log "Archive is reachable."
       break
     fi
-    # A retry can lose its connection just as its delay ends. The next
-    # arrival is a fresh cycle, not another suppressed retry notification.
-    ARCHIVE_HOME_RETRY_DELAY=0
-    ARCHIVE_HOME_RETRY_PENDING=0
+    # After a real absence (the car drove away) the next arrival is a fresh
+    # cycle with normal notifications. A brief Wi-Fi drop between retries is
+    # not, or every failed retry would notify again.
+    if [ $((SECONDS - unreachable_since)) -ge 60 ]; then
+      ARCHIVE_HOME_RETRY_DELAY=0
+      ARCHIVE_HOME_RETRY_PENDING=0
+    fi
     if [ -e /tmp/archive_is_reachable ]
     then
       log "Simulating archive is reachable"
@@ -2073,6 +2145,7 @@ function archive_teslacam_clips () {
     if TRAVEL_MODE_ACTIVE="$travel_active" archive_run_command /root/bin/archive-clips.sh "$overlaymerged" "${sentrylist}" "${triggerdir}" "${triggerlist}"
     then
       message="Archiving completed successfully. "
+      rm -f "$ARCHIVE_DEST_FULL_MARKER" || true
     else
       local arc_exit=$?
       message="Error during archiving (archive-clips.sh exit code $arc_exit). "
@@ -2097,6 +2170,10 @@ function archive_teslacam_clips () {
         log "--- rsync cmd log (last 10 lines) ---"
         tail -10 /tmp/archive-rsync-cmd.log >> "$LOG_FILE"
         log "--- end rsync cmd log ---"
+      fi
+      if archive_destination_is_full; then
+        ARCHIVE_DEST_FULL=1
+        log "Archive destination is out of space; automatic retries pause until space is freed"
       fi
       fi
     fi
@@ -2173,6 +2250,18 @@ function archive_teslacam_clips () {
     fi
     if archive_cancel_requested; then
       log "Archive cancelled by user; completed transfers recorded, remaining footage preserved"
+    elif [ "${ARCHIVE_DEST_FULL:-0}" = "1" ]; then
+      # One notice per full episode (re-sent at most every 12 hours), even on
+      # a retry: this failure needs the user, and nothing retries on a timer.
+      if archive_destination_full_notice_due; then
+        /root/bin/send-push-message "$NOTIFICATION_TITLE:" \
+          "Archive server is out of space. ${message}. Archiving is paused: free up space on the server, then tap Sync, or it tries again the next time you get home." \
+          finish archive_error "Archive server is full. Archiving is paused until there's space." \
+          || log "failed to send mobile app notification"
+        touch "$ARCHIVE_DEST_FULL_MARKER" || true
+      else
+        log "Archive destination still full: suppressing repeat notification (${message})"
+      fi
     elif [ "${ARCHIVE_RETRY_ATTEMPT:-0}" = "1" ] && [ "$archive_success" = "false" ]; then
       # Still failing on a retry: log it, but don't push a failure
       # notification every minute. The eventual success (or the first

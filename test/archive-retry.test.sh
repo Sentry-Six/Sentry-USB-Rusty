@@ -9,12 +9,14 @@ import re, sys
 from pathlib import Path
 source = Path(sys.argv[1]).read_text()
 names = ['home_archive_retry_pace', 'wait_after_archive_cycle', 'run_archive_cycle',
-         'wait_for_archive_to_be_reachable', 'archive_clips']
+         'wait_for_archive_to_be_reachable', 'archive_clips', 'archive_destination_is_full',
+         'archive_destination_full_notice_due', 'wait_for_departure_or_manual_sync']
 functions = []
 for name in names:
     match = re.search(r'^function ' + name + r'\b[^\n]*\n.*?^}', source, re.M | re.S)
     assert match, name
     functions.append(match[0].replace('/tmp/', sys.argv[2] + '/').replace('/root/bin/', sys.argv[2] + '/bin/'))
+functions.append('ARCHIVE_DEST_FULL_MARKER=' + sys.argv[2] + '/archive_destination_full')
 Path(sys.argv[2], 'functions').write_text('\n'.join(functions))
 PY
 source "$work/functions"
@@ -45,6 +47,9 @@ sleep() {
   case "$during_sleep" in
     disconnect) reachable=0 ;;
     reconnect) reachable=1 ;;
+    # One dropped probe, then the network is back.
+    blip) if [[ $reachable == 1 ]]; then reachable=0; else reachable=1; during_sleep=''; fi ;;
+    reconnect_after_60) if (( SECONDS > 60 )); then reachable=1; fi ;;
     manual) touch "$work/archive_is_reachable" ;;
     travel) travel=1 ;;
   esac
@@ -112,21 +117,77 @@ reset
 ARCHIVE_CYCLE_FAILED=1 reachable=0 ARCHIVE_HOME_RETRY_DELAY=300
 wait_after_archive_cycle
 [[ $slept == 0 && $departure_waits == 0 && $ARCHIVE_HOME_RETRY_DELAY == 0 ]]
+# Leaving (three failed probes in a row) ends the retry wait and resets it.
 reachable=1 during_sleep=disconnect
 wait_after_archive_cycle
-[[ $slept == 1 && $ARCHIVE_HOME_RETRY_PENDING == 0 && $ARCHIVE_HOME_RETRY_DELAY == 0 ]]
+[[ $slept == 3 && $ARCHIVE_HOME_RETRY_PENDING == 0 && $ARCHIVE_HOME_RETRY_DELAY == 0 ]]
 reachable=1 during_sleep=''
 run_archive_cycle
 [[ $attempt_was_retry == 0 ]]
 
-# Losing the network exactly after the cooldown must also reset retry state.
+# One dropped probe is not a departure: the retry keeps waiting and stays a
+# retry, so it doesn't notify again.
+reset
+ARCHIVE_CYCLE_FAILED=1 during_sleep=blip
+wait_after_archive_cycle
+[[ $slept == 60 && $ARCHIVE_HOME_RETRY_PENDING == 1 ]]
+run_archive_cycle
+[[ $attempt_was_retry == 1 ]]
+
+# A brief drop right after the cooldown keeps the retry state...
 reset
 ARCHIVE_CYCLE_FAILED=1 ARCHIVE_HOME_RETRY_PENDING=1 ARCHIVE_HOME_RETRY_DELAY=300
 reachable=0 during_sleep=reconnect
 wait_for_archive_to_be_reachable
+[[ $ARCHIVE_HOME_RETRY_PENDING == 1 ]]
+run_archive_cycle
+[[ $attempt_was_retry == 1 ]]
+# ...but a real absence makes the next arrival a fresh cycle.
+reset
+ARCHIVE_CYCLE_FAILED=1 ARCHIVE_HOME_RETRY_PENDING=1 ARCHIVE_HOME_RETRY_DELAY=300
+SECONDS=0 reachable=0 during_sleep=reconnect_after_60
+wait_for_archive_to_be_reachable
 [[ $ARCHIVE_HOME_RETRY_PENDING == 0 && $ARCHIVE_HOME_RETRY_DELAY == 0 ]]
 run_archive_cycle
 [[ $attempt_was_retry == 0 ]]
+
+# A full archive server is recognised from the transfer's output.
+printf 'rsync: [receiver] write failed on "/mnt/archive/SentryClips/x.mp4": No space left on device (28)\n' > "$work/archive-error.log"
+archive_destination_is_full
+printf 'rsync: write failed on "x": Disk quota exceeded (122)\n' > "$work/archive-error.log"
+archive_destination_is_full
+printf 'rsync error: error in socket IO (code 10)\n' > "$work/archive-error.log"
+! archive_destination_is_full
+rm -f "$work/archive-error.log"
+! archive_destination_is_full
+
+# A full server stops timed retries: no backoff wait, and a manual Sync after
+# freeing space is a fresh attempt.
+reset
+ARCHIVE_CYCLE_FAILED=1 ARCHIVE_DEST_FULL=1 during_sleep=manual
+wait_after_archive_cycle
+[[ $slept == 1 && ! -e "$work/archive_is_reachable" && $departure_waits == 0 ]]
+[[ $ARCHIVE_HOME_RETRY_PENDING == 0 && $ARCHIVE_HOME_RETRY_DELAY == 0 ]]
+run_archive_cycle
+[[ $attempt_was_retry == 0 && $ARCHIVE_DEST_FULL == 0 ]]
+# Or the car leaves, and the next arrival tries once more.
+reset
+ARCHIVE_CYCLE_FAILED=1 ARCHIVE_DEST_FULL=1 during_sleep=disconnect
+wait_after_archive_cycle
+[[ $slept == 3 && $ARCHIVE_HOME_RETRY_PENDING == 0 ]]
+# Even in Travel Mode with fast retry, a full server isn't retried on a timer.
+reset
+travel=1 fast=1 ARCHIVE_CYCLE_FAILED=1 ARCHIVE_DEST_FULL=1 during_sleep=manual
+wait_after_archive_cycle
+[[ $travel_waits == 0 && $slept == 1 ]]
+
+# The full-server notice goes out once, then at most every 12 hours.
+rm -f "$work/archive_destination_full"
+archive_destination_full_notice_due
+touch "$work/archive_destination_full"
+! archive_destination_full_notice_due
+touch -t "$(date -v-13H +%Y%m%d%H%M 2>/dev/null || date -d '13 hours ago' +%Y%m%d%H%M)" "$work/archive_destination_full"
+archive_destination_full_notice_due
 
 reset
 ARCHIVE_CYCLE_FAILED=1 during_sleep=manual
@@ -156,4 +217,4 @@ run_archive_cycle
 wait_after_archive_cycle
 [[ $slept == 60 && $ARCHIVE_HOME_RETRY_PENDING == 1 ]]
 
-echo 'PASS: failed transfers retry with capped backoff; success, cancellation, departure, manual sync and Travel Mode retain their behavior'
+echo 'PASS: failed transfers retry with capped backoff, brief Wi-Fi drops keep retries quiet, a full archive server pauses retries; success, cancellation, departure, manual sync and Travel Mode retain their behavior'
