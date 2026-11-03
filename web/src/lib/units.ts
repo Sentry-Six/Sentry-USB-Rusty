@@ -1,4 +1,5 @@
 import { useSyncExternalStore } from "react"
+import { DEFAULT_TIRE_BANDS, TIRE_BANDS_KEY, formatTireBands, parseTireBands, type TireBands } from "@/lib/tireBands"
 
 // Shared setup preferences. Distance, pressure, and dashboard temperature move
 // together; the system-temperature preference remains independent.
@@ -7,6 +8,7 @@ export type UnitState = {
   systemTempF: boolean // SYSTEM_TEMPERATURE_UNIT === "F"
   km: boolean // DRIVE_MAP_UNIT === "km"
   pressureBar: boolean // PRESSURE_UNIT === "bar"
+  tireBands: TireBands // TIRE_PSI_BANDS, in PSI
   loaded: boolean
 }
 
@@ -16,6 +18,7 @@ let state: UnitState = {
   systemTempF: false,
   km: true,
   pressureBar: true,
+  tireBands: DEFAULT_TIRE_BANDS,
   loaded: false,
 }
 const listeners = new Set<() => void>()
@@ -47,6 +50,7 @@ async function load() {
     const s = readActive(cfg.SYSTEM_TEMPERATURE_UNIT)
     const d = readActive(cfg.DRIVE_MAP_UNIT)
     const p = readActive(cfg.PRESSURE_UNIT)
+    const bands = readActive(cfg[TIRE_BANDS_KEY])
     // Temperature anchors any missing unit preferences.
     const tempF = t != null ? t === "F" : state.tempF
     const metric = !tempF
@@ -55,6 +59,7 @@ async function load() {
       systemTempF: s != null ? s === "F" : tempF,
       km: d != null ? d === "km" : metric,
       pressureBar: p != null ? p === "bar" : metric,
+      tireBands: parseTireBands(bands),
       loaded: true,
     })
   } catch {
@@ -75,7 +80,7 @@ function subscribe(cb: () => void): () => void {
 }
 
 // Apply updates optimistically and restore the prior snapshot on failure.
-async function writeKeys(updates: Record<string, string>, optimistic: Partial<UnitState>) {
+async function writeKeys(updates: Record<string, string>, optimistic: Partial<UnitState>): Promise<boolean> {
   const prev = state
   set(optimistic)
   try {
@@ -97,8 +102,10 @@ async function writeKeys(updates: Record<string, string>, optimistic: Partial<Un
       body: JSON.stringify(flat),
     })
     if (!put.ok) throw new Error("config save failed")
+    return true
   } catch {
     set(prev)
+    return false
   }
 }
 
@@ -125,5 +132,11 @@ export function useUnits() {
       writeKeys({ SYSTEM_TEMPERATURE_UNIT: f ? "F" : "C" }, { systemTempF: f }),
     setPressureBar: (bar: boolean) =>
       writeKeys({ PRESSURE_UNIT: bar ? "bar" : "psi" }, { pressureBar: bar }),
+    // An empty value restores the defaults.
+    setTireBands: (bands: TireBands | null) =>
+      writeKeys(
+        { [TIRE_BANDS_KEY]: bands ? formatTireBands(bands) : "" },
+        { tireBands: bands ?? DEFAULT_TIRE_BANDS },
+      ),
   }
 }

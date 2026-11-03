@@ -8,7 +8,7 @@ Tesla BLE Telemetry is the Bluetooth pipeline that pulls live data straight from
 |---|---|
 | **Battery** | State of charge % (drives show start → end deltas) |
 | **Climate** | Interior temperature, exterior temperature, HVAC state and runtime |
-| **TPMS** | Tire pressure status |
+| **TPMS** | Tire pressure status. The dashboard's Tires tile and history chart rate each tire against bands you can set in **Settings → Display & Units → Tire pressure ranges** (default: optimal 36–45 psi, unsafe below 28 or above 50), for example for a Cybertruck's higher spec |
 | **Odometer** | Total odometer reading (used for per-drive distance independent of GPS smoothing) |
 | **Location** | Vehicle position, with reverse-geocoded place names for drive start/end |
 

@@ -13,30 +13,20 @@ import {
   YAxis,
 } from "recharts"
 import { useUnits } from "@/lib/units"
+import { tireChartDomainPsi } from "@/lib/tireBands"
 
 // Telemetry is stored in PSI and converted only for display.
 const PSI_TO_BAR = 0.0689476
 
-// Cap zone bands to the visible domain: Recharts centers labels using literal
-// y1/y2 values, including portions outside the viewport. Thresholds stay in PSI.
-const ZONES_PSI = [
-  { y1: 50, y2: 55, fill: "rgba(127, 29, 29, 0.55)", labelColor: "#fca5a5", gt: 50, text: "UNSAFE" },
-  { y1: 45, y2: 50, fill: "rgba(63, 98, 18, 0.55)", labelColor: "#bef264", gt: 45, text: "HARSHER RIDE & WEAR" },
-  { y1: 36, y2: 45, fill: "rgba(22, 78, 51, 0.55)", labelColor: "rgba(167, 243, 208, 0.85)", text: "OPTIMAL" },
-  { y1: 28, y2: 36, fill: "rgba(124, 45, 18, 0.55)", labelColor: "#fcd34d", lt: 36, text: "REDUCED HANDLING & EFFICIENCY" },
-  { y1: 20, y2: 28, fill: "rgba(127, 29, 29, 0.55)", labelColor: "#fca5a5", lt: 28, text: "UNSAFE" },
-] as const
-
-// Interior zone boundaries in PSI.
-const ZONE_BOUNDARIES_PSI = [
-  { y: 50, color: "rgba(252, 165, 165, 0.7)" },
-  { y: 45, color: "rgba(190, 242, 100, 0.7)" },
-  { y: 36, color: "rgba(252, 211, 77, 0.7)" },
-  { y: 28, color: "rgba(252, 165, 165, 0.7)" },
-] as const
-
-// The PSI domain keeps the lower unsafe band visible without unused range.
-const Y_DOMAIN_PSI: [number, number] = [20, 55]
+// Zone colors from the unsafe-high band down to unsafe-low. The thresholds
+// come from the saved TIRE_PSI_BANDS (see lib/tireBands), in PSI.
+const ZONE_STYLES = {
+  unsafeHigh: { fill: "rgba(127, 29, 29, 0.55)", labelColor: "#fca5a5", line: "rgba(252, 165, 165, 0.7)" },
+  harsh: { fill: "rgba(63, 98, 18, 0.55)", labelColor: "#bef264", line: "rgba(190, 242, 100, 0.7)" },
+  optimal: { fill: "rgba(22, 78, 51, 0.55)", labelColor: "rgba(167, 243, 208, 0.85)" },
+  reduced: { fill: "rgba(124, 45, 18, 0.55)", labelColor: "#fcd34d", line: "rgba(252, 211, 77, 0.7)" },
+  unsafeLow: { fill: "rgba(127, 29, 29, 0.55)", labelColor: "#fca5a5", line: "rgba(252, 165, 165, 0.7)" },
+} as const
 
 // Distinct line colors remain legible against the zone bands.
 const TIRE_COLORS = {
@@ -72,7 +62,7 @@ export const TirePressureCard = memo(function TirePressureCard({
   days = 30,
   chartOnly = false,
 }: TirePressureCardProps) {
-  const { pressureBar } = useUnits()
+  const { pressureBar, tireBands: b } = useUnits()
 
   // Convert the full series once so axes, chips, and tooltips share a unit.
   const points = useMemo(
@@ -112,25 +102,40 @@ export const TirePressureCard = memo(function TirePressureCard({
   const conv = (psi: number) => (pressureBar ? psi * PSI_TO_BAR : psi)
   const unitUpper = pressureBar ? "BAR" : "PSI"
   const fmtThreshold = (psi: number) =>
-    pressureBar ? (psi * PSI_TO_BAR).toFixed(1) : String(psi)
+    pressureBar ? (psi * PSI_TO_BAR).toFixed(1) : String(Math.round(psi * 10) / 10)
   const fmtTick = (n: number) => (pressureBar ? n.toFixed(1) : String(Math.round(n)))
   const fmtValue = (v: number) => (pressureBar ? `${v.toFixed(2)} bar` : `${v.toFixed(1)} psi`)
 
-  const zones = ZONES_PSI.map((z) => ({
+  // Cap zone bands to the visible domain: Recharts centers labels using literal
+  // y1/y2 values, including portions outside the viewport.
+  const [lo, hi] = tireChartDomainPsi(b)
+  const zonesPsi = [
+    { y1: b.unsafeHigh, y2: hi, style: ZONE_STYLES.unsafeHigh, gt: b.unsafeHigh, text: "UNSAFE" },
+    { y1: b.optimalHigh, y2: b.unsafeHigh, style: ZONE_STYLES.harsh, gt: b.optimalHigh, text: "HARSHER RIDE & WEAR" },
+    { y1: b.optimalLow, y2: b.optimalHigh, style: ZONE_STYLES.optimal, text: "OPTIMAL" },
+    { y1: b.unsafeLow, y2: b.optimalLow, style: ZONE_STYLES.reduced, lt: b.optimalLow, text: "REDUCED HANDLING & EFFICIENCY" },
+    { y1: lo, y2: b.unsafeLow, style: ZONE_STYLES.unsafeLow, lt: b.unsafeLow, text: "UNSAFE" },
+  ]
+  const zones = zonesPsi.map((z) => ({
     key: z.y1,
     y1: conv(z.y1),
     y2: conv(z.y2),
-    fill: z.fill,
-    labelColor: z.labelColor,
+    fill: z.style.fill,
+    labelColor: z.style.labelColor,
     label:
-      "gt" in z
+      z.gt !== undefined
         ? `>${fmtThreshold(z.gt)} ${unitUpper} • ${z.text}`
-        : "lt" in z
+        : z.lt !== undefined
           ? `<${fmtThreshold(z.lt)} ${unitUpper} • ${z.text}`
           : z.text,
   }))
-  const boundaries = ZONE_BOUNDARIES_PSI.map((b) => ({ key: b.y, y: conv(b.y), color: b.color }))
-  const domain: [number, number] = [conv(Y_DOMAIN_PSI[0]), conv(Y_DOMAIN_PSI[1])]
+  const boundaries = [
+    { y: b.unsafeHigh, color: ZONE_STYLES.unsafeHigh.line },
+    { y: b.optimalHigh, color: ZONE_STYLES.harsh.line },
+    { y: b.optimalLow, color: ZONE_STYLES.reduced.line },
+    { y: b.unsafeLow, color: ZONE_STYLES.unsafeLow.line },
+  ].map((x) => ({ key: x.y, y: conv(x.y), color: x.color }))
+  const domain: [number, number] = [conv(lo), conv(hi)]
 
   const chart = (
     <div className="h-72 w-full" aria-label="Tire pressure chart">
