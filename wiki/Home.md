@@ -4,11 +4,11 @@ Turn a Raspberry Pi into a smart USB drive for your Tesla's dashcam.
 Clips archive themselves. A web UI lets you review, search, and back
 them up — no SSH, no config files.
 
-## Install in one line
+## Install
 
-> **No prebuilt SD card image yet.** The install path is: flash stock **Raspberry Pi OS Lite (64-bit)**, SSH in, and run the one-liner below. A prebuilt image will come later — for now this is the only supported install route. Full step-by-step in [Getting Started](Getting-Started).
+**On a Raspberry Pi:** download **[Sentry-USB-for-Raspberry-Pi-Imager.rpi-imager-manifest](https://github.com/Sentry-Six/Sentry-USB-Rusty/releases/latest/download/Sentry-USB-for-Raspberry-Pi-Imager.rpi-imager-manifest)**, double-click it to open [Raspberry Pi Imager](https://www.raspberrypi.com/software/), add your Wi-Fi when Imager asks, and write the card. Boot the Pi, wait a few minutes, then open `http://sentryusb.local`. Full step-by-step in [Getting Started](Getting-Started).
 
-On a Pi already running Pi OS:
+**On other boards, or a Pi already running Pi OS**, use the one-liner:
 
 ```bash
 sudo apt update && sudo apt upgrade -y
