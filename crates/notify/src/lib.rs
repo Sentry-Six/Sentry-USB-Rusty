@@ -231,6 +231,22 @@ fn notify_client() -> &'static reqwest::Client {
     })
 }
 
+/// Client for Sentry Connect mobile push. It never follows redirects, so a
+/// connection error always means the push server never got the request;
+/// that is what makes a failed push safe to retry (see [`was_never_sent`]).
+static MOBILE_PUSH_CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
+
+fn mobile_push_client() -> &'static reqwest::Client {
+    MOBILE_PUSH_CLIENT.get_or_init(|| {
+        reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(30))
+            .connect_timeout(std::time::Duration::from_secs(10))
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .expect("reqwest Client::build failed (TLS init?)")
+    })
+}
+
 /// Context-aware dispatch — preferred entry point for runtime
 /// notifications. Passes the extra context through to providers that
 /// can use it (currently just Sentry Connect); others ignore the extras
@@ -333,7 +349,7 @@ pub async fn send_to_selected(
         };
         sends.push(("Mobile Push", "mobile_push".into(), Box::pin(async move {
             sentry_connect::send_with_context(
-                client,
+                mobile_push_client(),
                 &config.mobile_push_device_id,
                 &config.mobile_push_secret,
                 title,
@@ -353,18 +369,63 @@ pub async fn send_to_selected(
     futures::future::join_all(sends.into_iter().filter(|(_, key, _)| !delivered.contains(key)).map(
         |(display, key, fut)| async move {
             // Sanitize before either logging or returning errors to API/history.
-            let r = fut.await.map_err(|e| anyhow::anyhow!(safe_provider_error(&e, &[
+            let r = fut.await.map_err(|e| {
+                let never_sent = request_never_sent(&e);
+                let text = safe_provider_error(&e, &[
                 &config.pushover_app_key, &config.pushover_user_key,
                 &config.telegram_bot_token, &config.gotify_app_token, &config.ntfy_token,
                 &config.ifttt_key, &config.matrix_password, &config.sns_access_key,
                 &config.sns_secret_key, &config.mobile_push_secret,
                 &config.discord_webhook_url, &config.slack_webhook_url, &config.webhook_url,
-            ])));
+                ]);
+                if never_sent { anyhow::Error::new(NeverSent(text)) } else { anyhow::anyhow!(text) }
+            });
             log_result(display, &r);
             (key, r)
         },
     ))
     .await
+}
+
+/// A send that failed before the request could reach the provider (no
+/// connection: DNS, refused, unreachable, connect timeout), so the provider
+/// cannot have received it. Displays as the sanitized error text.
+#[derive(Debug)]
+pub struct NeverSent(pub String);
+
+impl std::fmt::Display for NeverSent {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for NeverSent {}
+
+fn request_never_sent(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| cause.downcast_ref::<reqwest::Error>().is_some_and(reqwest::Error::is_connect))
+}
+
+/// True only when the provider cannot have received the message, so sending
+/// it again cannot duplicate it. A timeout or error after connecting is not.
+/// Only meaningful for mobile push, whose client never follows redirects.
+pub fn was_never_sent(error: &anyhow::Error) -> bool {
+    error.downcast_ref::<NeverSent>().is_some()
+}
+
+/// Every provider key [`send_to_selected`] can produce.
+const PROVIDER_KEYS: &[&str] = &[
+    "pushover", "discord", "telegram", "slack", "gotify", "ntfy", "ifttt", "webhook",
+    "signal", "matrix", "mobile_push", "sns",
+];
+
+/// Send to Sentry Connect mobile push only, skipping every other provider.
+/// `None` when mobile push is not enabled.
+pub async fn send_mobile_push_only(config: &NotifyConfig, req: &NotifyRequest<'_>) -> Option<Result<()>> {
+    if !config.mobile_push_enabled {
+        return None;
+    }
+    let others: Vec<String> = PROVIDER_KEYS.iter().filter(|k| **k != "mobile_push").map(|k| k.to_string()).collect();
+    send_to_selected(config, req, &others).await.into_iter().find(|(k, _)| k == "mobile_push").map(|(_, r)| r)
 }
 
 fn log_result(provider: &str, result: &Result<()>) {
@@ -393,6 +454,19 @@ mod update_retry_tests {
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].0, "ntfy");
         assert!(result[0].1.is_err());
+    }
+}
+
+#[cfg(test)]
+mod never_sent_tests {
+    use super::*;
+    #[tokio::test]
+    async fn refused_connection_is_never_sent_but_an_http_error_is_not() {
+        let config = NotifyConfig { webhook_enabled: true, webhook_url: "http://127.0.0.1:1/x".into(), ..Default::default() };
+        let req = NotifyRequest { title: "T", message: "M", ..Default::default() };
+        let result = send_to_selected(&config, &req, &[]).await;
+        assert!(was_never_sent(result[0].1.as_ref().unwrap_err()));
+        assert!(!was_never_sent(&anyhow::anyhow!("HTTP 500")));
     }
 }
 
