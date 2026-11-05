@@ -1,3 +1,4 @@
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use base64::Engine;
@@ -22,6 +23,9 @@ pub fn request_timeout(body_bytes: usize) -> Duration {
     let extra = Duration::from_millis(u64::try_from(extra_ms).unwrap_or(u64::MAX));
     REQUEST_TIMEOUT.saturating_add(extra).min(MAX_REQUEST_TIMEOUT)
 }
+
+/// Most of a 401/403 body kept for classification and for the caller.
+const MAX_REJECTION_BODY: usize = 64 * 1024;
 
 /// What a non-success Cloud reply means for the stored pairing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -85,6 +89,8 @@ pub struct CloudClient {
     inner: reqwest::Client,
     base_url: String,
     bearer: Option<String>,
+    /// Set when any authenticated request got an explicit revoke reply.
+    revoked: AtomicBool,
 }
 
 impl CloudClient {
@@ -97,6 +103,7 @@ impl CloudClient {
             inner,
             base_url: base_url.into(),
             bearer: None,
+            revoked: AtomicBool::new(false),
         }
     }
 
@@ -148,7 +155,7 @@ impl CloudClient {
             .header("Authorization", format!("Bearer {}", bearer))
             .send()
             .await?;
-        Ok(resp)
+        self.observe(resp).await
     }
 
     pub async fn post_json_bearer(
@@ -181,7 +188,51 @@ impl CloudClient {
             req = req.header(*k, v.clone());
         }
         let resp = req.body(bytes).send().await?;
-        Ok(resp)
+        self.observe(resp).await
+    }
+
+    /// True once any authenticated request from this client got an explicit
+    /// revoke reply, whichever endpoint sent it. Callers that do not inspect
+    /// 401/403 themselves use this to reach `handle_remote_revoke`.
+    pub fn remote_revoke_seen(&self) -> bool {
+        self.revoked.load(Ordering::SeqCst)
+    }
+
+    /// Notes explicit revoke replies, then hands back an equivalent response
+    /// so callers can still read the status, headers and body.
+    async fn observe(&self, mut resp: reqwest::Response) -> Result<reqwest::Response, CloudError> {
+        let status = resp.status();
+        if !matches!(status.as_u16(), 401 | 403) {
+            return Ok(resp);
+        }
+        let version = resp.version();
+        let mut headers = resp.headers().clone();
+        // The body below is already decoded; its length is the new body's.
+        headers.remove(reqwest::header::CONTENT_LENGTH);
+        // Error replies are small; a larger page is cut off, not buffered.
+        let mut body = Vec::new();
+        while let Some(chunk) = resp.chunk().await? {
+            let room = MAX_REJECTION_BODY - body.len();
+            body.extend_from_slice(&chunk[..chunk.len().min(room)]);
+            if body.len() == MAX_REJECTION_BODY {
+                break;
+            }
+        }
+        let text = String::from_utf8_lossy(&body).into_owned();
+        match classify_rejection(status.as_u16(), &text) {
+            Rejection::Revoked => self.revoked.store(true, Ordering::SeqCst),
+            Rejection::UserSuspended => {}
+            Rejection::Temporary => warn!(
+                "cloud request: HTTP {} is not a revoke; keeping pairing ({})",
+                status.as_u16(),
+                body_excerpt(&text)
+            ),
+        }
+        let mut rebuilt = http::Response::new(body);
+        *rebuilt.status_mut() = status;
+        *rebuilt.version_mut() = version;
+        *rebuilt.headers_mut() = headers;
+        Ok(reqwest::Response::from(rebuilt))
     }
 
     pub async fn classify(resp: reqwest::Response) -> Result<reqwest::Response, CloudError> {
@@ -258,6 +309,87 @@ mod tests {
         assert_eq!(request_timeout(usize::MAX), MAX_REQUEST_TIMEOUT);
         let sizes = [0, 1, 512 * 1024, 3 * 1024 * 1024, 14 * 1024 * 1024, 40 * 1024 * 1024];
         assert!(sizes.windows(2).all(|w| request_timeout(w[0]) <= request_timeout(w[1])));
+    }
+
+    /// Answers each request in turn with a raw status line, content type and body.
+    async fn raw_server(replies: Vec<(u16, &'static str, String)>) -> (String, tokio::task::JoinHandle<()>) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let task = tokio::spawn(async move {
+            for (status, content_type, body) in replies {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut request = Vec::new();
+                loop {
+                    let mut chunk = [0u8; 4096];
+                    let n = socket.read(&mut chunk).await.unwrap();
+                    assert!(n > 0);
+                    request.extend_from_slice(&chunk[..n]);
+                    if let Some(end) = request.windows(4).position(|w| w == b"\r\n\r\n") {
+                        let headers = String::from_utf8_lossy(&request[..end]).to_ascii_lowercase();
+                        let length = headers.lines()
+                            .find_map(|l| l.strip_prefix("content-length:").map(|v| v.trim().parse::<usize>().unwrap()))
+                            .unwrap_or(0);
+                        if request.len() >= end + 4 + length { break; }
+                    }
+                }
+                let head = format!("HTTP/1.1 {status} Test\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len());
+                socket.write_all(head.as_bytes()).await.unwrap();
+                socket.write_all(body.as_bytes()).await.unwrap();
+            }
+        });
+        (base, task)
+    }
+
+    #[tokio::test]
+    async fn any_authenticated_endpoint_can_report_a_revoke_and_callers_still_read_the_reply() {
+        let json = "application/json";
+        let html = "<!DOCTYPE html><html><title>Attention Required! | Cloudflare</title></html>";
+        for (status, content_type, body, revoked) in [
+            (401, json, r#"{"error":"unknown_token"}"#, true),
+            (403, json, r#"{"error":"revoked"}"#, true),
+            (403, json, r#"{"error":"user_suspended"}"#, false),
+            (403, "text/html", html, false),
+            (403, "text/plain", "", false),
+            (403, json, r#"{"error":"pi_sync_unavailable"}"#, false),
+            (500, json, r#"{"error":"revoked"}"#, false),
+            (200, json, r#"{"ok":true}"#, false),
+        ] {
+            let (base, task) = raw_server(vec![
+                (status, content_type, body.to_string()),
+                (status, content_type, body.to_string()),
+            ]).await;
+            let client = CloudClient::new(&base).with_bearer(&[3; 32]);
+            let response = client.post_json_bearer("/api/pi/sync/state", &serde_json::json!({"piId":"pi"})).await.unwrap();
+            assert_eq!(response.status().as_u16(), status);
+            assert_eq!(response.text().await.unwrap(), body);
+            assert_eq!(client.remote_revoke_seen(), revoked, "{status} {body}");
+            // GET feeds report it the same way.
+            let fresh = CloudClient::new(&base).with_bearer(&[3; 32]);
+            let response = fresh.get_bearer("/api/pi/sync/mutables").await.unwrap();
+            assert_eq!(response.status().as_u16(), status);
+            assert_eq!(fresh.remote_revoke_seen(), revoked, "GET {status} {body}");
+            task.await.unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn classify_keeps_the_pairing_for_proxy_pages() {
+        let html = "<html><body>blocked</body></html>";
+        for (status, content_type, body, auth_rejected) in [
+            (401, "application/json", r#"{"error":"unknown_token"}"#, true),
+            (403, "application/json", r#"{"error":"revoked"}"#, true),
+            (403, "text/html", html, false),
+            (401, "text/html", html, false),
+            (403, "application/json", r#"{"error":"nope"}"#, false),
+        ] {
+            let (base, task) = raw_server(vec![(status, content_type, body.to_string())]).await;
+            let client = CloudClient::new(&base);
+            let response = client.post_json_anon("/api/pi/pair/handshake", &serde_json::json!({})).await.unwrap();
+            let error = CloudClient::classify(response).await.unwrap_err();
+            assert_eq!(matches!(error, CloudError::AuthRejected), auth_rejected, "{status} {body}");
+            task.await.unwrap();
+        }
     }
 
     #[test]

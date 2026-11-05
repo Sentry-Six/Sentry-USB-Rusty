@@ -21,6 +21,8 @@ chrono = { workspace = true }
 # compressed. It decodes with pure-Rust flate2/miniz_oxide, so the Pi cross
 # builds need no extra C toolchain or target libraries.
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "gzip"] }
+# Rebuilds a buffered 401/403 reply after the revoke check has read it.
+http = "1"
 base64 = "0.23"
 rusqlite = { version = "0.41", features = ["bundled"] }
 # Ring is used inside encrypt.rs for the per-route 32-byte randomness.

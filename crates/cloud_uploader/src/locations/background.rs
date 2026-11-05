@@ -201,7 +201,15 @@ pub(crate) async fn run_loop(state: Arc<CloudStateInner>) {
             Ok(unlocked) => unlocked,
             Err(_) => {delay=300;continue;}
         };
-        match run_pass(&state,&creds,&unlocked.pi_auth_token,&unlocked.pi_key,&client,chrono::Utc::now().timestamp()).await {
+        let result = run_pass(&state,&creds,&unlocked.pi_auth_token,&unlocked.pi_key,&client,chrono::Utc::now().timestamp()).await;
+        // An explicit revoke from any repair request removes this pairing,
+        // even when the pass itself counted it as one failed record.
+        if client.take_remote_revoke() {
+            tracing::warn!("Cloud revoked this Pi during location repair; removing local pairing");
+            state.handle_remote_revoke(&creds).await;
+            delay=60;continue;
+        }
+        match result {
             Ok(pass) => {
                 delay=pass.wait_seconds.clamp(15,900);
                 if pass.updated > 0 || pass.failed > 0 {
@@ -210,7 +218,7 @@ pub(crate) async fn run_loop(state: Arc<CloudStateInner>) {
                 }
             }
             Err(_) => {
-                // Normal upload/tag sync handles revoked credentials and rekeys.
+                // Revokes are handled above; the upload sweep handles rekeys.
                 // Do not log source URLs, filenames or decrypted locations here.
                 delay=(delay.max(30)*2).min(900);
                 tracing::warn!("Cloud location repair paused; retry scheduled");

@@ -115,6 +115,13 @@ pub async fn run_once(state: Arc<CloudStateInner>) -> Result<()> {
         (crate::state::SyncStage::Home,home_config.is_err()||(home_sync.is_err()&&!home_pending))].into_iter()
         .filter_map(|(stage,failed)|failed.then_some(stage)).collect();
     let _=state.finish_sync_with_home(&creds_snapshot,ticket,failures,home_pending).await;
+    // Any sync endpoint may be the one that reports a revoke, and a Pi with
+    // nothing to upload reaches the Cloud only through this loop.
+    if client.remote_revoke_seen() {
+        tracing::warn!("cloud sync: Cloud revoked this Pi; removing local pairing");
+        state.handle_remote_revoke(&creds_snapshot).await;
+        return Err(anyhow!("auth rejected; pi unpaired"));
+    }
     drive_push?;
     charge_push?;
     pushed?;
