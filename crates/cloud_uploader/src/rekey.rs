@@ -8,7 +8,7 @@ use tracing::info;
 
 use sentryusb_cloud_crypto::{aad, aead, credentials, ids, kdf};
 
-use crate::client::CloudClient;
+use crate::client::{body_excerpt, classify_rejection, CloudClient, Rejection};
 use crate::credentials_store::UnlockedCreds;
 use crate::state::CloudStateInner;
 
@@ -47,24 +47,23 @@ pub async fn poll_and_apply(state: Arc<CloudStateInner>) -> Result<bool> {
 
             return Ok(false);
         }
-        401 => {
-
-            state.handle_remote_revoke(&creds_snapshot).await;
-            return Err(anyhow!("auth rejected during rekey poll"));
-        }
-        403 => {
-
+        401 | 403 => {
             let body_text = resp.text().await.unwrap_or_default();
-            let err_field = serde_json::from_str::<serde_json::Value>(&body_text)
-                .ok()
-                .and_then(|v| v.get("error").and_then(|e| e.as_str()).map(|s| s.to_string()));
-            if err_field.as_deref() == Some("user_suspended") {
-                *state.last_upload_error.lock().await =
-                    Some("user_suspended".to_string());
-                return Err(anyhow!("user_suspended during rekey poll"));
+            match classify_rejection(status.as_u16(), &body_text) {
+                Rejection::Revoked => {
+                    state.handle_remote_revoke(&creds_snapshot).await;
+                    return Err(anyhow!("auth rejected during rekey poll"));
+                }
+                Rejection::UserSuspended => {
+                    *state.last_upload_error.lock().await =
+                        Some("user_suspended".to_string());
+                    return Err(anyhow!("user_suspended during rekey poll"));
+                }
+                Rejection::Temporary => {
+                    return Err(anyhow!("rekey poll: HTTP {} (temporary): {}",
+                        status.as_u16(), body_excerpt(&body_text)));
+                }
             }
-            state.handle_remote_revoke(&creds_snapshot).await;
-            return Err(anyhow!("auth rejected during rekey poll"));
         }
         200 => {}
         s => return Err(anyhow!("rekey poll: unexpected HTTP {}", s)),

@@ -14,7 +14,7 @@ use sentryusb_drives::schema::{
     self, CHARGE_SWEEP_CURSOR_KEY, CHARGE_SWEEP_FULL_DATE_KEY,
 };
 
-use crate::client::CloudClient;
+use crate::client::{body_excerpt, classify_rejection, CloudClient, Rejection};
 use crate::credentials_store::UnlockedCreds;
 use crate::encrypt::{self, ChargeMutable, CostOverride};
 use crate::state::{now_ms, CloudStateInner};
@@ -302,20 +302,24 @@ pub async fn sweep_once(state: Arc<CloudStateInner>) -> Result<u32> {
             .map_err(|e| anyhow!("charge upload POST: {}", e))?;
         let status = resp.status();
 
-        if status.as_u16() == 401 {
-            warn!("charge upload: 401, wiping credentials");
-            state.handle_remote_revoke(&creds_snapshot).await;
-            return Err(anyhow!("auth rejected; pi unpaired"));
-        }
-        if status.as_u16() == 403 {
+        if matches!(status.as_u16(), 401 | 403) {
             let body_text = resp.text().await.unwrap_or_default();
-            if body_text.contains("user_suspended") {
-                *state.last_upload_error.lock().await = Some("user_suspended".to_string());
-                return Err(anyhow!("user_suspended; charge uploads paused"));
+            match classify_rejection(status.as_u16(), &body_text) {
+                Rejection::Revoked => {
+                    warn!("charge upload: HTTP {} revoke, wiping credentials", status.as_u16());
+                    state.handle_remote_revoke(&creds_snapshot).await;
+                    return Err(anyhow!("auth rejected; pi unpaired"));
+                }
+                Rejection::UserSuspended => {
+                    *state.last_upload_error.lock().await = Some("user_suspended".to_string());
+                    return Err(anyhow!("user_suspended; charge uploads paused"));
+                }
+                Rejection::Temporary => {
+                    warn!("charge upload: HTTP {} is not a revoke; retrying later ({})",
+                        status.as_u16(), body_excerpt(&body_text));
+                    return Err(anyhow!("charge upload: HTTP {} (temporary)", status.as_u16()));
+                }
             }
-            warn!("charge upload: 403, wiping credentials");
-            state.handle_remote_revoke(&creds_snapshot).await;
-            return Err(anyhow!("auth rejected; pi unpaired"));
         }
         if status.as_u16() == 409 {
             let body_text = resp.text().await.unwrap_or_default();

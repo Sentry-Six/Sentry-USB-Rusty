@@ -5,7 +5,7 @@ use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};
 use tracing::{debug, info, warn};
 
-use crate::client::CloudClient;
+use crate::client::{body_excerpt, classify_rejection, CloudClient, Rejection};
 use crate::credentials_store::UnlockedCreds;
 use crate::db_ext;
 use crate::encrypt;
@@ -17,6 +17,33 @@ const BATCH_LIMIT: i64 = 32;
 const MAX_ROUTE_BLOB_B64_LEN: usize = 384 * 1024;
 
 const MAX_BATCH_BODY_BYTES: usize = 14 * 1024 * 1024;
+
+/// Smallest body cap after timeouts; still above one maximum-size route.
+const MIN_BATCH_BODY_BYTES: usize = 512 * 1024;
+
+/// Halvings after which a batch is down to a single route.
+const MAX_BATCH_SHIFT: u32 = 5;
+
+/// Route count and body cap for a batch after `shift` timed-out uploads.
+/// Each timeout halves both, down to one route; the request timeout scales
+/// with the body, so a slow uplink keeps making progress.
+fn batch_limits(shift: u32) -> (i64, usize) {
+    let shift = shift.min(MAX_BATCH_SHIFT);
+    ((BATCH_LIMIT >> shift).max(1), (MAX_BATCH_BODY_BYTES >> shift).max(MIN_BATCH_BODY_BYTES))
+}
+
+/// Halve the next batch after a timeout; returns the new limits.
+fn shrink_batch(state: &CloudStateInner) -> (i64, usize) {
+    use std::sync::atomic::Ordering;
+    // Only the sweep task changes the shift, so load-then-store cannot race.
+    let next = state.upload_batch_shift.load(Ordering::SeqCst).saturating_add(1).min(MAX_BATCH_SHIFT);
+    state.upload_batch_shift.store(next, Ordering::SeqCst);
+    batch_limits(next)
+}
+
+fn is_timeout(error: &crate::client::CloudError) -> bool {
+    matches!(error, crate::client::CloudError::Transport(e) if e.is_timeout())
+}
 
 const SAFETY_TIMER: Duration = Duration::from_secs(600);
 
@@ -133,6 +160,8 @@ async fn sweep_once(state: Arc<CloudStateInner>) -> Result<u32> {
     loop {
         if state.archive_cancel_requested() { return Ok(total_stored); }
 
+        let (batch_routes, batch_body_bytes) =
+            batch_limits(state.upload_batch_shift.load(std::sync::atomic::Ordering::SeqCst));
         // Route decoding and encryption are synchronous; keep them off async workers.
         let prep = {
             let store = state.store.clone();
@@ -140,7 +169,7 @@ async fn sweep_once(state: Arc<CloudStateInner>) -> Result<u32> {
             let user_id = creds_snapshot.user_id.clone();
             let pi_id = creds_snapshot.pi_id.clone();
             tokio::task::spawn_blocking(move || -> Result<Option<PreparedBatch>> {
-                let mut pending = db_ext::select_pending(&store, BATCH_LIMIT)
+                let mut pending = db_ext::select_pending(&store, batch_routes)
                     .context("select pending routes")?;
                 if pending.is_empty() {
                     return Ok(None);
@@ -189,7 +218,7 @@ async fn sweep_once(state: Arc<CloudStateInner>) -> Result<u32> {
                         + encrypted.route_id.len()
                         + 96;
                     if !wire_routes.is_empty()
-                        && estimated_body_bytes + route_json_size > MAX_BATCH_BODY_BYTES
+                        && estimated_body_bytes + route_json_size > batch_body_bytes
                     {
                         debug!(
                             "cloud upload: capping batch at {} routes (est {} bytes)",
@@ -215,7 +244,11 @@ async fn sweep_once(state: Arc<CloudStateInner>) -> Result<u32> {
         };
         let PreparedBatch { pending, wire_routes, wrapped_by_file } = match prep {
             Some(v) => v,
-            None => break,
+            None => {
+                // Queue drained: the next backlog starts at full batch size.
+                state.upload_batch_shift.store(0, std::sync::atomic::Ordering::SeqCst);
+                break;
+            }
         };
 
         if wire_routes.is_empty() {
@@ -228,28 +261,36 @@ async fn sweep_once(state: Arc<CloudStateInner>) -> Result<u32> {
         };
         if state.archive_cancel_requested() { return Ok(total_stored); }
         { let _guard=state.current_credentials(&creds_snapshot).await?; }
-        let resp = client
+        let batch_len = body.routes.len();
+        let resp = match client
             .post_json_bearer_with_headers(
                 "/api/pi/routes",
                 &body,
                 &[("X-Sentryusb-Metadata", metadata_header.clone())],
             )
             .await
-            .map_err(|e| anyhow!("upload POST: {}", e))?;
+        {
+            Ok(resp) => resp,
+            Err(e) => {
+                if is_timeout(&e) {
+                    let (routes, bytes) = shrink_batch(&state);
+                    warn!("cloud upload: batch of {} routes timed out; next batch up to {} routes / {} bytes",
+                        batch_len, routes, bytes);
+                }
+                return Err(anyhow!("upload POST: {}", e));
+            }
+        };
         let status = resp.status();
 
-        if status.as_u16() == 401 {
-            warn!("cloud upload: 401, wiping credentials");
-            state.handle_remote_revoke(&creds_snapshot).await;
-            return Err(anyhow!("auth rejected; pi unpaired"));
-        }
-        if status.as_u16() == 403 {
+        if matches!(status.as_u16(), 401 | 403) {
             let body_text = resp.text().await.unwrap_or_default();
-            let err_field = serde_json::from_str::<serde_json::Value>(&body_text)
-                .ok()
-                .and_then(|v| v.get("error").and_then(|e| e.as_str()).map(|s| s.to_string()));
-            match err_field.as_deref() {
-                Some("user_suspended") => {
+            match classify_rejection(status.as_u16(), &body_text) {
+                Rejection::Revoked => {
+                    warn!("cloud upload: HTTP {} revoke, wiping credentials", status.as_u16());
+                    state.handle_remote_revoke(&creds_snapshot).await;
+                    return Err(anyhow!("auth rejected; pi unpaired"));
+                }
+                Rejection::UserSuspended => {
                     warn!("cloud upload: user_suspended; pausing without unpair");
                     *state.last_upload_error.lock().await =
                         Some("user_suspended".to_string());
@@ -263,10 +304,11 @@ async fn sweep_once(state: Arc<CloudStateInner>) -> Result<u32> {
                     );
                     return Err(anyhow!("user_suspended; uploads paused"));
                 }
-                _ => {
-                    warn!("cloud upload: 403 ({:?}), wiping credentials", err_field);
-                    state.handle_remote_revoke(&creds_snapshot).await;
-                    return Err(anyhow!("auth rejected; pi unpaired"));
+                Rejection::Temporary => {
+                    // Proxy/CDN block pages and unknown codes keep the pairing.
+                    warn!("cloud upload: HTTP {} is not a revoke; retrying later ({})",
+                        status.as_u16(), body_excerpt(&body_text));
+                    return Err(anyhow!("upload: HTTP {} (temporary)", status.as_u16()));
                 }
             }
         }
@@ -298,7 +340,18 @@ async fn sweep_once(state: Arc<CloudStateInner>) -> Result<u32> {
             return Err(anyhow!("upload: HTTP {} body={}", status, body_text));
         }
 
-        let parsed: UploadResponse = resp.json().await.context("parse upload response")?;
+        let parsed: UploadResponse = match resp.json().await {
+            Ok(parsed) => parsed,
+            Err(e) => {
+                // The request budget also covers reading the reply.
+                if e.is_timeout() {
+                    let (routes, bytes) = shrink_batch(&state);
+                    warn!("cloud upload: batch of {} routes timed out; next batch up to {} routes / {} bytes",
+                        batch_len, routes, bytes);
+                }
+                return Err(anyhow::Error::new(e).context("parse upload response"));
+            }
+        };
         let _pairing_guard=state.current_credentials(&creds_snapshot).await?;
 
         let now_unix = now_ms() / 1000;
@@ -436,6 +489,51 @@ mod retry_tests {
         assert!(tokio::time::timeout(Duration::from_millis(20), sweep_once(state.clone())).await.is_err());
         drop(credentials);
         assert_eq!(sweep_once(state).await.unwrap(), 0);
+    }
+
+    #[test]
+    fn timed_out_batches_halve_down_to_one_route_then_reset_when_drained() {
+        assert_eq!(batch_limits(0), (BATCH_LIMIT, MAX_BATCH_BODY_BYTES));
+        let routes: Vec<_> = (0..=MAX_BATCH_SHIFT + 2).map(|s| batch_limits(s).0).collect();
+        assert_eq!(routes, vec![32, 16, 8, 4, 2, 1, 1, 1]);
+        assert_eq!(batch_limits(1).1, 7 * 1024 * 1024);
+        assert_eq!(batch_limits(u32::MAX), (1, MIN_BATCH_BODY_BYTES));
+        // One maximum-size route always fits the smallest body cap.
+        const { assert!(MIN_BATCH_BODY_BYTES > MAX_ROUTE_BLOB_B64_LEN + 4096) };
+        // The smallest batch's time budget covers its whole body.
+        assert!(crate::client::request_timeout(MIN_BATCH_BODY_BYTES) >= Duration::from_secs(30));
+
+        let state = CloudStateInner::new(
+            Arc::new(sentryusb_drives::DriveStore::open_memory().unwrap()),
+            sentryusb_ws::Hub::new(), Arc::new(tokio::sync::Notify::new()),
+            "https://synthetic.invalid".into(), String::new(), None,
+        );
+        assert_eq!(shrink_batch(&state), (16, 7 * 1024 * 1024));
+        assert_eq!(shrink_batch(&state).0, 8);
+        for _ in 0..10 { shrink_batch(&state); }
+        assert_eq!(shrink_batch(&state), (1, MIN_BATCH_BODY_BYTES));
+        assert_eq!(state.upload_batch_shift.load(std::sync::atomic::Ordering::SeqCst), MAX_BATCH_SHIFT);
+    }
+
+    #[tokio::test]
+    async fn timeouts_are_recognised_on_the_upload_request() {
+        use tokio::io::AsyncReadExt;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        // Accept the request and never answer.
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut buf = vec![0u8; 4096];
+            let _ = socket.read(&mut buf).await;
+            tokio::time::sleep(Duration::from_secs(5)).await;
+        });
+        let client = reqwest::Client::new();
+        let err = client.get(format!("http://{addr}/")).timeout(Duration::from_millis(100))
+            .send().await.unwrap_err();
+        assert!(is_timeout(&crate::client::CloudError::Transport(err)));
+        server.abort();
+        let refused = crate::client::CloudError::Http { status: 503, body: String::new() };
+        assert!(!is_timeout(&refused));
     }
 
     #[test]

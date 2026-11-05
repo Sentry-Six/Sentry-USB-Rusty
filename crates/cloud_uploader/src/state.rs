@@ -136,6 +136,10 @@ pub struct CloudStateInner {
     pub(crate) incoming_sync: Mutex<()>,
 
     pub credentials_load_error: Mutex<Option<String>>,
+
+    /// How many times the route batch limits are halved after upload
+    /// timeouts (see `uploader::batch_limits`). Reset when the queue drains.
+    pub(crate) upload_batch_shift: std::sync::atomic::AtomicU32,
 }
 
 #[derive(Debug, Clone)]
@@ -186,6 +190,7 @@ impl CloudStateInner {
             location_sync: Mutex::new(()),
             incoming_sync: Mutex::new(()),
             credentials_load_error: Mutex::new(None),
+            upload_batch_shift: std::sync::atomic::AtomicU32::new(0),
         }
     }
 
