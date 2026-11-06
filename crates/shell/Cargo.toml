@@ -7,3 +7,6 @@ edition = "2024"
 tokio = { workspace = true }
 anyhow = { workspace = true }
 tracing = { workspace = true }
+
+[lints]
+workspace = true

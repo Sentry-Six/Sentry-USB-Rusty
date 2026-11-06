@@ -46,6 +46,9 @@ updates:
 
   - package-ecosystem: "github-actions"
     directory: "/"
+    ignore:
+      # The tag is the Rust version clippy runs on, pinned on purpose; move it by hand.
+      - dependency-name: "dtolnay/rust-toolchain"
     schedule:
       interval: "weekly"
       day: "monday"

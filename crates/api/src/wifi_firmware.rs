@@ -32,6 +32,7 @@
 //!   * Fix for low Rx PER
 //!   * Fix for low throughput issue noticed with SoftAP and STA concurrency
 //!   * Fix for memory loss issue noticed during WPA3 SAE-FT roam scenarios
+//!
 //! The compiled-in feature lists of 7.45.265 and 7.45.286 are byte-identical,
 //! so this is purely bug fixes within the same feature set. None of them claims
 //! to fix the SDIO CMD53 errors that *trigger* the wedge, so whether the wedge
@@ -265,8 +266,7 @@ async fn running_version() -> Option<String> {
     let out = sentryusb_shell::run("dmesg", &[]).await.ok()?;
     let line = out
         .lines()
-        .filter(|l| l.contains("preinit_dcmds: Firmware"))
-        .next_back()?;
+        .rfind(|l| l.contains("preinit_dcmds: Firmware"))?;
     let idx = line.find("version ")?;
     line[idx + "version ".len()..]
         .split_whitespace()

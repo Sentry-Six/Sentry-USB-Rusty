@@ -80,7 +80,7 @@ pub struct Source {
 /// a past-dated brand-new snapshot, and applying it to merge order would
 /// rank stale high-numbered leftovers last — recreating this very bug.
 fn sort_snapshot_sources(sources: &mut [Source]) {
-    sources.sort_by(|a, b| (a.mtime, a.slot).cmp(&(b.mtime, b.slot)));
+    sources.sort_by_key(|a| (a.mtime, a.slot));
 }
 
 #[derive(Clone, Debug)]
@@ -635,6 +635,27 @@ impl<T: std::io::Read + std::io::Seek> std::io::Read for SubFile<T> {
     }
 }
 
+impl<T: std::io::Read + std::io::Seek> std::io::Seek for SubFile<T> {
+    fn seek(&mut self, pos: std::io::SeekFrom) -> std::io::Result<u64> {
+        use std::io::SeekFrom;
+        let newpos = match pos {
+            SeekFrom::Start(p) => Some(p),
+            SeekFrom::End(off) => self.len.checked_add_signed(off),
+            SeekFrom::Current(off) => self.pos.checked_add_signed(off),
+        };
+        match newpos {
+            Some(p) => {
+                self.pos = p;
+                Ok(p)
+            }
+            None => Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "seek out of range",
+            )),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -798,26 +819,5 @@ mod tests {
             "TeslaCam/RecentClips/2026-07-15_05-00-03-front.mp4",
         ]);
         assert_eq!(alias_gapfill_recents(&mut only_recents), 0);
-    }
-}
-
-impl<T: std::io::Read + std::io::Seek> std::io::Seek for SubFile<T> {
-    fn seek(&mut self, pos: std::io::SeekFrom) -> std::io::Result<u64> {
-        use std::io::SeekFrom;
-        let newpos = match pos {
-            SeekFrom::Start(p) => Some(p),
-            SeekFrom::End(off) => self.len.checked_add_signed(off),
-            SeekFrom::Current(off) => self.pos.checked_add_signed(off),
-        };
-        match newpos {
-            Some(p) => {
-                self.pos = p;
-                Ok(p)
-            }
-            None => Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                "seek out of range",
-            )),
-        }
     }
 }

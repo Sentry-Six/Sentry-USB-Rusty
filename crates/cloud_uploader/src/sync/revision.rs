@@ -85,7 +85,7 @@ pub(super) async fn current_pairing<'a>(state: &'a CloudStateInner, expected: &s
 }
 
 pub(super) fn valid_envelope(value: &str, max: usize, exact: Option<usize>) -> Result<()> {
-    ensure!(value.len() <= ((max + 2) / 3) * 4, "mutable envelope too large");
+    ensure!(value.len() <= max.div_ceil(3) * 4, "mutable envelope too large");
     let bytes = B64.decode(value).context("invalid mutable envelope encoding")?;
     ensure!(bytes.len() >= 31 && bytes.len() <= max && bytes[0] == 1
         && exact.is_none_or(|len| bytes.len() == len) && B64.encode(&bytes) == value,

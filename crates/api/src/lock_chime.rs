@@ -21,7 +21,7 @@ use crate::router::AppState;
 pub(crate) const LOCK_CHIME_DIR: &str = "/mutable/LockChime";
 const LOCK_CHIME_TARGET: &str = "/mutable/LockChime.wav";
 const ASS_CHIME_TARGET: &str = "/mutable/ASSChime.wav";
-pub(crate) const LOCK_CHIME_MAX_BYTES: usize = 1 * 1024 * 1024;
+pub(crate) const LOCK_CHIME_MAX_BYTES: usize = 1024 * 1024;
 pub(crate) const LOCK_CHIME_MAX_SECONDS: f64 = 5.0;
 const LOCK_CHIME_CONFIG_FILE: &str = "/mutable/LockChime/.random_config.json";
 const LOCK_CHIME_ACTIVE_FILE: &str = "/mutable/LockChime/.active_name";
@@ -359,7 +359,7 @@ pub(crate) fn parse_wav_duration(data: &[u8]) -> Result<f64, String> {
         }
 
         pos += 8 + chunk_size as usize;
-        if chunk_size % 2 != 0 {
+        if !chunk_size.is_multiple_of(2) {
             pos += 1; // WAV chunk padding byte
         }
     }
@@ -418,7 +418,7 @@ fn parse_wav_info(data: &[u8]) -> Result<WavInfo, String> {
         }
 
         pos += 8 + chunk_size as usize;
-        if chunk_size % 2 != 0 {
+        if !chunk_size.is_multiple_of(2) {
             pos += 1;
         }
     }
@@ -528,7 +528,10 @@ pub(crate) fn ensure_mono_wav(data: &[u8]) -> Result<Vec<u8>, String> {
     out[20..22].copy_from_slice(&1u16.to_le_bytes()); // PCM
     out[22..24].copy_from_slice(&1u16.to_le_bytes()); // mono
     out[24..28].copy_from_slice(&44100u32.to_le_bytes()); // sample rate
+    // Byte rate and block align spell out rate × channels × bits / 8.
+    #[allow(clippy::identity_op)]
     out[28..32].copy_from_slice(&(44100u32 * 1 * 16 / 8).to_le_bytes()); // byte rate
+    #[allow(clippy::identity_op)]
     out[32..34].copy_from_slice(&(1u16 * 16 / 8).to_le_bytes()); // block align
     out[34..36].copy_from_slice(&16u16.to_le_bytes()); // bits per sample
 
@@ -1155,7 +1158,7 @@ pub async fn upload(
         }
     };
 
-    if let Err(_) = std::fs::write(&dest_path, &data) {
+    if std::fs::write(&dest_path, &data).is_err() {
         return crate::json_error(StatusCode::INTERNAL_SERVER_ERROR, "Failed to save file");
     }
 
@@ -1750,17 +1753,7 @@ fn find_subsequence(haystack: &[u8], needle: &[u8]) -> Option<usize> {
 
 fn find_double_newline(data: &[u8]) -> Option<usize> {
     // Find \r\n\r\n or \n\n
-    for i in 0..data.len().saturating_sub(3) {
-        if data[i] == b'\r' && data[i + 1] == b'\n' && data[i + 2] == b'\r' && data[i + 3] == b'\n' {
-            return Some(i);
-        }
-    }
-    for i in 0..data.len().saturating_sub(1) {
-        if data[i] == b'\n' && data[i + 1] == b'\n' {
-            return Some(i);
-        }
-    }
-    None
+    find_subsequence(data, b"\r\n\r\n").or_else(|| find_subsequence(data, b"\n\n"))
 }
 
 fn extract_filename_from_header(header: &str) -> Option<String> {
@@ -1808,7 +1801,7 @@ mod tests {
 
     fn samples_of(wav: &[u8]) -> Vec<i16> {
         wav[44..]
-            .chunks_exact(2)
+            .as_chunks::<2>().0.iter()
             .map(|c| i16::from_le_bytes([c[0], c[1]]))
             .collect()
     }

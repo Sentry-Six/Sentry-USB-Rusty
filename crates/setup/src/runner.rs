@@ -759,7 +759,7 @@ async fn check_root_shrink(env: &SetupEnv, emitter: &SetupEmitter) -> Result<boo
         .get("INCREASE_ROOT_SIZE")
         .filter(|s| !s.trim().is_empty())
         .and_then(|s| crate::disk_images::dehumanize(s).ok())
-        .map(|kb_in_gb_units| (kb_in_gb_units + (1024 * 1024 - 1)) / (1024 * 1024))
+        .map(|kb_in_gb_units| kb_in_gb_units.div_ceil(1024 * 1024))
         .unwrap_or(0);
 
     let target_gb = ((used_kb / 1024 / 1024) + 2 + extra_gb).max(6);
@@ -973,7 +973,7 @@ async fn fix_uas_quirks(env: &SetupEnv, emitter: &SetupEmitter) -> Result<()> {
 }
 
 /// cmdline.txt tokens Raspberry Pi OS uses to run its firstboot/auto-expand
-/// machinery. Mirrors the sed strip in pi-gen-sources/00-sentryusb-tweaks.
+/// machinery. Mirrors the sed strip in install-pi.sh.
 const AUTO_EXPAND_TOKENS: &[&str] = &[
     "init=/usr/lib/raspberrypi-sys-mods/firstboot",
     "systemd.run=/boot/firmware/firstrun.sh",
@@ -1001,9 +1001,9 @@ fn strip_auto_expand_tokens(cmdline: &str) -> (String, bool) {
 }
 
 /// Disable Raspberry Pi OS's firstboot auto-expand so it can't re-grow the
-/// root filesystem after the shrink phase. The pi-gen image build strips
-/// these at image time; the install-pi.sh path on a stock Pi Imager flash
-/// keeps them active, which re-expanded the root fs after every initramfs
+/// root filesystem after the shrink phase. A stock Pi Imager flash (and
+/// the Sentry USB image, which keeps Pi OS's first boot) leaves them
+/// active, which re-expanded the root fs after every initramfs
 /// shrink and caused an infinite shrink-reboot loop. Idempotent; silent
 /// when nothing needed changing. Runs before the first setup reboot.
 async fn disable_os_auto_expand(env: &SetupEnv, emitter: &SetupEmitter) -> Result<()> {

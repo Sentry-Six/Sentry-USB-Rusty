@@ -5,7 +5,7 @@ name: web-checks
 
 on:
   push:
-    branches: [main, main-dev]
+    branches: [main]
     paths:
       - 'web/**'
       - '.github/workflows/web-checks.yml'

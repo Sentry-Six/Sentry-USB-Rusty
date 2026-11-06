@@ -67,6 +67,7 @@ pub fn extract_gps_from_file(path: &str) -> Result<ExtractedGps> {
 /// the drive that followed it. The final clip of a session can also carry
 /// far fewer real frames than its 60s container claims (recording stops
 /// early); trailing frames are real data, never junk to trim.
+#[allow(clippy::too_many_arguments)] // distinct inputs; a parameter struct would only move them
 fn assemble_extracted(
     mut points: Vec<GpsPoint>,
     mut gears: Vec<u8>,
@@ -524,10 +525,8 @@ fn decode_sei_gps(data: &[u8]) -> Option<SeiFrame> {
     }
 
     // Validate GPS coordinates
-    let ok = !lat.is_infinite()
-        && !lon.is_infinite()
-        && !lat.is_nan()
-        && !lon.is_nan()
+    let ok = lat.is_finite()
+        && lon.is_finite()
         && !(lat == 0.0 && lon == 0.0)
         && lat.abs() <= 90.0
         && lon.abs() <= 180.0;

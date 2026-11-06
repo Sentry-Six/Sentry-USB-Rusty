@@ -5,7 +5,7 @@ on:
     tags: ['v*']
   # PRs run tests and web checks; cargo-graph changes also smoke-test ARM.
   pull_request:
-    branches: [main, main-dev]
+    branches: [main]
   workflow_dispatch:
     inputs:
       release_version:
@@ -324,7 +324,10 @@ jobs:
       RUSTFLAGS: -D warnings
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
+      # Pinned so a new clippy release can't fail CI without a code change; bump deliberately.
+      - uses: dtolnay/rust-toolchain@1.99.0
+        with:
+          components: clippy
       - name: Cache cargo registry + build
         # Preserve useful compilation state even when tests fail.
         uses: Swatinem/rust-cache@v2
@@ -345,6 +348,8 @@ jobs:
         run: |
           mkdir -p crates/sentryusb/static
           echo '<!DOCTYPE html><html><body>test</body></html>' > crates/sentryusb/static/index.html
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - name: Test release artifact extraction
         run: python3 -m unittest discover -s .github/scripts -p test_extract_release_artifacts.py
       - name: Test archive runtime and notifications
@@ -357,6 +362,8 @@ jobs:
           bash test/archive-cancel.test.sh
           bash test/live-activity-processing.test.sh
           bash test/archive-retry.test.sh
+          bash test/archive-transport-recovery.test.sh
+          bash test/wifi-watchdog.test.sh
           bash test/cifs-compatibility.test.sh
           bash test/mounted-archive-ownership.test.sh
           bash test/diagnostics-capture.test.sh
@@ -372,6 +379,7 @@ jobs:
           bash -n run/release_snapshot.sh
           bash -n run/make_snapshot.sh
           bash test/release-snapshot.test.sh
+          bash test/snapshot-toc-recovery.test.sh
       - name: Run tests
         run: cargo test --workspace --locked
       - name: Run installer safety regressions

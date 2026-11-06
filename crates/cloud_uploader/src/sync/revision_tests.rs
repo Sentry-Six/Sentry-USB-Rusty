@@ -249,9 +249,9 @@ async fn repeated_reset_is_bounded_and_retains_previous_checkpoint() {
 async fn repeated_rate_limits_resume_saved_pages_instead_of_starving_later_changes() {
     let (state,creds)=fixture();
     let items:Vec<_>=(1..=3).map(|id|charge(&state,id,&id.to_string())).collect();
-    for index in 0..3 {
+    for (index,item) in items.iter().enumerate() {
         let next=if index<2 {Some(format!("page_{}",index+1))} else {None};
-        let mut replies=vec![(200,page(vec![items[index].clone()],"3",next.as_deref()))];
+        let mut replies=vec![(200,page(vec![item.clone()],"3",next.as_deref()))];
         if next.is_some() {replies.push((429,json!({"error":"rate_limited"})));}
         let (client,paths,task)=server(replies,|_|async{}).await;
         let result=pull_changes(&state,&client,&creds,&PI_KEY).await;task.await.unwrap();

@@ -101,7 +101,7 @@ impl CloudUploader {
     pub fn nudge(&self) {
         if sentryusb_drives::archive_control::ArchiveControl::default().cancelled() { return; }
         self.inner.archive_cancelled.store(false, std::sync::atomic::Ordering::SeqCst);
-        self.inner.hub.broadcast("cloud_sync_changed",&serde_json::json!({}));
+        self.inner.hub.broadcast("cloud_sync_changed",serde_json::json!({}));
         self.inner.notify.notify_one();
     }
 

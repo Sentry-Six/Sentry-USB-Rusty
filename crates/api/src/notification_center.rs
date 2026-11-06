@@ -70,7 +70,7 @@ fn save_history_locked(events: &[NotificationEvent]) -> std::io::Result<()> {
 fn save_history_to(path: &std::path::Path, events: &[NotificationEvent]) -> std::io::Result<()> {
     use std::io::Write;
     let data = serde_json::to_vec_pretty(events)
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+        .map_err(std::io::Error::other)?;
     // HISTORY_LOCK serializes writers; create_new also avoids following a stale
     // temporary symlink. A failed write never truncates the existing history.
     let nonce = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)

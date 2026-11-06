@@ -979,7 +979,7 @@ pub async fn upload_data(
 
     // Broadcast starting, periodic progress, and completion/error phases.
     let hub = state.hub.clone();
-    hub.broadcast("drive_import", &serde_json::json!({"phase": "starting"}));
+    hub.broadcast("drive_import", serde_json::json!({"phase": "starting"}));
 
     let store = state.drives.store.clone();
     let importing = state.drives.importing.clone();
@@ -990,7 +990,7 @@ pub async fn upload_data(
         let res = store.import_json_file_with_progress(tmp, move |routes| {
             hub_cb.broadcast(
                 "drive_import",
-                &serde_json::json!({"phase": "progress", "routes": routes}),
+                serde_json::json!({"phase": "progress", "routes": routes}),
             );
         });
         importing.store(false, Ordering::SeqCst);
@@ -1011,7 +1011,7 @@ pub async fn upload_data(
             );
             hub.broadcast(
                 "drive_import",
-                &serde_json::json!({
+                serde_json::json!({
                     "phase": "complete",
                     "routes": stats.routes,
                     "processedFiles": stats.processed_files,
@@ -1032,7 +1032,7 @@ pub async fn upload_data(
             tracing::warn!("upload_data: import failed: {}", e);
             hub.broadcast(
                 "drive_import",
-                &serde_json::json!({"phase": "error", "error": e.to_string()}),
+                serde_json::json!({"phase": "error", "error": e.to_string()}),
             );
             crate::json_error(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string())
         }
@@ -1040,7 +1040,7 @@ pub async fn upload_data(
             tracing::warn!("upload_data: import task panicked: {}", e);
             hub.broadcast(
                 "drive_import",
-                &serde_json::json!({"phase": "error", "error": e.to_string()}),
+                serde_json::json!({"phase": "error", "error": e.to_string()}),
             );
             crate::json_error(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string())
         }
@@ -1431,6 +1431,7 @@ pub async fn tire_history(
     let body = TIRE_HISTORY_CACHE
         .get(days, move || {
             // Build JSON once; cache hits clone only the `Arc`.
+            #[allow(clippy::type_complexity)] // row tuple mirrors the SELECT columns
             let rows: Vec<(i64, Option<f32>, Option<f32>, Option<f32>, Option<f32>)> = store
                 .with_read_conn(|conn| {
                     let mut stmt = conn.prepare(

@@ -1,12 +1,52 @@
 # Getting Started
 
-Total time: roughly **10–15 minutes** of hands-on work, plus the time it takes to download and flash Pi OS.
+Total time: roughly **10–15 minutes** of hands-on work, plus the time it takes to download and write the image.
 
 > **Before you start:** check the [supported boards](Home#what-you-need). Notably, the **Pi 3B/3B+ cannot work at all** (hardware limitation), and a Pi 3A+ needs a USB-A-to-USB-A cable.
 
+There are two ways to install:
+
+*   **[Sentry USB image](#install-with-the-sentry-usb-image)** (recommended for Raspberry Pi): write it with Raspberry Pi Imager, plug in, done. No SSH.
+*   **[Manual install](#manual-install)**: for other boards, or a Pi that already runs Raspberry Pi OS.
+
+## Install with the Sentry USB image
+
+### 1. Write the image
+
+1.  Download and install [Raspberry Pi Imager](https://www.raspberrypi.com/software/) (version 2 or newer).
+2.  Download **[Sentry-USB-for-Raspberry-Pi-Imager.rpi-imager-manifest](https://github.com/Sentry-Six/Sentry-USB-Rusty/releases/latest/download/Sentry-USB-for-Raspberry-Pi-Imager.rpi-imager-manifest)** from the latest release.
+3.  **Double-click the downloaded file.** Raspberry Pi Imager opens with Sentry USB in its list.
+4.  Insert your microSD card (or USB drive) into your computer.
+5.  On the **Device** step, pick your Pi model. On the **OS** step, pick **Sentry USB**. On the **Storage** step, pick your card.
+
+Imager then walks you through its customisation steps. Fill them in and click **Next** (don't click **Skip customisation**):
+
+*   **Hostname**: **leave it blank.** If Imager filled in a name from last time, clear it. The Pi then appears as `sentryusb.local`.
+*   **Localisation**: pick your nearest **capital city**. This also sets your time zone and WiFi country.
+*   **User**: set a **username** and **password**. Imager requires one.
+*   **Wi-Fi**: choose **Secure network**, then enter your WiFi name (**SSID**) and password.
+*   **Remote access**: optional. Turn on SSH only if you want a terminal on the Pi.
+
+On the **Writing** step, click **Write**, then **I understand, erase and write**. Imager downloads the image and writes it.
+
 > [!NOTE]
-> **There's no prebuilt Sentry USB SD image yet.** To be released.
-> <br> For now, manual install is the only one supported. Requires a flash of stock Raspberry Pi OS Lite first, then run the installer over SSH. A bundled image will come later — for now this is the only supported install path.
+> Download the **.rpi-imager-manifest** file, not the `.img.xz` image. The manifest is what makes Imager ask for your Wi-Fi; an image written on its own can't join your network.
+
+### 2. Boot the Pi
+
+1.  Eject the card and put it into the Pi.
+2.  Power on the Pi with any USB power supply. (Later you'll move the Pi to the car and power it from the Tesla using the same port.)
+3.  Wait about a minute (a couple of minutes on a Pi Zero 2 W or Pi 3A+). The first start sets up the card, restarts once and joins your WiFi. On a Pi 5 the light then shows red with a short gap every few seconds, which means Sentry USB is running and waiting to be set up.
+
+### 3. Open the web UI
+
+Open your browser and go to:
+
+> **http://sentryusb.local**
+
+The [Setup Wizard](Setup-Wizard-Guide) will walk you through the rest. If the page doesn't load, find the Pi in your router's device list (look for **sentryusb**) and open `http://<its-IP>` instead.
+
+Then [connect to your Tesla](#6-connect-to-your-tesla).
 
 ## Manual Install
 
@@ -81,7 +121,7 @@ The [Setup Wizard](Setup-Wizard-Guide) will walk you through the rest — pickin
 
 After you finish the Setup Wizard:
 
-1.  Power down the Pi (run `sudo poweroff` over SSH, then unplug it from your power supply).
+1.  Unplug the Pi from your power supply. Sentry USB is built to lose power whenever the car sleeps, so this is safe once setup has finished.
 2.  Plug your USB 3.0 cable into your Tesla's **glovebox USB port** (newer Teslas) or one of the **front USB ports** (older Teslas).
 3.  Plug the other end into the Pi.
 4.  The Pi boots from the car's power. Within a few seconds, your dashcam icon will appear and start recording to the Pi.

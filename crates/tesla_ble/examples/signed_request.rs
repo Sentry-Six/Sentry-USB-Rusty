@@ -27,10 +27,8 @@
 //!   * fault=5  (INVALID_SIGNATURE) on VCSEC  → likely VCSEC wants HMAC
 //!   * fault=5  on Infotainment              → real metadata/crypto bug
 //!   * fault=9  (INVALID_COMMAND)            → signature passed, payload
-//!                                              just isn't a valid command
-//!                                              for that domain (that's
-//!                                              actually a WIN for us —
-//!                                              proves the signature works)
+//!     just isn't a valid command for that domain (that's actually a WIN
+//!     for us — proves the signature works)
 //!   * fault=6  (INVALID_TOKEN_OR_COUNTER)    → counter race/replay
 
 use std::path::PathBuf;

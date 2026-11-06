@@ -440,7 +440,7 @@ mod tests {
             let lat = 37.7749 + (i as f64) * 0.00001;
             points.push([lat, -122.4194]);
             ap.push(if (1..20).contains(&i) { AUTOPILOT_FSD } else { AUTOPILOT_OFF });
-            gears.push(if i >= 20 && i < 25 { GEAR_PARK } else { 4 });
+            gears.push(if (20..25).contains(&i) { GEAR_PARK } else { 4 });
         }
         let r = Route {
             file: "test.mp4".to_string(),
@@ -540,9 +540,7 @@ mod tests {
         // timestamp was unset for engaged-at-start clips, the 3s grace
         // never elapsed, and every such push was silently dropped.
         let mut accel = vec![0.0f32; 61];
-        for i in 30..33 {
-            accel[i] = 30.0;
-        }
+        accel[30..33].fill(30.0);
         let agg =
             compute_route_aggregates(&boundary_route(vec![AUTOPILOT_FSD; 61], vec![4; 61], accel));
         assert_eq!(agg.fsd_accel_pushes, 1);

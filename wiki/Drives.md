@@ -23,7 +23,7 @@ The top of the page rolls up your selected time range into four totals: **DISTAN
 
 | Button | What it does |
 |---|---|
-| **Process** | Re-runs drive detection. Pick **new drives** (incremental) or **all** (rebuild every drive from scratch). Use after a major config change or if drives look wrong. |
+| **Process** | Re-runs drive detection. Pick **Process new drives** (incremental) or **Reprocess all drives** (rebuild every drive from scratch). Use after a major config change or if drives look wrong. |
 | **Export** | Downloads your drive index — back it up or move it to another Pi. |
 | **Import** | Loads a previously exported drive bundle. |
 | **Delete all** | Removes every drive record. Underlying dashcam clips are untouched. |
@@ -48,8 +48,8 @@ The **Odometer**, **Battery**, and **Climate** sections are populated by [Tesla 
 
 ## FSD Analytics
 
-The dedicated **FSD** page (sidebar → FSD) aggregates FSD usage across all your drives — distance, disengagement counts, accel pushes, and an FSD grade — with **Day / Week / All Time** period filters and a monthly drill-down for long-time users.
+The **FSD Analytics** page (open it from the **FSD** figure on the Dashboard) aggregates FSD usage across all your drives — distance, disengagement counts, accel pushes, and an FSD grade — with **Day / Week / All Time** period filters and a monthly drill-down for long-time users.
 
 ## How drives are built
 
-A drive is a contiguous sequence of dashcam clips with no significant time gap. Sentry USB scans the dashcam tree, groups clips by timestamp continuity, geocodes the GPS at start and end, and joins the BLE telemetry samples that fall inside the drive's window. If you change BLE pairing or the timestamp data looks off, **Process → all** rebuilds the index from current data.
+A drive is a contiguous sequence of dashcam clips with no significant time gap. Sentry USB scans the dashcam tree, groups clips by timestamp continuity, geocodes the GPS at start and end, and joins the BLE telemetry samples that fall inside the drive's window. If you change BLE pairing or the timestamp data looks off, **Process → Reprocess all drives** rebuilds the index from current data.

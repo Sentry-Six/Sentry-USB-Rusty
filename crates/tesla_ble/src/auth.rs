@@ -263,6 +263,7 @@ pub fn sign(
 ///      tag (the 16-byte AES-GCM tag we sent on the way out).
 ///   4. On success, returns the inner plaintext bytes — a
 ///      car_server response payload for INFOTAINMENT, etc.
+#[allow(clippy::too_many_arguments)] // distinct inputs; a parameter struct would only move them
 pub fn decrypt_response(
     session_key: &SessionKey,
     request_tag: &[u8],

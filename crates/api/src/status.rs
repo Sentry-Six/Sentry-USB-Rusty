@@ -107,9 +107,9 @@ fn parse_wifi_link_rates(output: &str) -> (Option<f64>, Option<f64>) {
         let line = line.trim();
         let target = if let Some(rest) = line.strip_prefix("rx bitrate:") {
             Some((&mut rx, rest))
-        } else if let Some(rest) = line.strip_prefix("tx bitrate:") {
-            Some((&mut tx, rest))
-        } else { None };
+        } else {
+            line.strip_prefix("tx bitrate:").map(|rest| (&mut tx, rest))
+        };
         if let Some((target, rest)) = target {
             let mut parts = rest.split_whitespace();
             if let (Some(value), Some("MBit/s")) = (parts.next(), parts.next()) {
@@ -994,7 +994,7 @@ fn read_net_bytes(dev: &str, stat: &str) -> Option<u64> {
 fn update_net_sample(previous: Option<&NetSample>, rx_bytes: u64, tx_bytes: u64, taken_at: Instant) -> NetSample {
     let rates = previous.and_then(|prev| {
         let elapsed = taken_at.saturating_duration_since(prev.taken_at).as_secs_f64();
-        if elapsed < 0.5 || elapsed > 5.0 || rx_bytes < prev.rx_bytes || tx_bytes < prev.tx_bytes {
+        if !(0.5..=5.0).contains(&elapsed) || rx_bytes < prev.rx_bytes || tx_bytes < prev.tx_bytes {
             return None;
         }
         Some((((rx_bytes - prev.rx_bytes) as f64 * 8.0 / elapsed) as u64,
@@ -1075,7 +1075,7 @@ async fn disk_usage(path: &str) -> i64 {
     tokio::task::spawn_blocking(move || {
         #[cfg(unix)] {
             use std::os::unix::fs::MetadataExt;
-            return std::fs::metadata(path).map(|m| m.blocks().saturating_mul(512) as i64).unwrap_or(0);
+            std::fs::metadata(path).map(|m| m.blocks().saturating_mul(512) as i64).unwrap_or(0)
         }
         #[cfg(not(unix))] { let _ = path; 0 }
     }).await.unwrap_or(0)

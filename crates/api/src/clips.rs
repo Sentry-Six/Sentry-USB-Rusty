@@ -372,7 +372,7 @@ mod tests {
 
         let value = list_clips_in(root.path(), "RecentClips", 20, None);
         assert_eq!(value[0]["name"].as_str().unwrap(), "RecentClips");
-        assert_eq!(value[0]["hasMore"].as_bool().unwrap(), false);
+        assert!(!value[0]["hasMore"].as_bool().unwrap());
 
         let clips = value[0]["clips"].as_array().unwrap();
         assert_eq!(clips.len(), 1);
@@ -452,14 +452,14 @@ mod tests {
         }
 
         let value = list_clips_in(root.path(), "SavedClips", 2, None);
-        assert_eq!(value[0]["hasMore"].as_bool().unwrap(), true);
+        assert!(value[0]["hasMore"].as_bool().unwrap());
         let clips = value[0]["clips"].as_array().unwrap();
         assert_eq!(clips.len(), 2);
         assert_eq!(clips[0]["date"].as_str().unwrap(), "2025-02-22_10-00-00");
         assert_eq!(clips[1]["date"].as_str().unwrap(), "2025-02-21_10-00-00");
 
         let value = list_clips_in(root.path(), "SavedClips", 20, Some("2025-02-22_10-00-00"));
-        assert_eq!(value[0]["hasMore"].as_bool().unwrap(), false);
+        assert!(!value[0]["hasMore"].as_bool().unwrap());
         let clips = value[0]["clips"].as_array().unwrap();
         assert_eq!(clips.len(), 2);
         assert_eq!(clips[0]["date"].as_str().unwrap(), "2025-02-21_10-00-00");
@@ -472,7 +472,7 @@ mod tests {
         let value = list_clips_in(root.path(), "SavedClips", 20, None);
         assert_eq!(value[0]["name"].as_str().unwrap(), "SavedClips");
         assert_eq!(value[0]["clips"].as_array().unwrap().len(), 0);
-        assert_eq!(value[0]["hasMore"].as_bool().unwrap(), false);
+        assert!(!value[0]["hasMore"].as_bool().unwrap());
     }
 
     #[cfg(unix)]

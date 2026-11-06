@@ -51,18 +51,25 @@ Binaries land in `target/<target>/release/`.
 cargo build --release
 ```
 
-## Full OS image
+## SD card image
 
-Prebuilt images aren't offered right now; this script is kept for a future image release and isn't maintained or tested in the meantime.
+`image/build-image.sh` takes the newest official Raspberry Pi OS Lite
+(64-bit) image, installs one Sentry USB release into it by running
+`install-pi.sh` in image mode inside a chroot, and writes the image, its
+checksum and a Raspberry Pi Imager manifest. It needs Linux, root, and an
+arm64 host (or qemu-user binfmt for aarch64):
 
-`build-image.sh` wraps pi-gen with the SentryUSB stage overlay:
 ```
-./build-image.sh                  # arm64
-./build-image.sh --32bit          # armhf
-./build-image.sh /path/to/binary  # use a pre-built binary
+sudo image/build-image.sh --tag v3.29.0 --out deploy
 ```
 
-Output: `deploy/sentryusb-*.img.gz`.
+The image keeps Pi OS's first boot as it ships, so the Wi-Fi, user,
+hostname and SSH settings chosen in Imager apply on the user's card. Imager
+2 only offers those settings for images opened through a manifest that
+declares how the image is configured (`init_format`), which is why users
+open the `.rpi-imager-manifest` rather than the `.img.xz` itself;
+`image/imager.py` copies `init_format` and the board list from Raspberry
+Pi's own entry for the base image.
 
 ## Deploy to an existing Pi
 
@@ -75,15 +82,16 @@ bash install-pi.sh /tmp/sentryusb
 
 ## Testing
 
-- Rust unit tests: `cargo test`
+- Rust unit tests: `cargo test --workspace --locked` (CI runs them on Linux; a few tests need Linux-only `/proc` and shell tools)
+- Clippy: `cargo +1.99.0 clippy --workspace --all-targets --locked -- -D warnings` (CI pins Rust 1.99.0)
 - Shell and Python harnesses: `test/*.test.sh`, `test/*.test.py`
 - Web: `cd web && npm test && npm run lint`
-- Lint: `./check.sh` (runs ShellCheck against selected runtime scripts)
+- Lint: `bash check.sh` (runs ShellCheck against selected runtime scripts)
 
 ## Releasing
 
 GitHub Releases are expected to host these artifacts (naming consumed by
-`install-pi.sh` and `build-image.sh`):
+`install-pi.sh`):
 
 - `sentryusb-linux-arm64-a53` / `-a72` / `-a76` (per-CPU aarch64 variants)
 - `sentryusb-linux-arm64` (backward-compat alias = a72 build)
@@ -94,6 +102,27 @@ GitHub Releases are expected to host these artifacts (naming consumed by
 The `Build & Release` workflow (`.github/workflows/build.yml`) builds these on
 native arm64 runners (armv7 is cross-compiled with GCC) and attaches them to
 the release.
+
+Once a stable release is out, the `SD Card Image` workflow
+(`.github/workflows/image.yml`) builds the image for it and attaches three
+more files and a first line in the release notes pointing to the manifest.
+Publishing the release doesn't wait for it.
+
+- `Sentry-USB-for-Raspberry-Pi-Imager.rpi-imager-manifest`: what users
+  download and double-click. Its name puts it at the top of the release
+  page, which lists files by name.
+- `sentryusb-raspberry-pi-image.img.xz` and its `.sha256`: the image the
+  manifest points to. Its name sorts it in among the binaries, so people
+  don't flash it without Imager's Wi-Fi and user settings.
+- `sentryusb-imager-os-list.json`: the same entry in the format Raspberry
+  Pi's own Imager list loads from us, at
+  `releases/latest/download/sentryusb-imager-os-list.json`.
+
+Automatic builds run only while the repository variable `SENTRYUSB_SD_IMAGE`
+is `auto`. Pre-releases are skipped, but promoting one to a full release
+builds its image. To rebuild or test, run the workflow by hand with a tag;
+turn off "publish" to keep the result as a workflow artifact instead of
+attaching it.
 
 armv6 (Pi Zero W / Pi 1) is no longer built — the board is too underpowered
 to run the daemon comfortably, and dropping the matrix entry keeps the

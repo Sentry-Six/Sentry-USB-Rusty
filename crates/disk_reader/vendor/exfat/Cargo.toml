@@ -23,3 +23,7 @@ version = "1.4"
 
 [dependencies.thiserror]
 version = "1.0"
+
+# Vendored upstream source: keep clippy output to the workspace's own code.
+[lints.clippy]
+all = "allow"

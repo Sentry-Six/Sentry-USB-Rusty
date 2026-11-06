@@ -22,6 +22,33 @@ then
   fi
 fi
 
+# The car's USB reads and writes share this SSD and must win: run the whole
+# snapshot (copy, scan, links) at the lowest best-effort I/O and CPU
+# priority. Applied in place so the flock taken above stays held.
+ionice -c2 -n7 -p $$ >/dev/null 2>&1 || true
+renice -n 19 -p $$ >/dev/null 2>&1 || true
+
+# Place one link to TARGET inside DIR. LINK_FILL_ONLY=1 leaves an existing
+# link alone, so re-linking an older recovered snapshot can't undo newer
+# targets (-L is tested first so an existing link is never followed into
+# autofs). Failures are counted: a snapshot only stops owing links once
+# every link landed.
+function place_snapshot_link {
+  local target=$1
+  local dir=$2
+  local dest="$dir/${target##*/}"
+  if [ "${LINK_FILL_ONLY:-0}" = 1 ] && { [ -L "$dest" ] || [ -e "$dest" ]; }
+  then
+    return 0
+  fi
+  if { [ -d "$dir" ] || mkdir -p "$dir"; } && ln -sfT -- "$target" "$dest"
+  then
+    LINKS_MADE=$((LINKS_MADE + 1))
+  else
+    LINK_FAILURES=$((LINK_FAILURES + 1))
+  fi
+}
+
 function linksnapshotfiletorecents {
   local file=$1
   local curmnt=$2
@@ -35,25 +62,16 @@ function linksnapshotfiletorecents {
   fi
 
   filedate=${filename:0:10}
-  if [ ! -d "$recents/$filedate" ]
-  then
-    mkdir -p "$recents/$filedate"
-  fi
-  ln -sf "${file/"$curmnt"/$finalmnt}" "$recents/$filedate"
+  place_snapshot_link "${file/"$curmnt"/$finalmnt}" "$recents/$filedate"
 }
 
 function make_links_for_snapshot {
   local saved=/mutable/TeslaCam/SavedClips
   local sentry=/mutable/TeslaCam/SentryClips
   local track=/mutable/TeslaCam/TeslaTrackMode
-  if [ ! -d $saved ]
-  then
-    mkdir -p $saved
-  fi
-  if [ ! -d $sentry ]
-  then
-    mkdir -p $sentry
-  fi
+  LINK_FAILURES=0
+  LINKS_MADE=0
+  mkdir -p $saved $sentry || LINK_FAILURES=$((LINK_FAILURES + 1))
   local curmnt="$1"
   local finalmnt="$2"
   log "making links for $curmnt, retargeted to $finalmnt"
@@ -73,34 +91,27 @@ function make_links_for_snapshot {
   do
     local eventfolder=${f%/*}
     local eventtime=${eventfolder##/*/}
-    if [ ! -d "$saved/$eventtime" ]
-    then
-      mkdir -p "$saved/$eventtime"
-    fi
-    ln -sf "${f/$curmnt/$finalmnt}" "$saved/$eventtime"
+    place_snapshot_link "${f/$curmnt/$finalmnt}" "$saved/$eventtime"
   done
   # and the same for SentryClips — event folder ONLY, never RecentClips.
   for f in "$curmnt/TeslaCam/SentryClips/"*/*
   do
     local eventfolder=${f%/*}
     local eventtime=${eventfolder##/*/}
-    if [ ! -d "$sentry/$eventtime" ]
-    then
-      mkdir -p "$sentry/$eventtime"
-    fi
-    ln -sf "${f/$curmnt/$finalmnt}" "$sentry/$eventtime"
+    place_snapshot_link "${f/$curmnt/$finalmnt}" "$sentry/$eventtime"
   done
   # and finally the TrackMode files
   for f in "$curmnt/TeslaTrackMode/"*
   do
-    if [ ! -d "$track" ]
-    then
-      mkdir -p "$track"
-    fi
-    ln -sf "$f" "$track"
+    place_snapshot_link "$f" "$track"
   done
-  log "made all links for $curmnt"
   $restore_nullglob
+  if [ "$LINK_FAILURES" -gt 0 ]
+  then
+    log "ERROR: $LINK_FAILURES link(s) for $curmnt could not be made"
+    return 1
+  fi
+  log "made all links for $curmnt"
 }
 
 # Rebuild symlinks in /mutable/TeslaCam for all existing completed snapshots
@@ -190,6 +201,105 @@ function purge_event_links_from_recentclips {
   find "$recents" -mindepth 1 -type d -empty -delete 2>/dev/null || true
 }
 
+# A committed snapshot that still owes links carries snap.bin.relink_pending:
+# its producer writes it before linking and removes it once every link
+# landed, and the boot-time TOC rebuild sets it on a recovered snapshot. A
+# power cut can keep a snapshot's state on /backingfiles but lose links just
+# written to /mutable, so once per boot the newest snapshot is marked as
+# owing links, and any snapshot whose links were just (re)made
+# (snap.bin.relink_verify) is checked once more. Each run makes the links of
+# at most two snapshots: the newest debt and the oldest one, so a backlog
+# can't starve across short trips. The newest
+# committed snapshot gets a full re-link; an older one only gets its missing
+# links filled in, so newer targets stay. Each failure adds a line to the
+# marker; a snapshot is skipped for the rest of that boot, and given up on
+# after five.
+RELINK_BOOT_MARKED=/tmp/.sentryusb-relink-boot-marked
+RELINK_FAILED_THIS_BOOT=/tmp/.sentryusb-relink-failed
+function mark_relinks_for_this_boot {
+  [ ! -e "$RELINK_BOOT_MARKED" ] || return 0
+  local d newest=""
+  for d in /backingfiles/snapshots/snap-*/snap.bin.relink_verify
+  do
+    [ -e "$d" ] || continue
+    local pending=${d%_verify}_pending
+    { [ -e "$pending" ] || : > "$pending"; } && rm -f "$d"
+  done
+  for d in $(ls -d /backingfiles/snapshots/snap-* 2>/dev/null | LC_ALL=C sort -r)
+  do
+    if [ -e "$d/snap.bin" ] && [ -e "$d/snap.bin.toc" ]
+    then
+      newest=$d
+      break
+    fi
+  done
+  if [ -n "$newest" ] && [ ! -e "$newest/snap.bin.relink_pending" ] &&
+     [ ! -e "$newest/snap.bin.relink_gave_up" ]
+  then
+    : > "$newest/snap.bin.relink_pending" || return 0
+  fi
+  : > "$RELINK_BOOT_MARKED"
+}
+
+function relink_pending_snapshot {
+  mark_relinks_for_this_boot
+  local d newest="" first="" second=""
+  for d in $(ls -d /backingfiles/snapshots/snap-* 2>/dev/null | LC_ALL=C sort -r)
+  do
+    [ -e "$d/snap.bin" ] && [ -e "$d/snap.bin.toc" ] || continue
+    [ -n "$newest" ] || newest=$d
+    [ -e "$d/snap.bin.relink_pending" ] || continue
+    if grep -qxF -- "${d##*/}" "$RELINK_FAILED_THIS_BOOT" 2>/dev/null
+    then
+      continue
+    fi
+    if [ -z "$first" ]
+    then
+      first=$d
+    else
+      second=$d
+    fi
+  done
+  [ -n "$first" ] || return 0
+  relink_snapshot "$first" "$newest"
+  [ -z "$second" ] || relink_snapshot "$second" "$newest"
+}
+
+function relink_snapshot {
+  local snapdir=$1 newest=$2 fill=0
+  local name=${snapdir##*/}
+  [ "$snapdir" = "$newest" ] || fill=1
+  if [ "$fill" = 1 ]
+  then
+    log "filling in missing links for $name"
+  else
+    log "re-making links for $name"
+  fi
+  if { [ -L "$snapdir/mnt" ] || [ -e "$snapdir/mnt" ] || ln -s "/tmp/snapshots/$name" "$snapdir/mnt"; } &&
+     ls "/tmp/snapshots/$name/" > /dev/null 2>&1 &&
+     LINK_FILL_ONLY=$fill make_links_for_snapshot "/tmp/snapshots/$name" "$snapdir/mnt"
+  then
+    # Links just made get checked once more after the next boot, in case a
+    # power cut takes them with it.
+    if [ "$LINKS_MADE" -gt 0 ] && ! : > "$snapdir/snap.bin.relink_verify"
+    then
+      log "WARNING: could not schedule a re-check of $name; keeping its links owed"
+      return 0
+    fi
+    rm -f "$snapdir/snap.bin.relink_pending"
+  else
+    echo "$name" >> "$RELINK_FAILED_THIS_BOOT"
+    date >> "$snapdir/snap.bin.relink_pending"
+    if [ "$(wc -l < "$snapdir/snap.bin.relink_pending")" -ge 5 ]
+    then
+      mv -f "$snapdir/snap.bin.relink_pending" "$snapdir/snap.bin.relink_gave_up"
+      log "WARNING: giving up on the links for $name after 5 failed attempts"
+    else
+      log "WARNING: links for $name are incomplete, will retry next boot"
+    fi
+  fi
+}
+
 function snapshot {
   # since taking a snapshot doesn't take much extra space, do that first,
   # before cleaning up old snapshots to maintain free space.
@@ -225,6 +335,15 @@ function snapshot {
        grep -q "/tmp/snapshots/snap-$(printf "%06d" "$oldnum")" /proc/mounts 2>/dev/null
     then
       log "previous snapshot snap-$(printf "%06d" "$oldnum") incomplete but mounted — appending instead of reusing"
+      oldnum=$((oldnum - 1))
+      oldname=/backingfiles/snapshots/snap-$(printf "%06d" "$oldnum")/snap.bin
+    elif [ -e "$oldname" ]
+    then
+      # The image survived but its TOC didn't (a scan failed, or power was
+      # cut before the TOC was written). The car has likely overwritten
+      # that footage by now, so the image may be the only copy: keep it for
+      # the boot-time TOC rebuild instead of wiping it.
+      log "previous snapshot snap-$(printf "%06d" "$oldnum") has no TOC — keeping its image for recovery, appending"
       oldnum=$((oldnum - 1))
       oldname=/backingfiles/snapshots/snap-$(printf "%06d" "$oldnum")/snap.bin
     else
@@ -298,17 +417,37 @@ function snapshot {
   done
   log "took snapshot"
 
-  # check whether this snapshot is actually different from the previous one
-  find "$newsnapmnt" -type f -printf '%s %P\n' > "${newsnapname}.toc_"
+  # The live footage is captured; now make links an earlier run still owes.
+  relink_pending_snapshot
+
+  # check whether this snapshot is actually different from the previous one.
+  # errexit is off inside this function (it runs under `if !`), so check the
+  # scan explicitly: a partial TOC would hide clips from later re-pointing.
+  if ! find "$newsnapmnt" -type f -printf '%s %P\n' > "${newsnapname}.toc_"
+  then
+    log "ERROR: could not list files in $newsnapmnt; keeping the image without a TOC"
+    rm -f "${newsnapname}.toc_"
+    return 1
+  fi
   log "comparing new snapshot with $oldname"
   if [[ ! -e "${oldname}.toc" ]] || diff "${oldname}.toc" "${newsnapname}.toc_" | grep -qe '^>'
   then
+    # Commit the TOC first, then link. The links stay marked as owed until
+    # they all land, so a stop in between gets them made by a later run.
+    if ! : > "${newsnapname}.relink_pending" ||
+       ! mv "${newsnapname}.toc_" "${newsnapname}.toc"
+    then
+      log "ERROR: could not commit the TOC for $newsnapdir"
+      return 1
+    fi
     # The car auto-deletes Sentry events when the cam disk fills, so we
     # cannot tell user deletions apart from firmware cleanup. Don't sync
     # deletions from the cam disk into snapshot symlinks.
-    ln -s "$newsnapmnt" "$newsnapdir/mnt"
-    make_links_for_snapshot "$newsnapmnt" "$newsnapdir/mnt"
-    mv "${newsnapname}.toc_" "${newsnapname}.toc"
+    if { [ -L "$newsnapdir/mnt" ] || ln -s "$newsnapmnt" "$newsnapdir/mnt"; } &&
+       make_links_for_snapshot "$newsnapmnt" "$newsnapdir/mnt"
+    then
+      rm -f "${newsnapname}.relink_pending"
+    fi
   else
     log "new snapshot is identical to previous one, discarding"
     /root/bin/release_snapshot.sh "$newsnapdir"
@@ -316,9 +455,11 @@ function snapshot {
   fi
 }
 
+status=0
 if ! snapshot "${1:-fsck}"
 then
   log "failed to take snapshot"
+  status=1
 fi
 
 # Only rebuild missing symlinks when explicitly requested via flag file.
@@ -340,3 +481,5 @@ then
   purge_event_links_from_recentclips
   touch /mutable/.recentclips_events_purged
 fi
+
+exit "$status"

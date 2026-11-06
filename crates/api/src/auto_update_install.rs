@@ -118,7 +118,7 @@ pub(super) async fn stage(hub: &sentryusb_ws::Hub, a: &Attempt) -> Result<Staged
     ensure!(available >= 768 * 1024, "At least 768 MiB free space is required for staged automatic updates");
     let dir = PathBuf::from("/opt/sentryusb").join(format!("stage-{}", a.id));
     std::fs::create_dir(&dir)?;
-    hub.broadcast("update_status", &serde_json::json!({"status":"downloading", "message":format!("Preparing {}", a.target)}));
+    hub.broadcast("update_status", serde_json::json!({"status":"downloading", "message":format!("Preparing {}", a.target)}));
     let mut files = Vec::new();
     for component in ["sentryusb", "sentryusb-tesla-telemetry", "sentryusb-ble-action"] {
         let name = format!("{component}-{suffix}");
@@ -261,6 +261,27 @@ fn replace_files(files: &[(PathBuf, PathBuf)]) -> Result<()> {
     }
     result
 }
+
+const EXTRACT_RELEASE: &str = r#"import pathlib,sys,tarfile,subprocess
+archive,out=sys.argv[1:]
+out=pathlib.Path(out)
+found=set()
+with tarfile.open(archive,'r:gz') as t:
+ for m in t:
+  parts=pathlib.PurePosixPath(m.name).parts
+  if '..' in parts or m.name.startswith('/'): raise ValueError('unsafe release path')
+  if len(parts)==1 and m.isdir(): continue
+  if len(parts)<2: raise ValueError('unsafe release path')
+  rel=pathlib.PurePosixPath(*parts[1:])
+  if str(rel).startswith('run/') or str(rel)=='setup/pi/apply-runtime-patches.sh':
+   if m.isdir(): continue
+   if not m.isfile(): raise ValueError('runtime links not allowed')
+   p=out/rel;p.parent.mkdir(parents=True,exist_ok=True)
+   p.write_bytes(t.extractfile(m).read());found.add(str(rel))
+   if p.read_bytes().startswith(b'#!/bin/bash'): subprocess.run(['bash','-n',str(p)],check=True)
+for name in ['run/archiveloop','run/archive-control.sh','run/post-archive-process.sh','setup/pi/apply-runtime-patches.sh']:
+ if name not in found: raise ValueError('incomplete release payload: '+name)
+"#;
 
 #[cfg(test)]
 mod tests {
@@ -416,24 +437,3 @@ with tarfile.open(sys.argv[1],'w:gz') as t:
         assert_eq!(std::fs::read(out.join("run/archiveloop")).unwrap(), b"#!/bin/bash\ntrue\n");
     }
 }
-
-const EXTRACT_RELEASE: &str = r#"import pathlib,sys,tarfile,subprocess
-archive,out=sys.argv[1:]
-out=pathlib.Path(out)
-found=set()
-with tarfile.open(archive,'r:gz') as t:
- for m in t:
-  parts=pathlib.PurePosixPath(m.name).parts
-  if '..' in parts or m.name.startswith('/'): raise ValueError('unsafe release path')
-  if len(parts)==1 and m.isdir(): continue
-  if len(parts)<2: raise ValueError('unsafe release path')
-  rel=pathlib.PurePosixPath(*parts[1:])
-  if str(rel).startswith('run/') or str(rel)=='setup/pi/apply-runtime-patches.sh':
-   if m.isdir(): continue
-   if not m.isfile(): raise ValueError('runtime links not allowed')
-   p=out/rel;p.parent.mkdir(parents=True,exist_ok=True)
-   p.write_bytes(t.extractfile(m).read());found.add(str(rel))
-   if p.read_bytes().startswith(b'#!/bin/bash'): subprocess.run(['bash','-n',str(p)],check=True)
-for name in ['run/archiveloop','run/archive-control.sh','run/post-archive-process.sh','setup/pi/apply-runtime-patches.sh']:
- if name not in found: raise ValueError('incomplete release payload: '+name)
-"#;

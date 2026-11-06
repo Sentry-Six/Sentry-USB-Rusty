@@ -47,6 +47,15 @@ repair lossless, and a repair-tool failure alone does not prove SSD hardware fai
 Legacy setup now attempts a normal mount for journal replay and stops with a
 Repair Storage message if mounting fails; it no longer clears the journal itself.
 
+## Raspberry Pi Imager doesn't ask for Wi-Fi
+
+Imager only shows its customisation steps (Wi-Fi, user, hostname) when Sentry USB is opened through the **.rpi-imager-manifest** file. Picking the `.img.xz` with **Use custom** skips them, and the Pi then can't join your network.
+
+**Try:**
+
+1.  Download [Sentry-USB-for-Raspberry-Pi-Imager.rpi-imager-manifest](https://github.com/Sentry-Six/Sentry-USB-Rusty/releases/latest/download/Sentry-USB-for-Raspberry-Pi-Imager.rpi-imager-manifest) and double-click it.
+2.  If double-clicking doesn't open Imager, open Imager and go to **App Options** → **Content Repository** → **Edit** → **Use custom file**, pick the manifest, then **Apply & Restart**.
+
 ## Can't reach http://sentryusb.local
 
 The Pi is up but its hostname isn't resolving on your network.
@@ -63,7 +72,7 @@ Setup reboots the Pi several times, and each reboot drops the `sentryusb.local` 
 
 **Try:**
 
-1.  Open `http://<ip>` in a new tab instead — the IP is printed at the end of the installer output, and the setup page shows it while waiting for a reboot. You can also find it on your router's admin page.
+1.  Open `http://<ip>` in a new tab instead — the setup page shows it while waiting for a reboot, a one-line install prints it at the end, and your router's admin page lists it.
 2.  The setup page on the IP picks up right where it left off — setup resumes automatically after every reboot, so nothing is lost.
 
 ## Setup loops forever on "Shrinking root partition table"

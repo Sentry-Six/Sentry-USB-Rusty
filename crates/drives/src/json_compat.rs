@@ -229,7 +229,7 @@ where
                 insert_imported_route(self.0.tx, &route, &agg, self.0.now)
                     .map_err(|e| serde::de::Error::custom(e.to_string()))?;
                 self.0.routes += 1;
-                if self.0.routes % 50 == 0 {
+                if self.0.routes.is_multiple_of(50) {
                     (self.0.on_progress)(self.0.routes);
                 }
             }
@@ -1669,6 +1669,7 @@ mod import_diagnostics_tests {
         let (stats, _diag) = import_json(&mut conn, path.to_str().unwrap(), |_| {}).unwrap();
         assert_eq!(stats.routes, 1);
 
+        #[allow(clippy::type_complexity)] // row tuple mirrors the SELECT columns
         let (bs, be, hvac, odo_s, odo_e, loc, fl): (
             Option<f64>, Option<f64>, Option<i64>, Option<f64>, Option<f64>,
             Option<String>, Option<f64>,
@@ -1695,8 +1696,8 @@ mod import_diagnostics_tests {
     /// The grouper's timestamp filter (grouper.rs `parse_file_timestamp`) is
     /// the most likely cause of "missing drives on import": a route whose
     /// filename lacks YYYY-MM-DD_HH-MM-SS lands in the routes table but
-    /// never appears as a drive. We verify the route IS imported (so logs
-    /// + import-history reflect it) — the grouper-side warn is exercised
+    /// never appears as a drive. We verify the route IS imported (so
+    /// logs + import-history reflect it) — the grouper-side warn is exercised
     /// by integration tests.
     #[test]
     fn route_with_unparseable_filename_still_imports() {
@@ -1796,7 +1797,7 @@ mod full_db_export_tests {
         store
             .add_route("2025-01-15/clip.mp4", "2025-01-15", &pts, &[4, 4], &[1, 1], &[25.0, 26.0], &[0.5, 0.6], 0, 2, &[], &[])
             .unwrap();
-        store.with_locked_conn(|conn| seed_telemetry(conn));
+        store.with_locked_conn(seed_telemetry);
         store
             .set_charge_tags(1700000000, &["Home".to_string(), "Overnight".to_string()])
             .unwrap();
@@ -1816,6 +1817,7 @@ mod full_db_export_tests {
         assert_eq!(stats.charge_costs, 1);
 
         // Full charging row survives column-for-column.
+        #[allow(clippy::type_complexity)] // row tuple mirrors the SELECT columns
         let (bp, hvac, src, fl, odo, swv, loc, pkw, amps, volts, rate, kwh, lim, range, lat, lng, mins, cs): (
             Option<f64>, Option<i64>, String, Option<f64>, Option<f64>, Option<String>,
             Option<String>, Option<i64>, Option<i64>, Option<i64>, Option<f64>, Option<f64>,

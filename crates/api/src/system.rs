@@ -196,7 +196,7 @@ pub async fn ble_pair(State(s): State<AppState>, body: String) -> (StatusCode, J
 
     let hub = s.hub.clone();
     tokio::spawn(async move {
-        hub.broadcast("ble_status", &serde_json::json!({"status": "pairing"}));
+        hub.broadcast("ble_status", serde_json::json!({"status": "pairing"}));
 
         // Prefer the telemetry daemon's existing vehicle connection to avoid
         // consuming another BLE slot; the action binary can connect directly.
@@ -211,7 +211,7 @@ pub async fn ble_pair(State(s): State<AppState>, body: String) -> (StatusCode, J
             Ok(output) => {
                 hub.broadcast(
                     "ble_status",
-                    &serde_json::json!({"status": "waiting", "output": output.trim()}),
+                    serde_json::json!({"status": "waiting", "output": output.trim()}),
                 );
             }
             Err(e) => {
@@ -249,34 +249,13 @@ pub async fn ble_pair(State(s): State<AppState>, body: String) -> (StatusCode, J
                 };
                 hub.broadcast(
                     "ble_status",
-                    &serde_json::json!({"status": "error", "error": msg}),
+                    serde_json::json!({"status": "error", "error": msg}),
                 );
             }
         }
     });
 
     (StatusCode::OK, Json(serde_json::json!({"status": "pairing_started"})))
-}
-
-#[cfg(test)]
-mod pairing_role_tests {
-    use super::ble_pair_role;
-    use sentryusb_tesla_ble::pairing::PairingRole;
-
-    #[test]
-    fn owner_is_default_and_driver_requires_explicit_opt_in() {
-        for body in ["", "  ", "{}", r#"{"driver_key":false}"#] {
-            assert_eq!(ble_pair_role(body).unwrap(), PairingRole::Owner);
-        }
-        assert_eq!(ble_pair_role(r#"{"driver_key":true}"#).unwrap(), PairingRole::Driver);
-    }
-
-    #[test]
-    fn malformed_requests_do_not_silently_pair_as_owner() {
-        for body in ["null", "true", "{", r#"{"driver_key":"true"}"#, r#"{"role":"driver"}"#] {
-            assert!(ble_pair_role(body).is_err(), "accepted {body}");
-        }
-    }
 }
 
 /// Remounts the protected root filesystem before persistent writes.
@@ -729,5 +708,26 @@ pub async fn generate_ssh_key(State(_s): State<AppState>) -> (StatusCode, Json<s
             (StatusCode::OK, Json(serde_json::json!({"public_key": pub_key.trim()})))
         }
         Err(e) => crate::json_error(StatusCode::INTERNAL_SERVER_ERROR, &format!("Failed to generate SSH key: {}", e)),
+    }
+}
+
+#[cfg(test)]
+mod pairing_role_tests {
+    use super::ble_pair_role;
+    use sentryusb_tesla_ble::pairing::PairingRole;
+
+    #[test]
+    fn owner_is_default_and_driver_requires_explicit_opt_in() {
+        for body in ["", "  ", "{}", r#"{"driver_key":false}"#] {
+            assert_eq!(ble_pair_role(body).unwrap(), PairingRole::Owner);
+        }
+        assert_eq!(ble_pair_role(r#"{"driver_key":true}"#).unwrap(), PairingRole::Driver);
+    }
+
+    #[test]
+    fn malformed_requests_do_not_silently_pair_as_owner() {
+        for body in ["null", "true", "{", r#"{"driver_key":"true"}"#, r#"{"role":"driver"}"#] {
+            assert!(ble_pair_role(body).is_err(), "accepted {body}");
+        }
     }
 }

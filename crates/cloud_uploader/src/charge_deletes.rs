@@ -7,7 +7,7 @@ use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
 
-use crate::client::CloudClient;
+use crate::client::{body_excerpt, classify_rejection, CloudClient, Rejection};
 use crate::credentials_store::UnlockedCreds;
 use crate::state::CloudStateInner;
 
@@ -84,21 +84,25 @@ pub async fn sweep_once(state: Arc<CloudStateInner>) -> Result<u32> {
         let status = resp.status();
 
         match status.as_u16() {
-            401 => {
-                warn!("charge delete: 401, wiping credentials");
-                state.handle_remote_revoke(&creds_snapshot).await;
-                return Err(anyhow!("auth rejected; pi unpaired"));
-            }
-            403 => {
+            401 | 403 => {
                 let body_text = resp.text().await.unwrap_or_default();
-                if body_text.contains("user_suspended") {
-                    // Keep rows queued until the account is reinstated.
-                    *state.last_upload_error.lock().await = Some("user_suspended".to_string());
-                    return Err(anyhow!("user_suspended; charge deletes paused"));
+                match classify_rejection(status.as_u16(), &body_text) {
+                    Rejection::Revoked => {
+                        warn!("charge delete: HTTP {} revoke, wiping credentials", status.as_u16());
+                        state.handle_remote_revoke(&creds_snapshot).await;
+                        return Err(anyhow!("auth rejected; pi unpaired"));
+                    }
+                    Rejection::UserSuspended => {
+                        // Keep rows queued until the account is reinstated.
+                        *state.last_upload_error.lock().await = Some("user_suspended".to_string());
+                        return Err(anyhow!("user_suspended; charge deletes paused"));
+                    }
+                    Rejection::Temporary => {
+                        warn!("charge delete: HTTP {} is not a revoke; retrying later ({})",
+                            status.as_u16(), body_excerpt(&body_text));
+                        return Err(anyhow!("charge delete: HTTP {} (temporary)", status.as_u16()));
+                    }
                 }
-                warn!("charge delete: 403, wiping credentials");
-                state.handle_remote_revoke(&creds_snapshot).await;
-                return Err(anyhow!("auth rejected; pi unpaired"));
             }
             // Keep rows queued when the endpoint is unavailable.
             404 | 405 | 501 => {
@@ -140,7 +144,7 @@ pub async fn sweep_once(state: Arc<CloudStateInner>) -> Result<u32> {
     if settled_now > 0 {
         state.hub.broadcast(
             "cloud_charge_delete",
-            &serde_json::json!({ "deleted": settled_now }),
+            serde_json::json!({ "deleted": settled_now }),
         );
     }
     Ok(settled_now)

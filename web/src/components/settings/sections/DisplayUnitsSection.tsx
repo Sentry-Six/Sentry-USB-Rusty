@@ -3,6 +3,7 @@ import { PrefCard } from "@/components/settings/PrefCard"
 import { Toggle } from "@/components/ui/Toggle"
 import { useUnits } from "@/lib/units"
 import { cn } from "@/lib/utils"
+import { TireBandsEditor } from "./TireBandsEditor"
 
 export function DisplayUnitsSection() {
   // Per-quantity toggles override the selected Metric or Imperial defaults.
@@ -69,6 +70,7 @@ export function DisplayUnitsSection() {
         label={isMetric ? "Tire pressure in psi" : "Tire pressure in bar"}
         sub="Tire-pressure history chart"
       />
+      <TireBandsEditor />
     </PrefCard>
   )
 }

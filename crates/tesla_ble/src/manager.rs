@@ -1473,6 +1473,7 @@ async fn handle_transport_error_if_any<T>(
 /// Append one row to the persistent disconnect log: RFC 3339 UTC
 /// timestamp then space-separated `k=v` pairs. The bundle includes the
 /// whole file, so drop history survives journald rotation.
+#[allow(clippy::too_many_arguments)] // distinct inputs; a parameter struct would only move them
 fn append_disconnect_log(
     held_secs: u64,
     queries: u32,
@@ -1899,7 +1900,7 @@ fn note_successful_query(state: &mut SessionState, elapsed_ms: u128) {
     state.recent_latencies_ms.push_back(elapsed_ms);
 
     let n = state.queries_since_connect;
-    if n == 1 || n % STATUS_LOG_EVERY_N_QUERIES == 0 {
+    if n == 1 || n.is_multiple_of(STATUS_LOG_EVERY_N_QUERIES) {
         let uptime = state
             .connected_at
             .map(|t| t.elapsed().as_secs())

@@ -12,6 +12,12 @@
 #
 # Or with a local binary:
 #   bash install-pi.sh /path/to/sentryusb-binary
+#
+# SENTRYUSB_RELEASE_TAG=vX.Y.Z installs that release instead of the latest.
+# SENTRYUSB_IMAGE_BUILD=1 is set by image/build-image.sh, which runs this
+# inside the SD card image's chroot: services are enabled but not started,
+# and Pi OS's first boot is left alone so Raspberry Pi Imager's settings
+# still apply on the user's card.
 
 set -Eeuo pipefail
 
@@ -19,6 +25,7 @@ REPO="${REPO:-Sentry-Six/Sentry-USB-Rusty}"
 INSTALL_DIR="${SENTRYUSB_INSTALL_DIR:-/opt/sentryusb}"
 BINARY_NAME="sentryusb"
 REMOUNT_HELPER="${SENTRYUSB_REMOUNT_HELPER:-/root/bin/remountfs_rw}"
+IMAGE_BUILD="${SENTRYUSB_IMAGE_BUILD:-0}"
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -46,6 +53,9 @@ ensure_install_filesystems_writable() {
     ROOT_WAS_READONLY=0
     BOOT_WAS_READONLY=0
     BOOT_MOUNT=""
+
+    # The image build mounts the image's filesystems read-write itself.
+    [ "${IMAGE_BUILD:-0}" = 1 ] && return 0
 
     for candidate in /boot/firmware /boot; do
         if findmnt -no TARGET "$candidate" >/dev/null 2>&1; then
@@ -232,10 +242,13 @@ if [ -n "${1:-}" ] && [ -f "${1:-}" ]; then
 else
     info "Downloading SentryUSB binary variants from GitHub..."
 
-    RELEASE_TAG=$(curl -fsSL --max-time 10 \
-        "https://api.github.com/repos/${REPO}/releases/latest" 2>/dev/null \
-        | grep '"tag_name"' | head -1 \
-        | sed 's/.*"tag_name": *"\([^"]*\)".*/\1/' || true)
+    RELEASE_TAG="${SENTRYUSB_RELEASE_TAG:-}"
+    if [ -z "$RELEASE_TAG" ]; then
+        RELEASE_TAG=$(curl -fsSL --max-time 10 \
+            "https://api.github.com/repos/${REPO}/releases/latest" 2>/dev/null \
+            | grep '"tag_name"' | head -1 \
+            | sed 's/.*"tag_name": *"\([^"]*\)".*/\1/' || true)
+    fi
     if [ -z "${RELEASE_TAG:-}" ]; then
         RELEASE_URL=$(curl -fsSL --max-time 10 -o /dev/null -w '%{url_effective}' \
             "https://github.com/${REPO}/releases/latest" 2>/dev/null || true)
@@ -268,8 +281,12 @@ else
 fi
 
 # Run the picker once now so the -current symlink + active-variant file
-# exist before systemd tries to start the service.
-"$PICKER_DST" || error_exit "sentryusb-pick-binary failed on first run — check journalctl"
+# exist before systemd tries to start the service. An image build skips
+# this: the build machine's CPU says nothing about the user's Pi, and the
+# service runs the picker on every start anyway.
+if [ "$IMAGE_BUILD" != 1 ]; then
+    "$PICKER_DST" || error_exit "sentryusb-pick-binary failed on first run — check journalctl"
+fi
 
 # Back-compat symlink at the old path so any third-party tooling or shell
 # wrappers referencing /opt/sentryusb/sentryusb keep working.
@@ -315,7 +332,7 @@ StandardError=journal
 WantedBy=multi-user.target
 EOF
 
-systemctl daemon-reload
+[ "$IMAGE_BUILD" = 1 ] || systemctl daemon-reload
 systemctl enable sentryusb
 ok "sentryusb.service installed and enabled"
 
@@ -324,9 +341,8 @@ ok "sentryusb.service installed and enabled"
 info "Installing SentryUSB BLE daemon..."
 BLE_REPO_URL="https://raw.githubusercontent.com/${REPO}/${SOURCE_REF}/server/ble"
 # Install at /root/bin/ — matches both the vendored service unit's
-# hardcoded ExecStart path AND what pi-gen 00-run.sh installs, so the
-# binary is reachable whether the user came via image-flash or
-# install-pi.sh. Don't install elsewhere + sed-patch the unit: that can
+# hardcoded ExecStart path, which the SD card image shares because it runs
+# this installer too. Don't install elsewhere + sed-patch the unit: that can
 # silently fail on older sed / SELinux, leaving the service pointing at
 # a missing path.
 BLE_INSTALL_PATH="/root/bin/sentryusb-ble.py"
@@ -402,9 +418,8 @@ else
 fi
 
 # Fetch envsetup.sh from the repo. archiveloop sources this at runtime to read
-# /root/sentryusb.conf and export CAM_MOUNT / MUSIC_MOUNT / ARCHIVE_* etc. The
-# pi-gen image build deploys it as part of the image; install-pi.sh users never
-# get it, so sentryusb-archive.service fails fast with "envsetup.sh: No such
+# /root/sentryusb.conf and export CAM_MOUNT / MUSIC_MOUNT / ARCHIVE_* etc.
+# Without it sentryusb-archive.service fails fast with "envsetup.sh: No such
 # file or directory" and respawns until systemd gives up.
 if curl -fsSL "https://raw.githubusercontent.com/${REPO}/${SOURCE_REF}/setup/pi/envsetup.sh" \
        -o /root/bin/envsetup.sh 2>/dev/null; then
@@ -415,8 +430,7 @@ else
 fi
 
 # ── Step 3d: remountfs_rw helper + /root/.bashrc reminder ──────────
-# `remountfs_rw` is created by the pi-gen image build; install-pi.sh users
-# (any non-pi-gen install, e.g. DietPi/Armbian) never get it. The BLE daemon
+# `remountfs_rw` comes from setup, which runs after this installer. The BLE daemon
 # calls it to remount root RW before saving the pairing PIN, and fails with
 # "Failed to save PIN: No such file or directory: '/root/bin/remountfs_rw'"
 # if absent — blocks BLE pair from SC. Always-install a tiny stub: works
@@ -549,7 +563,7 @@ has_dietpi_overlays() {
 }
 
 NEEDS_REBOOT=0
-if is_rock_4cplus; then
+if [ "$IMAGE_BUILD" != 1 ] && is_rock_4cplus; then
     info "Rock Pi 4C+ detected — applying USB-gadget + BLE hardware setup..."
     # Best-effort section: don't let a minor apt/systemd hiccup abort the install.
     set +e
@@ -780,19 +794,30 @@ fi
 # ── Step 5b: Hostname + mDNS (sentryusb.local works immediately) ───
 
 TARGET_HOSTNAME="sentryusb"
-CURRENT_HOSTNAME=$(hostname -s 2>/dev/null || echo "raspberrypi")
+# In an image build, `hostname` would read and change the build machine's
+# name; the image's own name lives in /etc/hostname. Imager's hostname
+# setting replaces it on the user's card.
+if [ "$IMAGE_BUILD" = 1 ]; then
+    CURRENT_HOSTNAME=$(cat /etc/hostname 2>/dev/null || echo "raspberrypi")
+else
+    CURRENT_HOSTNAME=$(hostname -s 2>/dev/null || echo "raspberrypi")
+fi
 
 if [ "$CURRENT_HOSTNAME" != "$TARGET_HOSTNAME" ]; then
     info "Setting hostname to ${TARGET_HOSTNAME}..."
-    hostnamectl set-hostname "$TARGET_HOSTNAME" 2>/dev/null \
-        || echo "$TARGET_HOSTNAME" > /etc/hostname
+    if [ "$IMAGE_BUILD" = 1 ]; then
+        echo "$TARGET_HOSTNAME" > /etc/hostname
+    else
+        hostnamectl set-hostname "$TARGET_HOSTNAME" 2>/dev/null \
+            || echo "$TARGET_HOSTNAME" > /etc/hostname
+    fi
     # Update /etc/hosts so sudo/local lookups don't warn
     if grep -qE "^127\.0\.1\.1\s" /etc/hosts; then
         sed -i "s/^127\.0\.1\.1\s.*/127.0.1.1\t${TARGET_HOSTNAME}/" /etc/hosts
     else
         echo -e "127.0.1.1\t${TARGET_HOSTNAME}" >> /etc/hosts
     fi
-    hostname "$TARGET_HOSTNAME" 2>/dev/null || true
+    [ "$IMAGE_BUILD" = 1 ] || hostname "$TARGET_HOSTNAME" 2>/dev/null || true
     ok "Hostname set to ${TARGET_HOSTNAME}"
 fi
 
@@ -820,11 +845,16 @@ ok "mDNS active: http://${TARGET_HOSTNAME}.local"
 # active; it re-grows the root filesystem after setup's shrink phase,
 # which used to trap setup in an infinite shrink-reboot loop. The setup
 # binary also does this, but strip it here as defense in depth.
+#
+# An image keeps Pi OS's first boot: it applies Imager's settings and gives
+# each card its own disk ID. Setup disables auto-expand before it shrinks.
 
 CMDLINE_FILE=""
-for f in /boot/firmware/cmdline.txt /boot/cmdline.txt; do
-    [ -f "$f" ] && CMDLINE_FILE="$f" && break
-done
+if [ "$IMAGE_BUILD" != 1 ]; then
+    for f in /boot/firmware/cmdline.txt /boot/cmdline.txt; do
+        [ -f "$f" ] && CMDLINE_FILE="$f" && break
+    done
+fi
 if [ -n "$CMDLINE_FILE" ]; then
     sed -i \
         -e 's| systemd\.run=/boot/firmware/firstrun\.sh||g' \
@@ -834,7 +864,7 @@ if [ -n "$CMDLINE_FILE" ]; then
         -e 's| init=/usr/lib/raspberrypi-sys-mods/firstboot||g' \
         "$CMDLINE_FILE"
 fi
-if [ -f /etc/init.d/resize2fs_once ]; then
+if [ "$IMAGE_BUILD" != 1 ] && [ -f /etc/init.d/resize2fs_once ]; then
     systemctl disable resize2fs_once >/dev/null 2>&1 || true
     update-rc.d resize2fs_once remove >/dev/null 2>&1 || true
     rm -f /etc/init.d/resize2fs_once
@@ -842,6 +872,11 @@ if [ -f /etc/init.d/resize2fs_once ]; then
 fi
 
 # ── Step 6: Start the Service ──────────────────────────────────────
+
+if [ "$IMAGE_BUILD" = 1 ]; then
+    ok "SentryUSB ${RELEASE_TAG:-} installed into the image; it starts on the card's first boot"
+    exit 0
+fi
 
 info "Starting SentryUSB..."
 systemctl restart sentryusb

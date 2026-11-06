@@ -20,10 +20,10 @@
 ## What it does
 
 - **Plugs into your Tesla's USB port** and pretends to be a dashcam drive.
-- **Tracks every drive** — route on a map, distance, speed, and the dashcam clips that recorded it — built from the metadata Tesla embeds in each clip.
-- **Enriches drives with Tesla BLE telemetry** — battery, HVAC, cabin and exterior temps, TPMS, odometer, and location — pulled over Bluetooth and layered onto each trip for a much fuller picture than the dashcam metadata gives you on its own.
-- **Archives clips automatically** to your NAS, cloud, or wherever — over WiFi, in the background.
-- **Keeps the car awake** (and the dashcam recording) via the same BLE link — no Tesla API subscription needed.
+- **Tracks every drive**: route on a map, distance, speed, and the dashcam clips that recorded it, built from the metadata Tesla embeds in each clip.
+- **Enriches drives with Tesla BLE telemetry**: battery, HVAC, cabin and exterior temps, TPMS, odometer, and location, pulled over Bluetooth and layered onto each trip for a much fuller picture than the dashcam metadata gives you on its own.
+- **Archives clips automatically** to your NAS, cloud, or wherever, over WiFi in the background.
+- **Keeps the car awake** (and the dashcam recording) via the same BLE link, with no Tesla API subscription needed.
 - **Privacy controls.** Minimal device reporting with a visible setup choice and an easy opt-out.
 
 The Rust rewrite of the original Go version. Same `sentryusb.conf`, faster server, more reliable.
@@ -37,56 +37,18 @@ Sentry USB is one of the free tools for Tesla owners from the [Sentry Six](https
 
 ---
 
-## Screenshots
-
-<p align="center">
-  <img src="docs/images/drives-list.png" alt="Drives list" width="900"><br>
-  <em>Every drive your Tesla recorded — route, distance, duration, battery deltas, and FSD usage — with rolling totals for the selected time range.</em>
-</p>
-
-<p align="center">
-  <img src="docs/images/drive-detail.png" alt="Drive detail" width="900"><br>
-  <em>Per-drive deep view: speed curve, battery deltas, climate with HVAC runtime, odometer, and FSD analytics — alongside the route map and synchronized multi-camera dashcam playback.</em>
-</p>
-
-<p align="center">
-  <img src="docs/images/charging-list.png" alt="Charging history" width="900"><br>
-  <em>Every charge session — energy added, duration, cost, and charging speed — with per-tag time-of-use electricity rates and rolling totals for the selected range.</em>
-</p>
-
-<p align="center">
-  <img src="docs/images/setup-wizard.png" alt="Setup Wizard" width="900"><br>
-  <em>11-step setup wizard — no SSH, no config files.</em>
-</p>
-
-<p align="center">
-  <img src="docs/images/settings.png" alt="Settings" width="900"><br>
-  <em>Everything reconfigurable from the browser.</em>
-</p>
-
----
-
-## Features
-
-| | |
-|---|---|
-| **Drives tracking** | Every trip with route, distance, duration, battery deltas, and FSD usage — plus the dashcam clips one click in |
-| **Tesla BLE telemetry** | Adds battery, HVAC, cabin/exterior temps, TPMS, odometer, and location to each drive — beyond what Tesla's dashcam metadata carries on its own |
-| **Multi-camera viewer** | Synchronized 6-camera playback with HW3-aware adaptive grid and drift correction |
-| **Auto-archive** | CIFS / SMB, rsync, rclone (cloud), NFS — kicks off whenever the Pi sees known WiFi |
-| **Keep awake** | BLE (free, same link as telemetry), TeslaFi, Tessie, or generic webhook |
-| **Sentry Cloud (beta)** | Encrypted cloud sync — drives are encrypted on the Pi before they leave your network |
-| **Notifications** | Pushover, ntfy, Gotify, Discord, Telegram, Slack, Signal, Matrix, AWS SNS, IFTTT, Webhook, Sentry Connect app |
-| **Privacy controls** | Minimal device statistics, a visible setup choice, and full per-flow disclosure |
-
----
-
 ## Install
 
-> [!NOTE]
-> **No prebuilt SD card image yet.** You start from stock Raspberry Pi OS Lite and run a one-liner over SSH. A prebuilt image is on the roadmap — for now this is the only supported install path. See the [full Getting Started guide](https://github.com/Sentry-Six/Sentry-USB-Rusty/wiki/Getting-Started) for the click-by-click walkthrough.
+**On a Raspberry Pi (recommended):**
 
-On a Pi already running **Raspberry Pi OS Lite (64-bit)**:
+1. Download **[Sentry-USB-for-Raspberry-Pi-Imager.rpi-imager-manifest](https://github.com/Sentry-Six/Sentry-USB-Rusty/releases/latest/download/Sentry-USB-for-Raspberry-Pi-Imager.rpi-imager-manifest)** and double-click it to open [Raspberry Pi Imager](https://www.raspberrypi.com/software/).
+2. Pick your Pi, add your Wi-Fi when Imager asks, and write the card.
+3. Boot the Pi and open `http://sentryusb.local` about a minute later.
+4. Follow the setup wizard, then plug the Pi into your Tesla.
+
+The [Getting Started guide](https://github.com/Sentry-Six/Sentry-USB-Rusty/wiki/Getting-Started) has the click-by-click walkthrough.
+
+**Other boards, or a Pi already running Raspberry Pi OS Lite (64-bit):**
 
 ```bash
 sudo apt update && sudo apt upgrade -y
@@ -103,12 +65,58 @@ Then open `http://sentryusb.local` in a browser and the setup wizard takes you t
 
 | Tier | Boards | Notes |
 |------|--------|-------|
-| **Recommended** | Raspberry Pi 4B, Raspberry Pi 5 | 1 GB RAM is sufficient. USB 2.0 OTG — fastest archiving, smoothest UI |
-| **Tested** | Raspberry Pi Zero 2 W, Raspberry Pi 3A+ | USB 2.0 OTG — works fine, slower archive speeds. Pi 3A+ needs a USB-A-to-USB-A cable |
-| **Community** | Radxa Rock 4C+, Radxa Zero 3W | USB 3.0 OTG — reported working, not officially supported |
-| **Not supported** | Raspberry Pi 3B/3B+, Pi 2, Pi Zero W (v1), Pi 1 | 3B/3B+/2/1: USB goes through a hub chip — host-only, can never appear as a drive to the car. Zero W v1: too slow, build retired |
+| **Recommended** | Raspberry Pi 4B, Raspberry Pi 5 | 1 GB RAM is sufficient. USB 2.0 OTG, fastest archiving, smoothest UI |
+| **Tested** | Raspberry Pi Zero 2 W, Raspberry Pi 3A+ | USB 2.0 OTG. Works fine, slower archive speeds. Pi 3A+ needs a USB-A-to-USB-A cable |
+| **Community** | Radxa Rock 4C+, Radxa Zero 3W | USB 3.0 OTG. Reported working, not officially supported |
+| **Not supported** | Raspberry Pi 3B/3B+, Pi 2, Pi Zero W (v1), Pi 1 | 3B/3B+/2/1: USB goes through a hub chip, so they're host-only and can never appear as a drive to the car. Zero W v1: too slow, build retired |
 
-Plus a **high-quality MicroSD card sized for the storage layout you choose** and a **USB 3.0 data cable** (not charge-only) between the Pi and your Tesla. Use a 3.0 cable even on USB 2.0 boards — it delivers more power and keeps lower-end Pis stable.
+Plus a **high-quality MicroSD card sized for the storage layout you choose** and a **USB 3.0 data cable** (not charge-only) between the Pi and your Tesla. Use a 3.0 cable even on USB 2.0 boards: it delivers more power and keeps lower-end Pis stable.
+
+---
+
+## Screenshots
+
+<p align="center">
+  <img src="docs/images/drives-list.png" alt="Drives list" width="900"><br>
+  <em>Every drive your Tesla recorded (route, distance, duration, battery deltas, and FSD usage) with rolling totals for the selected time range.</em>
+</p>
+
+<p align="center">
+  <img src="docs/images/drive-detail.png" alt="Drive detail" width="900"><br>
+  <em>Per-drive deep view: speed curve, battery deltas, climate with HVAC runtime, odometer, and FSD analytics, alongside the route map and synchronized multi-camera dashcam playback.</em>
+</p>
+
+<p align="center">
+  <img src="docs/images/charging-list.png" alt="Charging history" width="900"><br>
+  <em>Every charge session (energy added, duration, cost, and charging speed) with per-tag time-of-use electricity rates and rolling totals for the selected range.</em>
+</p>
+
+<p align="center">
+  <img src="docs/images/setup-wizard.png" alt="Setup Wizard" width="900"><br>
+  <em>11-step setup wizard. No SSH, no config files.</em>
+</p>
+
+<p align="center">
+  <img src="docs/images/settings.png" alt="Settings" width="900"><br>
+  <em>Everything reconfigurable from the browser.</em>
+</p>
+
+---
+
+## Features
+
+| | |
+|---|---|
+| **Drives tracking** | Every trip with route, distance, duration, battery deltas, and FSD usage, plus the dashcam clips one click in |
+| **Charging history** | Every charge session with energy added, duration, cost and charging speed, plus per-tag time-of-use rates |
+| **Tesla BLE telemetry** | Adds battery, HVAC, cabin/exterior temps, TPMS, odometer, and location to each drive, beyond what Tesla's dashcam metadata carries on its own |
+| **Multi-camera viewer** | Synchronized 6-camera playback with HW3-aware adaptive grid and drift correction |
+| **Auto-archive** | CIFS / SMB, rsync, rclone (cloud), NFS. Kicks off whenever the Pi sees known WiFi |
+| **Keep awake** | BLE (free, same link as telemetry), TeslaFi, Tessie, or generic webhook |
+| **Sentry Cloud (beta)** | Encrypted cloud sync: drives are encrypted on the Pi before they leave your network |
+| **Notifications** | Pushover, ntfy, Gotify, Discord, Telegram, Slack, Signal, Matrix, AWS SNS, IFTTT, Webhook, Sentry Connect app |
+| **AI Support & Help** | In-app support chat; a diagnostics report is uploaded only after you approve it |
+| **Privacy controls** | Minimal device statistics, a visible setup choice, and full per-flow disclosure |
 
 ---
 
@@ -122,26 +130,16 @@ See the [status-light wiki guide](https://github.com/Sentry-Six/Sentry-USB-Rusty
 
 ## Privacy
 
-Here's everything Sentry USB sends to Sentry Six services:
+Your dashcam footage and drive history stay on the Pi unless you turn on a feature that sends them somewhere, such as archiving to your NAS or cloud storage, or Sentry Cloud sync (encrypted on the Pi first). Some things go online in normal use: update checks go to GitHub, and maps in the web UI load tiles from `tiles.sentryusb.com`. Optional features contact Sentry Six services when you use them: device counting (if you choose **Yes, count me** during setup), automatic time zone detection, phone notifications, AI Support & Help, and wraps or lock chime submissions.
 
-| When | What | Identifier? |
-|---|---|---|
-| Device statistics (if you choose **Yes, count me**) | Running version; after startup, enabling reporting, and daily. Server keeps first/last report times. A private maintainers' Discord channel gets each new device's version and first-seen time | Pseudonymous device ID (SHA-256 of the board serial with a salt that is public in the source code) |
-| Time zone **Detect automatically** (if chosen) | A lookup to `sentryusb.com` during setup and at boot; the server sees your IP and returns an approximate city, region and time zone | Your IP, rate-limited for 24 hours |
-| Wraps / lock chime submissions | The file, display name and vehicle model + your IP for rate-limiting and abuse handling | No device or hardware fingerprint; the IP may be retained with the submission |
-| Maps in the web UI | Your browser loads map tiles for the area shown from `tiles.sentryusb.com` (OpenStreetMap data via Cloudflare); browsers without WebGL2 load OpenStreetMap tiles from `tile.openstreetmap.org` | Your IP, as with any web request |
-| Sentry Cloud (if paired) | At pairing: the code you enter, the Pi's public keys, hostname, board model, kernel and Sentry USB versions, and the last 4 digits of a MAC address. Then the drive history, charging sessions and Home sync data you sync, encrypted on the Pi | A per-device token linked to your Sentry Cloud account |
-| Phone push pairing (if enabled) | Random pairing ID and secret, the Pi's hostname, and each notification's title and message, relayed via `notifications.sentry-six.com` to Apple (iPhone) or Google (Android). Hostname cleared when the last phone unpairs; inactive unpaired records deleted after 90 days | Random ID |
-| AI Support & Help (if used) | Chat messages, product/software version, and the Pi connection's public IP for abuse prevention; diagnostics only after a separate one-time approval. Processed by Anthropic; redacted chats stored in Canada for 90 days after last activity | Random conversation ID and access token; no hardware fingerprint |
-
-New installations choose **Yes, count me** or **No thanks** on the Privacy step. Existing installations keep their saved choice (off if none). Change reporting later under **Settings → System → Device counting**. Full disclosure, retention, and controls for each flow are documented in [`wiki/Privacy.md`](wiki/Privacy.md).
+Full per-flow details are in [`wiki/Privacy.md`](wiki/Privacy.md), and the legal disclosures are in the [Privacy Policy](https://sentry-six.com/privacy).
 
 ---
 
 ## Documentation
 
-- **[Wiki](https://github.com/Sentry-Six/Sentry-USB-Rusty/wiki)** — Getting Started, Setup Wizard Guide, Archive Methods, Notifications, Privacy, Troubleshooting, FAQ
-- **[BUILD.md](BUILD.md)** — Building from source
+- **[Wiki](https://github.com/Sentry-Six/Sentry-USB-Rusty/wiki)**: Getting Started, Setup Wizard Guide, Archive Methods, Notifications, Privacy, Troubleshooting, FAQ
+- **[BUILD.md](BUILD.md)**: building from source
 
 ---
 
@@ -157,40 +155,39 @@ rm -rf crates/sentryusb/static && cp -r web/dist crates/sentryusb/static
 # Binaries (aarch64)
 cross build --release --target aarch64-unknown-linux-gnu -p sentryusb
 
-# 32-bit (armhf — Pi 3A+ with 32-bit Pi OS):
+# 32-bit (armhf, for Pi 3A+ with 32-bit Pi OS):
 cross build --release --target armv7-unknown-linux-gnueabihf -p sentryusb
 ```
 
 See [BUILD.md](BUILD.md) for details.
 
-### Build a full Pi image (advanced)
+### Build the SD card image (advanced)
 
 ```bash
-./build-image.sh                 # 64-bit image (Pi 3A+/4/5/Zero 2)
-./build-image.sh --32bit         # 32-bit image (armhf — Pi 3A+ with 32-bit Pi OS)
+sudo image/build-image.sh --tag v3.29.0   # Linux, arm64 host
 ```
 
-Prebuilt images aren't offered right now, and this script isn't maintained or tested until image builds return. End users should use the curl one-liner install above.
+CI builds and attaches the image to each stable release; see [BUILD.md](BUILD.md#sd-card-image).
 
 ---
 
 ## Based on
 
-A Rust rewrite of the original Go [`Scottmg1/Sentry-USB`](https://github.com/Scottmg1/Sentry-USB), itself a modernized fork of [TeslaUSB](https://github.com/marcone/teslausb) by marcone and contributors.
+A Rust rewrite of the original Go [`Scottmg1/Sentry-USB`](https://github.com/Scottmg1/Sentry-USB) (archived), itself a modernized fork of [TeslaUSB](https://github.com/marcone/teslausb) by marcone and contributors.
 
 ## Community
 
-- **Discord** — [discord.gg/9QZEzVwdnt](https://discord.gg/9QZEzVwdnt) — fastest help, real humans
-- **Issues** — [github.com/Sentry-Six/Sentry-USB-Rusty/issues](https://github.com/Sentry-Six/Sentry-USB-Rusty/issues) — reproducible bugs
-- **Site** — [sentry-six.com/sentry-usb](https://sentry-six.com/sentry-usb/)
+- **Discord**: [discord.gg/9QZEzVwdnt](https://discord.gg/9QZEzVwdnt), fastest help, real humans
+- **Issues**: [github.com/Sentry-Six/Sentry-USB-Rusty/issues](https://github.com/Sentry-Six/Sentry-USB-Rusty/issues), for reproducible bugs
+- **Site**: [sentry-six.com/sentry-usb](https://sentry-six.com/sentry-usb/)
 
 ## License
 
-PolyForm Noncommercial 1.0.0 — free for any noncommercial use; commercial use
+PolyForm Noncommercial 1.0.0: free for any noncommercial use; commercial use
 requires a separate license. See [LICENSE](LICENSE). Some bundled shell scripts
 are derived from [TeslaUSB](https://github.com/marcone/teslausb) and remain
 under the MIT License; see [NOTICE](NOTICE) for the file-by-file breakdown.
 
-This is source-available software, not open source — commercial use is not
+This is source-available software, not open source: commercial use is not
 permitted under this license. To inquire about a commercial license, contact
 the authors.

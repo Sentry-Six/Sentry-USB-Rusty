@@ -953,7 +953,7 @@ mod location_encryption_tests {
     }
     #[test]
     fn invalid_optional_evidence_does_not_change_original_fields() {
-        let mut evidence=locations();evidence.readings[0].0=-1;
+        let mut evidence=locations();evidence.readings[0].0 = -1;
         let route=route();let encrypted=encrypt_route_with_locations(&route,&[7;32],"user","pi",None,Some(&evidence)).unwrap();
         let (body,summary)=decode(&encrypted);
         assert_eq!(body,serde_json::to_value(&route).unwrap());let mut expected=route_summary_json(&route);crate::native_metrics::attach(&mut expected,&route);

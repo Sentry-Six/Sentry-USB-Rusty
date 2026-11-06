@@ -90,6 +90,7 @@ fn retire_attempt(state:&CloudStateInner,key:&str,raw:&str)->Result<()> {
         schema::meta_del(&tx,key)?;tx.commit()?;Ok(())
     })
 }
+#[allow(clippy::too_many_arguments)] // distinct inputs; a parameter struct would only move them
 async fn confirm_current(state:&CloudStateInner,client:&CloudClient,creds:&CloudCredentialsV1,pi_key:&[u8;32],
     binding:&str,pending:&Pending,key:&str,raw:&str)->Result<()> {
     let current=read(state,client,creds,binding).await?;

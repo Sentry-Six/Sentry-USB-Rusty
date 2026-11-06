@@ -25,6 +25,11 @@ members = [
 # Derived TeslaUSB scripts stay MIT; see NOTICE for the per-file breakdown.
 license-file = "LICENSE"
 
+[workspace.lints.clippy]
+# Edition 2024 clippy collapses nested `if let` into let-chains, which this
+# codebase does not use.
+collapsible_if = "allow"
+
 [workspace.dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "fs", "process", "time", "signal", "sync", "io-util", "net"] }
 serde = { version = "1", features = ["derive"] }

@@ -4,9 +4,9 @@ The Setup Wizard runs the first time you open `http://sentryusb.local`. It walks
 
 ## 1. Welcome
 
-Confirms the device is reachable and shows any existing configuration detected from a previous install (e.g., from a `sentryusb.conf` you dropped on the SD card's boot partition).
+Confirms the device is reachable. From here you can also upload an existing `.conf` file or restore a `sentryusb-backup-*.json` configuration backup; either pre-fills every later step.
 
-Click **Get Started**.
+Click **Next**.
 
 ## 2. Privacy
 
@@ -48,10 +48,10 @@ Pick how much of the SD card each "virtual USB drive" gets. The remainder is use
 
 Toggle two optional features:
 
-- **Community Wraps** — browse and apply community-made vehicle wrap previews.
-- **Community Chimes** — replace the default lock chime with sounds from the community library.
+- **Wraps & License Plates** — browse and apply community-made wraps and license plates.
+- **Lock Chimes** — replace the default lock chime with sounds from the community library.
 
-Both are stored on the cam drive — no extra partition needed.
+Both are stored as folders on the cam drive — no extra partition needed. You can change them later under **Settings → Community**.
 
 ## 6. Archive
 
@@ -96,8 +96,9 @@ Leave both empty to disable web auth entirely — only do this if your network i
 - **Timezone** — pick yours from the list (used for log timestamps and notification times). **Detect automatically** asks `sentryusb.com` to estimate your time zone from your public IP address during setup and at boot; see [Privacy](Privacy).
 - **Archive Delay (seconds)** — how long to wait after WiFi connects before archiving starts. Default 20 is fine.
 - **Snapshot Interval (seconds)** — how often the Pi looks for new saved clips to archive. Default works for most users. **EU users: set this to 480** (8 min) because Tesla rotates RecentClips faster in the EU. Rule of thumb: set ~2 minutes shorter than the car's RecentClips retention.
-- **Temperature Unit** — °C or °F for the temperature monitoring widget.
+- **Measurement System** — Metric or Imperial. Sets temperature, distance and tire-pressure units together.
+- **Temperature Monitoring** — optional Warning and Caution thresholds, a log interval, and a post-archive temperature log.
 
 ## 11. Review
 
-Final summary of every choice. Click **Apply** to write the configuration and reboot. The Pi will come back up at the new hostname (`http://sentryusb.local` by default) in about a minute.
+Final summary of every choice. Click **Apply & Run Setup** to write the configuration and run setup; the Pi reboots during setup. The Pi will come back up at the new hostname (`http://sentryusb.local` by default) in about a minute.

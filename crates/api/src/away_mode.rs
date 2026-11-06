@@ -942,7 +942,7 @@ fn spawn_watcher(stop: std::sync::Arc<Notify>, my_epoch: u64) {
                 if inner.state != "active" || inner.epoch != my_epoch {
                     return;
                 }
-                let expired = inner.expires_at.map_or(true, |e| SystemTime::now() >= e);
+                let expired = inner.expires_at.is_none_or(|e| SystemTime::now() >= e);
                 if expired {
                     inner.state = "idle";
                     inner.expires_at = None;

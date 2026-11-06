@@ -131,7 +131,7 @@ pub async fn run_update(
     let hub = s.hub.clone();
     tokio::spawn(async move {
         let _guard = guard;
-        hub.broadcast("update_status", &serde_json::json!({"status": "running"}));
+        hub.broadcast("update_status", serde_json::json!({"status": "running"}));
 
         let result = self_update(&hub, target_version).await;
 
@@ -140,17 +140,17 @@ pub async fn run_update(
                 // A successful explicit manual update supersedes a failed
                 // automatic attempt; its outcome queue remains independent.
                 if let Err(e) = crate::update_attempt::clear_after_manual_repair(&crate::update_attempt::current_path()) {
-                    hub.broadcast("update_status", &serde_json::json!({"status":"error", "error":format!("Installed files but could not clear superseded recovery state: {e}")}));
+                    hub.broadcast("update_status", serde_json::json!({"status":"error", "error":format!("Installed files but could not clear superseded recovery state: {e}")}));
                     return;
                 }
-                hub.broadcast("update_status", &serde_json::json!({
+                hub.broadcast("update_status", serde_json::json!({
                     "status": "complete",
                     "output": msg
                 }));
 
                 // Allow each WebSocket status to reach the client before rebooting.
                 tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-                hub.broadcast("update_status", &serde_json::json!({
+                hub.broadcast("update_status", serde_json::json!({
                     "status": "restarting",
                     "message": "Restarting Pi to apply update…"
                 }));
@@ -159,12 +159,12 @@ pub async fn run_update(
                 match sentryusb_shell::run("reboot", &[]).await {
                     Ok(_) => {
                         let e = await_reboot().await;
-                        hub.broadcast("update_status", &serde_json::json!({"status":"error", "error":e.to_string()}));
+                        hub.broadcast("update_status", serde_json::json!({"status":"error", "error":e.to_string()}));
                     }
-                    Err(e) => hub.broadcast("update_status", &serde_json::json!({"status":"error", "error":e.to_string()})),
+                    Err(e) => hub.broadcast("update_status", serde_json::json!({"status":"error", "error":e.to_string()})),
                 }
             }
-            Err(e) => hub.broadcast("update_status", &serde_json::json!({
+            Err(e) => hub.broadcast("update_status", serde_json::json!({
                 "status": "error",
                 "error": e.to_string()
             })),
@@ -329,7 +329,7 @@ async fn download_with_progress(
             last_emit = std::time::Instant::now();
             hub.broadcast(
                 "update_status",
-                &serde_json::json!({
+                serde_json::json!({
                     "status": "downloading",
                     "message": "Downloading update…",
                     "percent": percent,
@@ -349,7 +349,7 @@ async fn self_update(
 ) -> anyhow::Result<String> {
     hub.broadcast(
         "update_status",
-        &serde_json::json!({"status": "checking", "message": "Checking release…"}),
+        serde_json::json!({"status": "checking", "message": "Checking release…"}),
     );
     let suffix = detect_release_suffix().await?;
     let repo = update_repo();
@@ -384,7 +384,7 @@ async fn self_update(
     // Try overlay-aware, standard, and legacy remount forms for supported images.
     hub.broadcast(
         "update_status",
-        &serde_json::json!({"status": "remounting", "message": "Preparing filesystem…"}),
+        serde_json::json!({"status": "remounting", "message": "Preparing filesystem…"}),
     );
     let _ = sentryusb_shell::run("/root/bin/remountfs_rw", &[]).await;
     let _ = sentryusb_shell::run("mount", &["-o", "remount,rw", "/"]).await;
@@ -397,7 +397,7 @@ async fn self_update(
 
     hub.broadcast(
         "update_status",
-        &serde_json::json!({"status": "installing", "message": "Installing update…"}),
+        serde_json::json!({"status": "installing", "message": "Installing update…"}),
     );
     sentryusb_shell::run("chmod", &["+x", tmp]).await?;
     // Check the staged executable before replacing the working binary.
@@ -422,7 +422,7 @@ async fn self_update(
     // depending on GitHub again or restarting the currently running archive.
     let mut install_warnings: Vec<String> = Vec::new();
     if target_help.contains("refresh-archive-scripts") {
-        hub.broadcast("update_status", &serde_json::json!({
+        hub.broadcast("update_status", serde_json::json!({
             "status": "updating_scripts", "message": "Updating archive scripts…"
         }));
         if let Err(error) = sentryusb_shell::run_with_timeout(
@@ -448,7 +448,7 @@ async fn self_update(
     };
     hub.broadcast(
         "update_status",
-        &serde_json::json!({"status": "installing", "message": "Installing components…"}),
+        serde_json::json!({"status": "installing", "message": "Installing components…"}),
     );
     let head_ok = sentryusb_shell::run_with_timeout(
         std::time::Duration::from_secs(15),
@@ -687,7 +687,7 @@ async fn self_update(
     // Refresh and reapply hardware-specific runtime patches after the binary swap.
     hub.broadcast(
         "update_status",
-        &serde_json::json!({"status": "updating_scripts", "message": "Updating scripts…"}),
+        serde_json::json!({"status": "updating_scripts", "message": "Updating scripts…"}),
     );
     let patches_path = "/usr/local/bin/sentryusb-apply-runtime-patches";
     // Pin the helper to the installed tag. With no tag, retain an existing

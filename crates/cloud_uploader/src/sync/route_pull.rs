@@ -125,7 +125,7 @@ fn snapshot_windows(state:&CloudStateInner,revision:i64,drives:Vec<(String,Vec<D
             ensure!(uploaded.is_some_and(|at|at>0) && hex_id(&id) && ids.insert(id.clone()),"drive member source is not ready for tag sync");
             let runs=sentryusb_drives::blob::decode_gear_runs(blob.as_deref())?.unwrap_or_default().iter()
                 .flat_map(|run|[u32::from(run.gear),run.frames]).collect::<Vec<_>>();
-            let total=runs.chunks_exact(2).try_fold(0u32,|sum,run| {
+            let total=runs.as_chunks::<2>().0.iter().try_fold(0u32,|sum,run| {
                 ensure!(run[0]<=255 && run[1]>0,"invalid selected source frame runs");
                 sum.checked_add(run[1]).context("selected source frame count overflow")
             })?.max(1);
@@ -198,7 +198,7 @@ pub(super) fn project(snapshot:Snapshot,states:HashMap<String,Remote>,creds:&Clo
             let decoded:Value=encrypt::open_json_b64(&key,&aad::route_summary(&creds.user_id,&creds.pi_id,&source.id),summary)?;
             ensure!(decoded["file"].as_str()==Some(file.as_str()) && decoded["gr"]==serde_json::to_value(&source.runs)?,
                 "scoped route frame source changed");
-            let total=source.runs.chunks_exact(2).try_fold(0u32,|total,run| {
+            let total=source.runs.as_chunks::<2>().0.iter().try_fold(0u32,|total,run| {
                 ensure!(run[0]<=255 && run[1]>0,"invalid scoped frame source");
                 total.checked_add(run[1]).context("scoped frame count overflow")
             })?.max(1);

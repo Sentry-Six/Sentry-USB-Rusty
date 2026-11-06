@@ -159,6 +159,8 @@ pub(crate) struct SourceIdentity {
 
 pub(crate) struct SummaryClient {
     http: reqwest::Client,
+    /// Set when an API reply was an explicit revoke (see `classify_rejection`).
+    revoked: std::sync::atomic::AtomicBool,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -225,14 +227,31 @@ impl SummaryClient {
             .redirect(reqwest::redirect::Policy::none())
             .timeout(std::time::Duration::from_secs(30))
             .connect_timeout(std::time::Duration::from_secs(10))
-            .build().context("create location sync client")? })
+            .build().context("create location sync client")?,
+            revoked: std::sync::atomic::AtomicBool::new(false) })
+    }
+
+    /// Reports, once, that an API reply since the last call was an explicit
+    /// revoke, so the repair loop can remove the pairing itself.
+    pub fn take_remote_revoke(&self) -> bool {
+        self.revoked.swap(false, std::sync::atomic::Ordering::SeqCst)
     }
 
     async fn post(&self, base: &str, token: &[u8], path: &str, body: &Value) -> Result<Value> {
         let url = format!("{}{}", base.trim_end_matches('/'), path);
         let response = self.http.post(url).bearer_auth(B64.encode(token)).json(body).send().await
             .map_err(|_| anyhow::anyhow!("location sync request did not complete"))?;
-        ensure!(response.status() == reqwest::StatusCode::OK, "location sync request was not confirmed (HTTP {})", response.status().as_u16());
+        let status = response.status().as_u16();
+        if matches!(status, 401 | 403) {
+            // Storage downloads never reach this check; only API replies do.
+            let body = bounded_response(response, 64 * 1024, None).await.unwrap_or_default();
+            if crate::client::classify_rejection(status, &String::from_utf8_lossy(&body))
+                == crate::client::Rejection::Revoked {
+                self.revoked.store(true, std::sync::atomic::Ordering::SeqCst);
+            }
+            anyhow::bail!("location sync request was not confirmed (HTTP {status})");
+        }
+        ensure!(status == 200, "location sync request was not confirmed (HTTP {status})");
         let bytes = bounded_response(response, 512 * 1024, None).await?;
         serde_json::from_slice(&bytes).context("invalid location sync response")
     }
@@ -593,6 +612,27 @@ mod tests {
             "https://account.r2.cloudflarestorage.com/o?X-Amz-Expires=60&X-Amz-Expires=60",
             "https://account.r2.cloudflarestorage.com/o?X-Amz-Expires=60#fragment"] {
             assert!(storage_url(url).is_err(),"{url}");
+        }
+    }
+    #[tokio::test]
+    async fn explicit_revoke_replies_to_repair_requests_are_reported_once() {
+        let html=b"<!DOCTYPE html><html><title>Attention Required! | Cloudflare</title></html>".to_vec();
+        for (status,body,revoked) in [
+            ("401 Unauthorized",br#"{"error":"unknown_token"}"#.to_vec(),true),
+            ("403 Forbidden",br#"{"error":"revoked"}"#.to_vec(),true),
+            ("403 Forbidden",br#"{"error":"user_suspended"}"#.to_vec(),false),
+            ("403 Forbidden",html.clone(),false),
+            ("403 Forbidden",Vec::new(),false),
+            ("403 Forbidden",br#"{"error":"forbidden"}"#.to_vec(),false),
+            ("401 Unauthorized",br#"{"error":"missing_token"}"#.to_vec(),false),
+            ("503 Service Unavailable",br#"{"error":"revoked"}"#.to_vec(),false),
+        ] {
+            let client=SummaryClient::new().unwrap();
+            let (url,task)=server(reply(status,&body)).await;
+            assert!(client.states(&credentials(url),&[3;32],&["a".repeat(64)]).await.is_err());
+            task.await.unwrap();
+            assert_eq!(client.take_remote_revoke(),revoked,"{status} {}",String::from_utf8_lossy(&body));
+            assert!(!client.take_remote_revoke());
         }
     }
     #[tokio::test]

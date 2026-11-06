@@ -451,8 +451,8 @@ pub fn find_drive_files(summaries:&[RouteSummary],id:&str)->Option<(usize,Vec<St
     let groups=group_summary_clips(summaries);
     let index=resolve_group_index(summaries,&groups,id,true)?;
     let mut seen=std::collections::HashSet::new();
-    let files=groups[index].iter().filter_map(|clip|
-        seen.insert(clip.summary.file.as_str()).then(||clip.summary.file.clone())).collect();
+    let files=groups[index].iter().filter(|clip| seen.insert(clip.summary.file.as_str()))
+        .map(|clip| clip.summary.file.clone()).collect();
     Some((index,files))
 }
 
@@ -986,7 +986,7 @@ pub fn build_single_drive_from_clips_with_spans(
     if timed.is_empty() {
         return None;
     }
-    timed.sort_by(|a, b| a.timestamp.cmp(&b.timestamp));
+    timed.sort_by_key(|a| a.timestamp);
     // Real clip spans within this drive, so point timestamps and the end
     // time match the list view. Only this drive's clips were fetched, so
     // the final clip keeps the nominal minute — the handler overlays the
@@ -1513,7 +1513,7 @@ fn group_clips(routes: Vec<Route>) -> Vec<Vec<TimedRoute>> {
         return Vec::new();
     }
 
-    timed.sort_by(|a, b| a.timestamp.cmp(&b.timestamp));
+    timed.sort_by_key(|a| a.timestamp);
 
     // Gap-fill: admit event routes whose CLIP timestamp (filename, not
     // event-folder name) fills a RecentClips gap — interior hole or a
@@ -1560,7 +1560,7 @@ fn group_clips(routes: Vec<Route>) -> Vec<Vec<TimedRoute>> {
         }
         filtered_event_folder += cands.iter().filter(|(_, r)| r.is_some()).count();
         if gap_filled > 0 {
-            timed.sort_by(|a, b| a.timestamp.cmp(&b.timestamp));
+            timed.sort_by_key(|a| a.timestamp);
             info!(
                 "group_clips: gap-filled {} event route(s) into RecentClips holes",
                 gap_filled
@@ -1655,9 +1655,9 @@ pub(crate) fn overview_filter_points(pts: &mut Vec<GpsPoint>) {
         let count = q3 - q1 + 1;
         let mut sum_lat: f64 = 0.0;
         let mut sum_lng: f64 = 0.0;
-        for i in q1..=q3 {
-            sum_lat += pts[i][0];
-            sum_lng += pts[i][1];
+        for p in &pts[q1..=q3] {
+            sum_lat += p[0];
+            sum_lng += p[1];
         }
         let med_lat = sum_lat / count as f64;
         let med_lng = sum_lng / count as f64;
@@ -1676,6 +1676,7 @@ pub(crate) fn overview_filter_points(pts: &mut Vec<GpsPoint>) {
                 has_prev && calc::geodesic_m(pts[i - 1][0], pts[i - 1][1], pts[i][0], pts[i][1]) > MAX_JUMP_M;
             let far_from_next =
                 has_next && calc::geodesic_m(pts[i][0], pts[i][1], pts[i + 1][0], pts[i + 1][1]) > MAX_JUMP_M;
+            #[allow(clippy::nonminimal_bool)] // one clause per neighbour case
             if (has_prev && has_next && far_from_prev && far_from_next)
                 || (!has_prev && far_from_next)
                 || (!has_next && far_from_prev)
@@ -1783,7 +1784,7 @@ pub(crate) fn plan_overviews(metas: &[OverviewClipMeta]) -> Vec<PlannedDrive> {
             timed.push(TimedMeta { idx: i, ts, clip_span_ms: CLIP_DURATION_MS });
         }
     }
-    timed.sort_by(|a, b| a.ts.cmp(&b.ts));
+    timed.sort_by_key(|a| a.ts);
 
     if !events.is_empty() {
         let recent_ts: Vec<NaiveDateTime> = timed.iter().map(|t| t.ts).collect();
@@ -1814,7 +1815,7 @@ pub(crate) fn plan_overviews(metas: &[OverviewClipMeta]) -> Vec<PlannedDrive> {
             admitted += 1;
         }
         if admitted > 0 {
-            timed.sort_by(|a, b| a.ts.cmp(&b.ts));
+            timed.sort_by_key(|a| a.ts);
         }
     }
     if timed.is_empty() {
@@ -2071,8 +2072,8 @@ fn split_by_external_signature(group: Vec<TimedRoute>) -> Vec<Vec<TimedRoute>> {
 // Internal: gear-state splitting
 // ---------------------------------------------------------------------------
 
-/// Split a group of clips into sub-groups when gear state shows a Park period
-/// >= PARK_GAP_SECONDS. Uses GearRuns for sub-clip precision when available,
+/// Split a group of clips into sub-groups when gear state shows a Park
+/// period >= PARK_GAP_SECONDS. Uses GearRuns for sub-clip precision when available,
 /// falls back to clip-level heuristic for legacy data.
 fn split_by_gear_state(group: Vec<TimedRoute>) -> Vec<Vec<TimedRoute>> {
     if group.is_empty() {
@@ -2677,7 +2678,7 @@ pub(crate) fn detect_summon(
     if clips.is_empty() {
         return false;
     }
-    if !(duration_ms > 0) || duration_ms > SUMMON_MAX_DURATION_MS {
+    if duration_ms <= 0 || duration_ms > SUMMON_MAX_DURATION_MS {
         return false;
     }
 
@@ -2936,9 +2937,9 @@ fn build_drive_stats(
         let count = q3 - q1 + 1;
         let mut med_lat: f64 = 0.0;
         let mut med_lng: f64 = 0.0;
-        for i in q1..=q3 {
-            med_lat += all_points[i].lat;
-            med_lng += all_points[i].lng;
+        for p in &all_points[q1..=q3] {
+            med_lat += p.lat;
+            med_lng += p.lng;
         }
         med_lat /= count as f64;
         med_lng /= count as f64;
@@ -2969,6 +2970,7 @@ fn build_drive_stats(
                         all_points[i + 1].lat,
                         all_points[i + 1].lng,
                     ) > MAX_JUMP_M;
+                #[allow(clippy::nonminimal_bool)] // one clause per neighbour case
                 if (has_prev && has_next && far_from_prev && far_from_next)
                     || (!has_prev && far_from_next)
                     || (!has_next && far_from_prev)
@@ -2977,8 +2979,8 @@ fn build_drive_stats(
                 }
             }
             let mut write = 0;
-            for read in 0..n {
-                if !remove[read] {
+            for (read, &removed) in remove.iter().enumerate() {
+                if !removed {
                     if write != read {
                         // Safe to move since we only write to already-processed indices
                         all_points.swap(write, read);
@@ -3008,7 +3010,7 @@ fn build_drive_stats(
 
         if has_sei_speeds {
             let speed = all_points[i].sei_speed as f64;
-            if speed >= 0.0 && speed < 100.0 {
+            if (0.0..100.0).contains(&speed) {
                 speeds_vec.push(speed);
                 if speed > max_speed_mps {
                     max_speed_mps = speed;
@@ -3193,15 +3195,16 @@ fn build_drive_stats(
         }
 
         // Flush pending disengagement at end of drive
-        if pending_disengage && !all_points.is_empty() {
-            if all_points.last().unwrap().gear != GEAR_PARK {
-                fsd_disengagements += 1;
-                fsd_events.push(FsdEvent {
-                    lat: pending_disengage_lat,
-                    lng: pending_disengage_lng,
-                    event_type: "disengagement".to_string(),
-                });
-            }
+        if pending_disengage
+            && !all_points.is_empty()
+            && all_points.last().unwrap().gear != GEAR_PARK
+        {
+            fsd_disengagements += 1;
+            fsd_events.push(FsdEvent {
+                lat: pending_disengage_lat,
+                lng: pending_disengage_lng,
+                event_type: "disengagement".to_string(),
+            });
         }
     }
 
@@ -3880,7 +3883,7 @@ fn group_summary_clips_with_clock<'a>(summaries: &'a [RouteSummary], actual_span
     if timed.is_empty() && event_candidates.is_empty() {
         return Vec::new();
     }
-    timed.sort_by(|a, b| a.timestamp.cmp(&b.timestamp));
+    timed.sort_by_key(|a| a.timestamp);
 
     // Gap-fill admission — see group_clips for the rationale. Clip
     // timestamps come from the filename component (the event-folder name
@@ -3910,7 +3913,7 @@ fn group_summary_clips_with_clock<'a>(summaries: &'a [RouteSummary], actual_span
                     clip_span_ms: CLIP_DURATION_MS,
                 });
             }
-            timed.sort_by(|a, b| a.timestamp.cmp(&b.timestamp));
+            timed.sort_by_key(|a| a.timestamp);
         }
     }
 
@@ -4590,7 +4593,7 @@ fn build_summary_from_aggregates(
         .summary
         .source
         .as_deref()
-        .map_or(true, |s| s.is_empty() || s == "sei");
+        .is_none_or(|s| s.is_empty() || s == "sei");
     let safety_totals = crate::safety::SafetyTotals {
         distance_mi: total_dist_m / calc::M_PER_MILE,
         assisted_mi: assisted_dist_m / calc::M_PER_MILE,
@@ -5333,19 +5336,23 @@ mod tests {
 
     #[test]
     fn test_distance_from_summary_clips_includes_inter_clip_gap() {
-        let mut a1 = RouteAggregates::default();
-        a1.distance_m = 100.0;
-        a1.start_lat = Some(37.0000);
-        a1.start_lng = Some(-122.0000);
-        a1.end_lat = Some(37.0009);
-        a1.end_lng = Some(-122.0000);
+        let a1 = RouteAggregates {
+            distance_m: 100.0,
+            start_lat: Some(37.0000),
+            start_lng: Some(-122.0000),
+            end_lat: Some(37.0009),
+            end_lng: Some(-122.0000),
+            ..Default::default()
+        };
 
-        let mut a2 = RouteAggregates::default();
-        a2.distance_m = 200.0;
-        a2.start_lat = Some(37.0020);
-        a2.start_lng = Some(-122.0000);
-        a2.end_lat = Some(37.0030);
-        a2.end_lng = Some(-122.0000);
+        let a2 = RouteAggregates {
+            distance_m: 200.0,
+            start_lat: Some(37.0020),
+            start_lng: Some(-122.0000),
+            end_lat: Some(37.0030),
+            end_lng: Some(-122.0000),
+            ..Default::default()
+        };
 
         let s1 = RouteSummary {
             file: "/cam/2025-01-15_12-00-00-front.mp4".to_string(),
@@ -5416,8 +5423,7 @@ mod tests {
     /// must sum to 60. Aggregate distance is split across the segments
     /// so the fraction-aware aggregator has something to compare.
     fn clip_with_gear_runs(file: &str, runs: &[(u8, u32)], total_distance_m: f64) -> RouteSummary {
-        let mut a = RouteAggregates::default();
-        a.distance_m = total_distance_m;
+        let a = RouteAggregates { distance_m: total_distance_m, ..Default::default() };
         RouteSummary {
             file: file.to_string(),
             date: "2025-01-15".to_string(),

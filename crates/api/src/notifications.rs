@@ -684,7 +684,18 @@ async fn dispatch_to_providers(
         notification_type,
         archive_total_count: request.archive_total_count,
     };
+    let started_at = std::time::Instant::now();
     let results = sentryusb_notify::send_to_all_with_context(config, &req).await;
+    if let (Some(ntype), Some((_, mobile))) = (notification_type, results.iter().find(|(k, _)| k == "mobile_push")) {
+        crate::push_retry::after_dispatch(crate::push_retry::PendingPush {
+            title: title.to_string(),
+            message: message.to_string(),
+            summary: summary.map(str::to_string),
+            notification_type: ntype.to_string(),
+            type_hint: request.type_hint.clone(),
+            started_at,
+        }, mobile.is_ok(), mobile.as_ref().err().is_some_and(sentryusb_notify::was_never_sent));
+    }
 
     // Build per-provider history results.
     let mut providers: Vec<String> = Vec::with_capacity(results.len());

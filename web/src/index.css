@@ -597,9 +597,17 @@ code, pre, .font-mono {
   background-color: rgba(16, 20, 27, 0.95) !important;
 }
 
-/* Darken only the OSM tile layer; routes, pins, and attribution retain their colors. */
-.map-dark-tiles {
-  filter: invert(1) hue-rotate(180deg) brightness(.75) saturate(.4);
+/* Shown in place of the basemap when the browser has no WebGL2. */
+.leaflet-container .leaflet-control.map-webgl-notice {
+  margin: 0;
+  max-width: calc(100% - 8px);
+  padding: 1px 6px;
+  background: rgba(7, 9, 12, 0.7);
+  color: #aab1c0;
+  font-size: 11px;
+  line-height: 15px;
+  /* Taps reach the map, so the home picker still places a pin there. */
+  pointer-events: none;
 }
 
 /* Dark attribution */
@@ -620,6 +628,15 @@ code, pre, .font-mono {
   max-width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.map-thumbnail .leaflet-control.map-webgl-notice {
+  /* Hover shows the full notice. */
+  pointer-events: auto;
+  font-size: 8px;
+  line-height: 11px;
+  padding: 0 3px;
+  white-space: nowrap;
 }
 
 /* Prevent white tile placeholders during loading */

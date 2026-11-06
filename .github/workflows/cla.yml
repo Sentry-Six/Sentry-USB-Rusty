@@ -14,6 +14,9 @@ permissions:
 
 jobs:
   cla:
+    # PR comments arrive as issue_comment too; a comment on a plain issue has
+    # no PR to check, so skip it rather than fail.
+    if: github.event_name == 'pull_request_target' || github.event.issue.pull_request
     runs-on: ubuntu-latest
     # v2.6.1 declares Node 20, so opt it into GitHub's Node 24 runtime.
     env:
@@ -21,7 +24,6 @@ jobs:
     steps:
       - name: CLA Assistant
         # Let the action handle whitespace-tolerant sign/recheck matching.
-        if: github.event_name == 'pull_request_target' || github.event_name == 'issue_comment'
         uses: contributor-assistant/github-action@v2.6.1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

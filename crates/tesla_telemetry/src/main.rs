@@ -571,6 +571,14 @@ fn should_enter_quiet(
         && !keep_awake_active
 }
 
+/// Whether the sampler should hold the car awake for an archive or nudge.
+/// Active polling keeps the car awake, so the hold only applies when BLE
+/// keep-awake is the user's method. With it off, the car sleeps on the
+/// user's own schedule (another provider, Home Assistant, or none).
+fn keep_awake_hold(requested: bool, ble_keep_awake_enabled: bool) -> bool {
+    requested && ble_keep_awake_enabled
+}
+
 /// Resolve optional charge/sentry readings into the booleans that feed the
 /// Quiet gate.
 ///
@@ -624,6 +632,7 @@ fn should_refresh_parked_awake(observation: CarState, bc_awake: Option<bool>) ->
 ///
 /// Active → Quiet when parked_polls hits the count; Quiet → Active when
 /// user_presence flips NOT_PRESENT → PRESENT.
+#[allow(clippy::too_many_arguments)] // the poll loop's state, borrowed per tick
 async fn tick(
     conn: &Connection,
     held_radio: &mut bool,
@@ -701,11 +710,14 @@ async fn tick(
     let parked_confirmed = *parked_polls >= PARK_CONFIRMATIONS_BEFORE_QUIET;
 
     // A keep-awake in effect — an archive cycle or any nudge loop (web-UI,
-    // drive processing) — must pin us Active. Dropping to sleep-safe
-    // polling mid-archive lets the car sleep, which cuts USB power and
-    // aborts the copy. Self-clears when the work finishes, so it can't
-    // wedge the car permanently awake (see lock::keep_awake_requested).
-    let keep_awake_active = lock::keep_awake_requested();
+    // drive processing) — pins us Active when BLE keep-awake is on.
+    // Dropping to sleep-safe polling mid-archive lets the car sleep, which
+    // cuts USB power and aborts the copy. Self-clears when the work
+    // finishes, so it can't wedge the car permanently awake (see
+    // lock::keep_awake_requested). With BLE keep-awake off, Active polling
+    // would hold the car awake behind the user's back (#280).
+    let keep_awake_active =
+        keep_awake_hold(lock::keep_awake_requested(), cfg.keep_awake_enabled);
 
     // Freshness-filtered gate inputs: a reading older than
     // GATE_READING_MAX_AGE predates a sustained poll outage, so the
@@ -907,7 +919,7 @@ async fn tick(
                         try_sync_clock(d.meta);
                         let shift_changed_to_drive = d
                             .shift_state
-                            .map_or(false, |s| !s.is_park() && s != sample::ShiftState::Unknown);
+                            .is_some_and(|s| !s.is_park() && s != sample::ShiftState::Unknown);
                         // Persist whatever the drive probe got
                         // (location + odometer freshness even
                         // while parked-with-Sentry).
@@ -1499,8 +1511,8 @@ async fn tick(
         // matches.
         // Gate the nudge on the master switch: `BLE_KEEP_AWAKE_ENABLED=no`
         // must stop the CPC dispatch (the bug was the sampler ignoring it).
-        // keep_awake_active still pins the sampler Active above, so archives
-        // complete; this only suppresses holding the CAR awake.
+        // keep_awake_active already folds in the switch (keep_awake_hold);
+        // the explicit check keeps the nudge gate readable on its own.
         if keep_awake_active && cfg.keep_awake_enabled {
             let now = Instant::now();
             let due = next_nudge_due_at.map(|t| now >= t).unwrap_or(true);
@@ -2080,6 +2092,39 @@ mod tests {
     fn moving_car_never_quiets() {
         // Not parked-confirmed and not asleep (e.g. driving).
         assert!(!should_enter_quiet(false, false, false, false, false));
+    }
+
+    #[test]
+    fn archive_lets_parked_car_sleep_when_ble_keep_awake_is_off() {
+        // #280: Car Data on, Keep Awake While Archiving off. An archive is
+        // running, but the sampler must not hold the car awake for it.
+        let keep_awake_active = keep_awake_hold(true, false);
+        assert!(!keep_awake_active);
+        let (actively_charging, sentry_on) =
+            resolve_gate_inputs(false, true, None, None, keep_awake_active);
+        assert!(should_enter_quiet(
+            false,
+            true,
+            actively_charging,
+            sentry_on,
+            keep_awake_active
+        ));
+        // The asleep door (gadget disconnected for a long archive) too.
+        assert!(should_enter_quiet(true, false, false, false, keep_awake_active));
+    }
+
+    #[test]
+    fn archive_still_pins_active_when_ble_keep_awake_is_on() {
+        let keep_awake_active = keep_awake_hold(true, true);
+        assert!(keep_awake_active);
+        assert!(!should_enter_quiet(false, true, false, false, keep_awake_active));
+        assert!(!should_enter_quiet(true, false, false, false, keep_awake_active));
+    }
+
+    #[test]
+    fn no_keep_awake_request_means_no_hold() {
+        assert!(!keep_awake_hold(false, true));
+        assert!(!keep_awake_hold(false, false));
     }
 
     /// A TimedReading backdated by `age` (for expiry tests).

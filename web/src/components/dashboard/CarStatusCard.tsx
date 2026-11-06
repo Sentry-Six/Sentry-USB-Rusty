@@ -14,6 +14,8 @@ import {
 import { BatteryLevelIcon } from "@/components/drives/BatteryLevelIcon"
 import { sendChargingAction } from "@/api/charging"
 import type { TireHistoryResponse } from "./TirePressureCard"
+import { classifyTirePsi, type TireBands } from "@/lib/tireBands"
+import { useUnits } from "@/lib/units"
 import type { CurrentCharge } from "@/types/charging"
 import {
   fmtChargeRateUnit,
@@ -81,27 +83,41 @@ type TireStatus =
   | { kind: "unsafe"; label: string; color: string }
   | { kind: "none"; label: string; color: string }
 
-function deriveTireStatus(sample: CarStatusSample | null): TireStatus {
-  if (!sample) return { kind: "none", label: "—", color: "text-slate-500" }
-  const values = [
-    sample.tire_fl_psi,
-    sample.tire_fr_psi,
-    sample.tire_rl_psi,
-    sample.tire_rr_psi,
-  ].filter((v): v is number => typeof v === "number")
+function deriveTireStatus(values: number[], bands: TireBands): TireStatus {
   if (values.length === 0) {
     return { kind: "none", label: "—", color: "text-slate-500" }
   }
-  // Keep these thresholds aligned with TirePressureCard.
-  const anyUnsafe = values.some((v) => v < 28 || v > 50)
-  if (anyUnsafe) {
+  const classes = values.map((v) => classifyTirePsi(v, bands))
+  if (classes.includes("unsafe")) {
     return { kind: "unsafe", label: "Unsafe", color: "text-rose-400" }
   }
-  const anyWarn = values.some((v) => v < 36 || v > 45)
-  if (anyWarn) {
+  if (classes.includes("check")) {
     return { kind: "check", label: "Check tires", color: "text-amber-400" }
   }
   return { kind: "optimal", label: "Optimal", color: "text-emerald-400" }
+}
+
+const tireValues = (vals: (number | null | undefined)[]) =>
+  vals.filter((v): v is number => typeof v === "number")
+
+// The newest reading per tire in the history, for when the TPMS has gone to
+// sleep and the live sample no longer carries pressures.
+function latestHistoryTires(history: TireHistoryResponse | undefined): { values: number[]; ts: number } | null {
+  if (!history) return null
+  const out: Partial<Record<"fl" | "fr" | "rl" | "rr", number>> = {}
+  let ts = 0
+  for (let i = history.points.length - 1; i >= 0; i--) {
+    const p = history.points[i]
+    for (const k of ["fl", "fr", "rl", "rr"] as const) {
+      if (out[k] === undefined && p[k] !== undefined) {
+        out[k] = p[k]
+        ts = Math.max(ts, p.ts)
+      }
+    }
+    if (Object.keys(out).length === 4) break
+  }
+  const values = tireValues([out.fl, out.fr, out.rl, out.rr])
+  return values.length ? { values, ts } : null
 }
 
 function formatDuration(ms: number): string {
@@ -208,9 +224,18 @@ export function CarStatusCard({
     return formatDuration(delta)
   }, [isDriving, latestDriveEnd, nowMs])
 
-  const tireStatus = deriveTireStatus(sample)
-  const haveTireData =
-    !!tireHistory && tireHistory.points.length > 0 && tireStatus.kind !== "none"
+  const { tireBands } = useUnits()
+  const liveTires = tireValues([sample?.tire_fl_psi, sample?.tire_fr_psi, sample?.tire_rl_psi, sample?.tire_rr_psi])
+  const lastTires = liveTires.length ? null : latestHistoryTires(tireHistory)
+  const tireStatus = deriveTireStatus(liveTires.length ? liveTires : (lastTires?.values ?? []), tireBands)
+  const tireStale =
+    tireStatus.kind === "none"
+      ? null
+      : lastTires
+        ? staleHint((nowMs - lastTires.ts) / 1000)
+        : staleHint(sample?.field_secs_ago?.tires)
+  // The history stays reachable while the TPMS sleeps and the live sample has no pressures.
+  const haveTireData = !!tireHistory && tireHistory.points.length > 0
 
   // Prefer live charging SoC to the last sampled battery value.
   const batterySoc = currentCharge?.soc ?? sample?.battery_pct
@@ -311,11 +336,7 @@ export function CarStatusCard({
           label="Tires"
           value={tireStatus.label}
           valueClass={tireStatus.color}
-          stale={
-            tireStatus.kind === "none"
-              ? null
-              : staleHint(sample?.field_secs_ago?.tires)
-          }
+          stale={tireStale}
           onClick={haveTireData ? () => setTiresOpen((o) => !o) : undefined}
           trailing={
             haveTireData ? (

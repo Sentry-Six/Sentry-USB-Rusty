@@ -100,7 +100,7 @@ fn read_log_tail(name: String) -> Response {
     }
 
     let mut buf = String::new();
-    if let Err(_) = file.read_to_string(&mut buf) {
+    if file.read_to_string(&mut buf).is_err() {
         return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to read log file").into_response();
     }
 

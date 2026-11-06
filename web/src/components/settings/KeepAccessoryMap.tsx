@@ -58,7 +58,7 @@ export function KeepAccessoryMap({
     mapRef.current = map
     map.attributionControl.setPrefix(false)
     map.setMinZoom(2)
-    attachBasemap(map, "dark", { minZoom: 2 })
+    attachBasemap(map, "dark")
     map.setView(center, hasHome ? 16 : 4)
 
     const marker = L.marker(center, { draggable: true, icon: HOME_ICON }).addTo(map)

@@ -346,6 +346,7 @@ fn is_trusted_local_host(authority: &str) -> bool {
 /// Reject cross-site browser requests before they can create, mutate, delete,
 /// or read a support conversation. This remains effective even on installs
 /// where the optional Pi login is disabled.
+#[allow(clippy::result_large_err)] // axum Response errors, returned as-is by handlers
 fn validate_ai_browser_request(
     headers: &HeaderMap,
     require_json: bool,
@@ -423,6 +424,7 @@ fn valid_client_message_id(value: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
 }
 
+#[allow(clippy::result_large_err)] // axum Response errors, returned as-is by handlers
 fn required_string<'a>(
     object: &'a serde_json::Map<String, serde_json::Value>,
     key: &str,
@@ -433,6 +435,7 @@ fn required_string<'a>(
         .ok_or_else(|| bad_request(&format!("{key} must be a string")))
 }
 
+#[allow(clippy::result_large_err)] // axum Response errors, returned as-is by handlers
 fn normalize_ai_json(raw: &[u8], kind: AiJsonKind) -> Result<Vec<u8>, Response> {
     let value: serde_json::Value =
         serde_json::from_slice(raw).map_err(|_| bad_request("Request body must be valid JSON"))?;

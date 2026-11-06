@@ -17,10 +17,13 @@
 
 use std::sync::Arc;
 
+type ProgressFn = dyn Fn(&str) + Send + Sync;
+type PhaseFn = dyn Fn(&str, &str) + Send + Sync;
+
 #[derive(Clone)]
 pub struct SetupEmitter {
-    progress: Arc<dyn Fn(&str) + Send + Sync>,
-    phase: Arc<dyn Fn(&str, &str) + Send + Sync>,
+    progress: Arc<ProgressFn>,
+    phase: Arc<PhaseFn>,
 }
 
 impl SetupEmitter {

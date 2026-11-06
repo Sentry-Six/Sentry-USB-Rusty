@@ -119,6 +119,7 @@ fn fields(value: &Value) -> Result<ChargeMutable> {
     Ok(fields)
 }
 
+#[allow(clippy::too_many_arguments)] // distinct inputs; a parameter struct would only move them
 fn confirm(state: &CloudStateInner, ts: i64, through: i64, id: &str, wrapped: &str,
     uploaded: i64, value: &Value, receipt: Option<(&str,&str)>) -> Result<()> {
     let fields = fields(value)?;
@@ -165,7 +166,7 @@ async fn recover(state: &CloudStateInner, client: &CloudClient, creds: &CloudCre
         && key == receipt_key(binding,pending.session_ts) && pending.proposal.field_merge,
         "pending charging publication identity changed");
     revision::valid_envelope(&pending.proposal.ciphertext,2048,None)?;
-    let mut states=read_states(state,client,creds,binding,&[pending.proposal.id.clone()]).await?;
+    let mut states=read_states(state,client,creds,binding,std::slice::from_ref(&pending.proposal.id)).await?;
     let exact=matches_source(&pending,&states[0]) && matches!(&states[0],Remote::Ok {ciphertext:Some(ct),..} if ct == &pending.proposal.ciphertext);
     if !exact {
         // Version 2 attempts predate server operation receipts and cannot be
@@ -180,7 +181,7 @@ async fn recover(state: &CloudStateInner, client: &CloudClient, creds: &CloudCre
         }
         // A receipt may refer to a save followed by another Cloud edit. Adopt
         // the current document, not the older confirmed proposal's plaintext.
-        states=read_states(state,client,creds,binding,&[pending.proposal.id.clone()]).await?;
+        states=read_states(state,client,creds,binding,std::slice::from_ref(&pending.proposal.id)).await?;
     }
     ensure!(matches_source(&pending,&states[0]),"charging source changed after confirmed publication");
     let Remote::Ok {ciphertext,..}=&states[0] else { unreachable!() };

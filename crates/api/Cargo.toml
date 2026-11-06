@@ -23,7 +23,7 @@ libc = "0.2"
 tokio-stream = "0.1"
 tokio-util = { version = "0.7", features = ["io"] }
 # Direct SQLite access for telemetry sample handlers.
-rusqlite = { version = "0.40", features = ["bundled", "chrono", "blob"] }
+rusqlite = { version = "0.41", features = ["bundled", "chrono", "blob"] }
 
 sentryusb-config = { path = "../config", package = "sentryusb-config" }
 sentryusb-vehicle-profile = { path = "../vehicle_profile", package = "sentryusb-vehicle-profile" }
@@ -45,3 +45,6 @@ tempfile = "3"
 tower = { version = "0.5", features = ["util"] }
 # Test-only ZIP reader for streaming-writer validation.
 zip = { version = "9", default-features = false, features = ["deflate"] }
+
+[lints]
+workspace = true

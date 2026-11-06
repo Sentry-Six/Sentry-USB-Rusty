@@ -472,6 +472,167 @@ function connect_usb_drives_to_host() {
   with_gadget_lock connect_usb_drives_to_host_locked
 }
 
+# Rebuild one missing or empty snapshot TOC per boot, while the drive is
+# still disconnected from the car, so the scan can't compete with its USB
+# I/O. The Pi loses power whenever the car sleeps, and a cut soon after a
+# snapshot can leave its image intact but its TOC missing or zero bytes.
+# Cleanup re-points clips using TOCs only, so such a snapshot's footage
+# would become unreachable once the car's own copy rotates away. Newest
+# first, one per boot, with short caps so the car isn't kept waiting.
+TOC_RECOVERY_DONE=/tmp/.sentryusb-toc-recovery-done
+function recover_one_snapshot_toc () {
+  [ ! -e "$TOC_RECOVERY_DONE" ] || return 0
+  : > "$TOC_RECOVERY_DONE"
+  local snapdir="" d
+  for d in $(ls -d /backingfiles/snapshots/snap-* 2>/dev/null | LC_ALL=C sort -r)
+  do
+    [ -e "$d/snap.bin" ] || continue
+    # Three failed attempts: leave it to normal retention.
+    if [ -e "$d/snap.bin.recover_failed" ] && [ "$(wc -l < "$d/snap.bin.recover_failed")" -ge 3 ]
+    then
+      continue
+    fi
+    if [ ! -e "$d/snap.bin.toc" ] || { [ ! -s "$d/snap.bin.toc" ] && [ ! -e "$d/snap.bin.toc_checked" ]; }
+    then
+      snapdir=$d
+      break
+    fi
+  done
+  [ -n "$snapdir" ] || return 0
+  local name=${snapdir##*/}
+  if grep -q " /tmp/snapshots/$name " /proc/mounts 2>/dev/null
+  then
+    log "snapshot TOC recovery: $name is mounted, skipping this boot"
+    return 0
+  fi
+  local lockfd
+  exec {lockfd}</backingfiles/snapshots || return 0
+  if ! flock -n "$lockfd"
+  then
+    log "snapshot TOC recovery: snapshots are busy, skipping this boot"
+    exec {lockfd}<&-
+    return 0
+  fi
+  log "snapshot TOC recovery: rebuilding the TOC for $name"
+  local mnt ok=false status=0
+  mnt=$(mktemp -d /tmp/toc-recover.XXXXXX)
+  # The car is waiting for its drive, so the scan (15 s) and its cleanup
+  # (4 s) each run under a hard deadline in a worker that holds no locks. A
+  # worker still running at its deadline is killed with everything it
+  # started and the drive is presented anyway: the scan only ever reads a
+  # snapshot image, never the car's live one.
+  run_bounded 15 "$lockfd" scan_snapshot_image "$snapdir" "$mnt" || status=$?
+  if [ "$status" = 0 ]
+  then
+    ok=true
+  elif [ "$status" = 124 ]
+  then
+    log "snapshot TOC recovery: $name took over 15 s; stopping it so the car gets its drive"
+  fi
+  if ! run_bounded 4 "$lockfd" release_scan_mount "$mnt"
+  then
+    log "snapshot TOC recovery: cleanup of $mnt did not finish; leaving it"
+  fi
+  if $ok && [ -s "$snapdir/snap.bin.toc_" ]
+  then
+    # Its clips may have no links yet: mark that before the TOC commits, so
+    # a stop in between can't leave a committed snapshot nobody links.
+    : > "$snapdir/snap.bin.relink_pending" || ok=false
+  fi
+  if $ok && mv "$snapdir/snap.bin.toc_" "$snapdir/snap.bin.toc"
+  then
+    # Remember a genuinely empty image so it isn't rescanned every boot.
+    [ -s "$snapdir/snap.bin.toc" ] || : > "$snapdir/snap.bin.toc_checked"
+    log "snapshot TOC recovery: rebuilt $name ($(wc -l < "$snapdir/snap.bin.toc") files)"
+  else
+    rm -f "$snapdir/snap.bin.toc_"
+    date >> "$snapdir/snap.bin.recover_failed"
+    log "snapshot TOC recovery: could not rebuild $name; will retry next boot"
+  fi
+  exec {lockfd}<&-
+}
+
+# Run "$@" in a subshell that holds neither the snapshot lock (fd $2) nor
+# the gadget lock (fd 209), for at most $1 seconds. Past that, it and
+# everything it started are killed. Returns its status, or 124 if stopped.
+function run_bounded () {
+  local limit=$1 fd=$2 pid ticks=0
+  shift 2
+  (
+    eval "exec $fd<&-"
+    exec 209>&-
+    "$@"
+  ) &
+  pid=$!
+  while kill -0 "$pid" 2>/dev/null && [ "$ticks" -lt $((limit * 2)) ]
+  do
+    sleep 0.5
+    ticks=$((ticks + 1))
+  done
+  if kill -0 "$pid" 2>/dev/null
+  then
+    kill_process_tree "$pid"
+    wait "$pid" 2>/dev/null || true
+    return 124
+  fi
+  wait "$pid"
+}
+
+# Undo a scan's private mount and loop device, then remove the mount point.
+function release_scan_mount () {
+  local mnt=$1
+  if mountpoint -q "$mnt" 2>/dev/null
+  then
+    timeout -k 1 2 umount "$mnt" 2>/dev/null || timeout -k 1 1 umount -l "$mnt" 2>/dev/null || true
+  fi
+  if [ -s "$mnt.loop" ]
+  then
+    timeout -k 1 2 losetup -d "$(cat "$mnt.loop")" 2>/dev/null || true
+  fi
+  rm -f "$mnt.loop"
+  mountpoint -q "$mnt" 2>/dev/null || rmdir "$mnt" 2>/dev/null || true
+}
+
+# Stop a process and everything it started (it can't spawn more while
+# stopped), children first.
+function kill_process_tree () {
+  local child
+  kill -STOP "$1" 2>/dev/null || return 0
+  for child in $(pgrep -P "$1" 2>/dev/null)
+  do
+    kill_process_tree "$child"
+  done
+  kill -KILL "$1" 2>/dev/null || true
+}
+
+# List the files in one snapshot image through a private read-only mount.
+# The loop device is recorded next to the mount point so the caller can
+# clean up if this has to be killed.
+function scan_snapshot_image () {
+  local snapdir=$1 mnt=$2 loopdev rc=1
+  loopdev=$(timeout -k 1 3 losetup -f -P -r --show "$snapdir/snap.bin" 2>/dev/null) || return 1
+  [ -n "$loopdev" ] || return 1
+  echo "$loopdev" > "$mnt.loop"
+  for _ in 1 2 3 4 5 6 7 8 9 10
+  do
+    [ -b "${loopdev}p1" ] && break
+    sleep 0.2
+  done
+  # A mount can land even when its timeout fires, so check rather than trust
+  # the exit status before scanning and cleaning up.
+  timeout -k 1 4 mount -o ro "${loopdev}p1" "$mnt" 2>/dev/null || true
+  if mountpoint -q "$mnt" 2>/dev/null
+  then
+    if timeout -k 1 8 find "$mnt" -type f -printf '%s %P\n' > "$snapdir/snap.bin.toc_"
+    then
+      rc=0
+    fi
+    timeout -k 1 3 umount "$mnt" 2>/dev/null || umount -l "$mnt" 2>/dev/null || true
+  fi
+  timeout -k 1 3 losetup -d "$loopdev" 2>/dev/null && rm -f "$mnt.loop"
+  return "$rc"
+}
+
 function connect_usb_drives_to_host_locked() {
   status_led_archive working 2>/dev/null || true
   clear_archive_status
@@ -519,6 +680,8 @@ function connect_usb_drives_to_host_locked() {
   done
   # Once the car has the drive again, the next period needs a new reclaim.
   rm -f "$EXFAT_RECLAIM_STAMP"
+  # First connect after boot only (its marker lives in /tmp).
+  recover_one_snapshot_toc || log "snapshot TOC recovery failed (exit $?)"
   if /root/bin/enable_gadget.sh; then
     if ! usb_gadget_is_active; then
       log "ERROR: USB enable completed without a bound disk; drive was not presented"
@@ -616,6 +779,12 @@ function ensure_usb_drives_connected_locked () {
   if archive_cancel_requested; then
     # Keep the car's active recording connection intact on a user skip.
     if ! usb_gadget_is_active; then connect_usb_drives_to_host_locked; fi
+    return 0
+  fi
+  # After a failed archive the next attempt is minutes away. Leave a working
+  # drive with the car; user media syncs after the next successful archive.
+  if [ "${ARCHIVE_CYCLE_FAILED:-0}" = 1 ] && usb_gadget_is_active; then
+    log "Archive failed; keeping the car's active USB drive (user media sync waits for a successful archive)"
     return 0
   fi
   if cam_user_media_may_need_sync
@@ -812,6 +981,9 @@ function run_archive_cycle () {
   fi
   ARCHIVE_HOME_RETRY_PENDING=0
   ARCHIVE_CYCLE_FAILED=0
+  ARCHIVE_DEST_FULL=0
+  # Set by archive_teslacam_clips when the rsync backend reports exit 75.
+  ARCHIVE_RSYNC_TIMEOUT=0
   if archive_cancel_requested; then
     archive_cancel_cleanup
   else
@@ -901,6 +1073,60 @@ PY
   rm -f "$response"
 }
 
+# The archive server (or its quota) is full. Retrying can't succeed until
+# someone frees space, so these failures pause automatic retries instead of
+# repeating every few minutes. rsync (cifs, nfs, rsync) reports ENOSPC/EDQUOT
+# in its output; rclone remotes report quota or 507 errors.
+function archive_destination_is_full () {
+  local f
+  for f in /tmp/archive-error.log /tmp/rsynclog; do
+    [ -s "$f" ] || continue
+    if grep -qiE 'No space left on device|Disk quota exceeded|ENOSPC|EDQUOT|Insufficient Storage|quota exceeded|storageQuotaExceeded' "$f"; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+# Remembered across cycles so a full server notifies once, not at every
+# arrival; a repeat goes out at most every 12 hours. A successful archive
+# clears it.
+ARCHIVE_DEST_FULL_MARKER=/mutable/archive_destination_full
+
+function archive_destination_full_notice_due () {
+  [ -e "$ARCHIVE_DEST_FULL_MARKER" ] || return 0
+  [ -z "$(find "$ARCHIVE_DEST_FULL_MARKER" -mmin -720 2>/dev/null)" ]
+}
+
+# After a "destination full" failure: wait for the car to leave (the next
+# arrival tries once more) or for a manual Sync once space has been freed.
+# No timed retries.
+function wait_for_departure_or_manual_sync () {
+  log "Archive destination is full; waiting for departure or a manual sync"
+  local unreachable=0
+  while true; do
+    if [ -e /tmp/archive_is_reachable ] && rm -f -- /tmp/archive_is_reachable; then
+      log "Manual sync requested; retrying the archive"
+      return 0
+    fi
+    if [ -e /tmp/archive_is_unreachable ]; then
+      log "Simulating archive being unreachable."
+      rm -f /tmp/archive_is_unreachable
+      return 0
+    fi
+    if archive_is_reachable; then
+      unreachable=0
+    else
+      unreachable=$((unreachable + 1))
+      if [ "$unreachable" -ge 3 ]; then
+        log "Archive is unreachable."
+        return 0
+      fi
+    fi
+    sleep 1
+  done
+}
+
 function home_archive_retry_pace () {
   # A reachable SMB/NFS port does not mean the mounted share is usable.
   # After a failed transfer, retry without requiring the car to leave home.
@@ -915,6 +1141,10 @@ function home_archive_retry_pace () {
   ARCHIVE_HOME_RETRY_PENDING=1
   log "Archive transfer failed; automatic retry in ${ARCHIVE_HOME_RETRY_DELAY}s"
   local deadline=$((SECONDS + ARCHIVE_HOME_RETRY_DELAY))
+  # A single failed probe on Wi-Fi is not a departure. Treating it as one
+  # cleared the retry state, so every later failed attempt announced itself
+  # as a fresh cycle.
+  local unreachable=0
   while [ "$SECONDS" -lt "$deadline" ]; do
     if travel_mode_active; then
       ARCHIVE_HOME_RETRY_DELAY=0
@@ -934,11 +1164,16 @@ function home_archive_retry_pace () {
         return 0
       fi
     fi
-    if ! archive_is_reachable; then
-      ARCHIVE_HOME_RETRY_DELAY=0
-      ARCHIVE_HOME_RETRY_PENDING=0
-      log "Archive unavailable during retry wait; waiting for reconnection"
-      return 0
+    if archive_is_reachable; then
+      unreachable=0
+    else
+      unreachable=$((unreachable + 1))
+      if [ "$unreachable" -ge 3 ]; then
+        ARCHIVE_HOME_RETRY_DELAY=0
+        ARCHIVE_HOME_RETRY_PENDING=0
+        log "Archive unavailable during retry wait; waiting for reconnection"
+        return 0
+      fi
     fi
     sleep 1
   done
@@ -951,6 +1186,10 @@ function wait_after_archive_cycle () {
     ARCHIVE_HOME_RETRY_DELAY=0
     ARCHIVE_HOME_RETRY_PENDING=0
     wait_for_archive_to_be_unreachable
+  elif [ "${ARCHIVE_DEST_FULL:-0}" = "1" ]; then
+    ARCHIVE_HOME_RETRY_DELAY=0
+    ARCHIVE_HOME_RETRY_PENDING=0
+    wait_for_departure_or_manual_sync
   elif travel_mode_active; then
     ARCHIVE_HOME_RETRY_DELAY=0
     ARCHIVE_HOME_RETRY_PENDING=0
@@ -1021,6 +1260,7 @@ function wifi_cycle () {
 function wait_for_archive_to_be_reachable () {
   log "Waiting for archive to be reachable..."
   local scan_counter=0
+  local -r unreachable_since=$SECONDS
   while true
   do
     if archive_is_reachable
@@ -1028,10 +1268,13 @@ function wait_for_archive_to_be_reachable () {
       log "Archive is reachable."
       break
     fi
-    # A retry can lose its connection just as its delay ends. The next
-    # arrival is a fresh cycle, not another suppressed retry notification.
-    ARCHIVE_HOME_RETRY_DELAY=0
-    ARCHIVE_HOME_RETRY_PENDING=0
+    # After a real absence (the car drove away) the next arrival is a fresh
+    # cycle with normal notifications. A brief Wi-Fi drop between retries is
+    # not, or every failed retry would notify again.
+    if [ $((SECONDS - unreachable_since)) -ge 60 ]; then
+      ARCHIVE_HOME_RETRY_DELAY=0
+      ARCHIVE_HOME_RETRY_PENDING=0
+    fi
     if [ -e /tmp/archive_is_reachable ]
     then
       log "Simulating archive is reachable"
@@ -1935,10 +2178,12 @@ function archive_teslacam_clips () {
     if TRAVEL_MODE_ACTIVE="$travel_active" archive_run_command /root/bin/archive-clips.sh "$overlaymerged" "${sentrylist}" "${triggerdir}" "${triggerlist}"
     then
       message="Archiving completed successfully. "
+      rm -f "$ARCHIVE_DEST_FULL_MARKER" || true
     else
       local arc_exit=$?
       message="Error during archiving (archive-clips.sh exit code $arc_exit). "
       archive_success=false
+      if [ "$arc_exit" = 75 ]; then ARCHIVE_RSYNC_TIMEOUT=1; fi
       if archive_cancel_requested; then
         message="Archiving cancelled by user. "
         log "Archive transfer cancelled by user"
@@ -1959,6 +2204,10 @@ function archive_teslacam_clips () {
         log "--- rsync cmd log (last 10 lines) ---"
         tail -10 /tmp/archive-rsync-cmd.log >> "$LOG_FILE"
         log "--- end rsync cmd log ---"
+      fi
+      if archive_destination_is_full; then
+        ARCHIVE_DEST_FULL=1
+        log "Archive destination is out of space; automatic retries pause until space is freed"
       fi
       fi
     fi
@@ -2035,6 +2284,18 @@ function archive_teslacam_clips () {
     fi
     if archive_cancel_requested; then
       log "Archive cancelled by user; completed transfers recorded, remaining footage preserved"
+    elif [ "${ARCHIVE_DEST_FULL:-0}" = "1" ]; then
+      # One notice per full episode (re-sent at most every 12 hours), even on
+      # a retry: this failure needs the user, and nothing retries on a timer.
+      if archive_destination_full_notice_due; then
+        /root/bin/send-push-message "$NOTIFICATION_TITLE:" \
+          "Archive server is out of space. ${message}. Archiving is paused: free up space on the server, then tap Sync, or it tries again the next time you get home." \
+          finish archive_error "Archive server is full. Archiving is paused until there's space." \
+          || log "failed to send mobile app notification"
+        touch "$ARCHIVE_DEST_FULL_MARKER" || true
+      else
+        log "Archive destination still full: suppressing repeat notification (${message})"
+      fi
     elif [ "${ARCHIVE_RETRY_ATTEMPT:-0}" = "1" ] && [ "$archive_success" = "false" ]; then
       # Still failing on a retry: log it, but don't push a failure
       # notification every minute. The eventual success (or the first
@@ -2364,6 +2625,12 @@ function archive_clips () {
   then
     if travel_mode_active; then
       log "Travel Mode: skipping music sync (would disconnect the USB gadget from the car)"
+    elif [ "$clips_ok" = false ]; then
+      # The link that just failed the clip transfer would likely fail music
+      # too, with the car's drive disconnected the whole time. Music syncs
+      # on the next successful cycle.
+      ARCHIVE_ALL_STAGES_OK=0
+      log "Skipping music sync after failed clip archive; keeping the car's USB drive connected"
     else
       log "Copying music..."
       if copy_music_files
@@ -2391,6 +2658,14 @@ function archive_clips () {
     else
       log "Travel Mode: USB gadget already active; skipping reconnect"
     fi
+  elif [ "$clips_ok" = false ]; then
+    # A retry follows within minutes: don't cycle a working drive for
+    # pending user media; only restore one that is down.
+    if ! usb_gadget_is_active; then
+      log "Archive failed: USB gadget inactive; restoring presentation once"
+      ensure_usb_drives_connected || log "ERROR: failed to restore USB gadget after failed archive"
+    fi
+    archive_transport_recover
   else
     ensure_usb_drives_connected || log "ERROR: failed to ensure USB gadget after archive"
   fi
@@ -2465,7 +2740,9 @@ function snapshotloop {
   do
     sleep "${SNAPSHOT_INTERVAL:-3480}"
     /root/bin/waitforidle || true
-    /root/bin/make_snapshot.sh
+    # A failed snapshot is already logged and keeps its image for recovery;
+    # under errexit it must not take down this worker and its siblings.
+    /root/bin/make_snapshot.sh || log "ERROR: make_snapshot.sh failed (exit $?)"
     # Incrementally process new clips after each snapshot.
     # The processor skips already-processed files, so this is lightweight.
     # Runs in a subshell so the snapshot loop isn't blocked.
@@ -2982,6 +3259,30 @@ function wifi_watchdog_recover {
 }
 
 function wifi_watchdog_attempt {
+  wifi_recovery_guarded wifi_watchdog_recover_recorded
+}
+
+function wifi_watchdog_recover_recorded {
+  wifi_recovery_record || return 1
+  wifi_watchdog_recover
+}
+
+# Start the shared cooldown. Called by a recovery action right before its
+# real command, so an action that decides to skip doesn't block the other
+# path for 10 minutes. Uses runtime/now from wifi_recovery_guarded.
+function wifi_recovery_record {
+  printf '%s\n' "$now" > "$runtime/sentryusb_wifi_watchdog.attempt" || {
+    log 'Wi-Fi watchdog: could not record cooldown; recovery skipped'
+    return 1
+  }
+}
+
+# Run one Wi-Fi recovery action under the shared lock, the boot-scoped
+# 10-minute cooldown and the firmware-operation guard. Both the kernel
+# error watchdog and the archive transport check come through here, so
+# they can never stack resets on each other. The action must call
+# wifi_recovery_record before it changes anything.
+function wifi_recovery_guarded {
   local runtime=${WIFI_WATCHDOG_RUNTIME_DIR:-/run}
   (
     umask 077
@@ -2992,7 +3293,10 @@ function wifi_watchdog_attempt {
       read -r last < "$runtime/sentryusb_wifi_watchdog.attempt" || true
       [[ $last =~ ^[0-9]+$ ]] || last=-600
     fi
-    [ $((now - last)) -ge 600 ] || exit 0
+    if [ $((now - last)) -lt 600 ]; then
+      log 'Wi-Fi recovery skipped: another recovery ran less than 10 minutes ago'
+      exit 0
+    fi
     if grep -q '"state"[[:space:]]*:[[:space:]]*"running"' /mutable/wifi-firmware/state.json 2>/dev/null; then
       updated=$(stat -c %Y /mutable/wifi-firmware/state.json 2>/dev/null) || updated=0
       if [ $(( $(date +%s) - updated )) -lt 900 ]; then
@@ -3000,9 +3304,142 @@ function wifi_watchdog_attempt {
         exit 0
       fi
     fi
-    printf '%s\n' "$now" > "$runtime/sentryusb_wifi_watchdog.attempt" || { log 'Wi-Fi watchdog: could not record cooldown; recovery skipped'; exit 1; }
-    wifi_watchdog_recover
+    "$@"
   ) 9>"$runtime/sentryusb_wifi_watchdog.lock"
+}
+
+# Bounded ping-only check of the rsync server. archive_is_reachable falls
+# back to SSH, which is exactly what is suspect here and could hang.
+function archive_server_pings {
+  timeout -k 1 4 ping -q -c 1 -W 2 "$RSYNC_SERVER" >/dev/null 2>&1
+}
+
+# Fresh non-interactive SSH session to the rsync server, the same kind of
+# session rsync uses. 0 = it answered; 124 = it timed out (the transport is
+# suspect); anything else (auth, host key, refused, DNS) is not a Wi-Fi
+# problem.
+function archive_ssh_probe {
+  local args=(-nT -o BatchMode=yes -o ConnectTimeout=5 -o ControlMaster=no -o ControlPath=none)
+  if [ -n "${RSYNC_SSH_PORT:-}" ]; then args+=(-p "$RSYNC_SSH_PORT"); fi
+  local err=${ARCHIVE_SSH_PROBE_ERR:-/tmp/archive-ssh-probe.err} rc=0
+  LC_ALL=C timeout -k 2 15 ssh "${args[@]}" "$RSYNC_USER@$RSYNC_SERVER" true 2> "$err" || rc=$?
+  # Same timeout forms as rsync_transport_timeout in rsync_archive/archive-clips.sh.
+  if [ "$rc" = 255 ] &&
+     LC_ALL=C grep -Eq '^(Timeout, server [^ ]+ not responding|Read from remote host [^ ]+: Connection timed out|ssh: connect to host [^ ]+ port [0-9]+: Connection timed out|Connection timed out during banner exchange|Connection to [^ ]+ port [0-9]+ timed out)' "$err" 2>/dev/null; then
+    rc=124
+  fi
+  return "$rc"
+}
+
+# Prints "<interface> <connection uuid>" when the route to the archive
+# server runs over a Wi-Fi station that NetworkManager manages. Ethernet,
+# networkd/Armbian and anything ambiguous print nothing and return 1.
+function archive_wifi_station {
+  local addr dev state uuid
+  command -v nmcli >/dev/null 2>&1 || return 1
+  addr=$(getent ahostsv4 "$RSYNC_SERVER" 2>/dev/null | awk 'NR == 1 {print $1}') || true
+  [ -n "$addr" ] || return 1
+  dev=$(ip -4 -o route get "$addr" 2>/dev/null | awk '{for (i = 1; i < NF; i++) if ($i == "dev") {print $(i + 1); exit}}') || true
+  [ -n "$dev" ] && [ "$dev" != ap0 ] || return 1
+  state=$(timeout -k 1 5 nmcli -t -f DEVICE,TYPE,STATE device status 2>/dev/null | awk -F: -v d="$dev" '$1 == d {print $2 ":" $3; exit}') || true
+  [ "$state" = wifi:connected ] || return 1
+  uuid=$(timeout -k 1 5 nmcli -g GENERAL.CON-UUID device show "$dev" 2>/dev/null) || true
+  [[ $uuid =~ ^[0-9a-fA-F-]{36}$ ]] || return 1
+  printf '%s %s\n' "$dev" "$uuid"
+}
+
+# Runs under wifi_recovery_guarded. One same-connection re-activation:
+# NetworkManager tears the station down and associates again, which
+# cleared the stuck traffic class on 2026-11-02 without a reboot. No
+# explicit disconnect (that would block autoconnect if activation failed),
+# no driver reload, and no AP changes.
+function archive_wifi_reconnect {
+  local iface=$1 uuid=$2 rc=0 started
+  archive_wifi_reconnect_allowed "$iface" "$uuid" || return 0
+  WIFI_WATCHDOG_REASON='archive transport stall' wifi_watchdog_capture
+  # State can change while the probe and diagnostics run; check again
+  # right before touching the radio.
+  archive_wifi_reconnect_allowed "$iface" "$uuid" || return 0
+  wifi_recovery_record || return 1
+  log "Archive transport check: server answers ping but not SSH; reconnecting Wi-Fi on $iface"
+  started=$(wifi_watchdog_uptime)
+  timeout -k 2 35 nmcli --wait 30 connection up uuid "$uuid" ifname "$iface" >> "$LOG_FILE" 2>&1 || rc=$?
+  log "Archive transport check: Wi-Fi reconnect finished (exit $rc) after $(( $(wifi_watchdog_uptime) - started ))s"
+  if iw dev ap0 info >/dev/null 2>&1 || away_mode_active; then
+    log 'Archive transport check: Away Mode started during the reconnect; no further Wi-Fi action'
+    return 0
+  fi
+  if archive_ssh_probe; then
+    log 'Archive transport check: SSH answers again; archive throughput unverified until the retry'
+  else
+    log 'Archive transport check: SSH still not answering after the Wi-Fi reconnect'
+  fi
+}
+
+function archive_wifi_reconnect_allowed {
+  local iface=$1 uuid=$2 current
+  # Slow checks first (a few seconds each), quick state checks last, so a
+  # cancel or mode change during them still stops the reconnect.
+  if ! archive_server_pings; then
+    log 'Archive transport check: server no longer answers ping; not reconnecting Wi-Fi'
+    return 1
+  fi
+  current=$(timeout -k 1 5 nmcli -g GENERAL.CON-UUID device show "$iface" 2>/dev/null) || true
+  if [ "$current" != "$uuid" ]; then
+    log "Archive transport check: $iface changed connection; not reconnecting Wi-Fi"
+    return 1
+  fi
+  if archive_cancel_requested || travel_mode_active; then
+    log 'Archive transport check: archive cancelled or Travel Mode started; not reconnecting Wi-Fi'
+    return 1
+  fi
+  if ! usb_gadget_is_active; then
+    log 'Archive transport check: the USB drive is not presented to the car; not reconnecting Wi-Fi'
+    return 1
+  fi
+  if iw dev ap0 info >/dev/null 2>&1 || away_mode_active; then
+    log 'Archive transport check: Away Mode hotspot is active; not reconnecting Wi-Fi'
+    return 1
+  fi
+}
+
+# After an rsync clip transfer ended on a connection timeout (exit 75):
+# tell a stuck Wi-Fi link apart from a slow or stuck server, and reconnect
+# Wi-Fi only for the former. The failed cycle stays failed; the usual retry
+# pacing runs the next transfer.
+function archive_transport_recover {
+  [ "${ARCHIVE_RSYNC_TIMEOUT:-0}" = 1 ] || return 0
+  [ "${ARCHIVE_SYSTEM:-}" = rsync ] || return 0
+  local rc=0 station
+  if archive_cancel_requested || travel_mode_active; then return 0; fi
+  if [ -n "${RSYNC_RSH:-}" ]; then
+    # The probe can't reproduce a custom remote shell's connection.
+    log 'Archive transport check skipped: custom RSYNC_RSH in use'
+    return 0
+  fi
+  if ! usb_gadget_is_active; then
+    log 'Archive transport check skipped: the USB drive is not presented to the car'
+    return 0
+  fi
+  if ! archive_server_pings; then
+    log 'Archive transport check skipped: server does not answer ping'
+    return 0
+  fi
+  archive_ssh_probe || rc=$?
+  case "$rc" in
+    0)
+      log 'Archive transport check: SSH answers; the stall was on the server side, not resetting Wi-Fi'
+      return 0 ;;
+    124) ;;
+    *)
+      log "Archive transport check: SSH failed with exit $rc (not a timeout); not resetting Wi-Fi"
+      return 0 ;;
+  esac
+  if ! station=$(archive_wifi_station); then
+    log 'Archive transport check: SSH timed out, but the route is not a NetworkManager Wi-Fi station; not resetting Wi-Fi'
+    return 0
+  fi
+  wifi_recovery_guarded archive_wifi_reconnect ${station% *} ${station#* } || true
 }
 
 function wifichecker {

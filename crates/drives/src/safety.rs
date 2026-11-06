@@ -306,7 +306,7 @@ pub fn compute_clip_safety(r: &Route) -> ClipSafety {
                     out.night_weighted_ms += (interval_ms as f64 * weight).round() as i64;
                 }
             }
-            if factor_allowed && vc >= SPEEDING_MPS && vc < 100.0 {
+            if factor_allowed && (SPEEDING_MPS..100.0).contains(&vc) {
                 out.speeding_ms += interval_ms;
                 if prefix_idx < out.grace_prefix.len() {
                     out.grace_prefix[prefix_idx].speeding_ms += interval_ms;
@@ -342,7 +342,7 @@ pub fn compute_clip_safety(r: &Route) -> ClipSafety {
                 };
                 in_brake_run = braking_here;
 
-                let turning_here = if lateral < 30.0 && lateral >= ANY_TURN_MPS2 {
+                let turning_here = if (ANY_TURN_MPS2..30.0).contains(&lateral) {
                     out.turn_any_ms += interval_ms;
                     if prefix_idx < out.grace_prefix.len() {
                         out.grace_prefix[prefix_idx].turn_any_ms += interval_ms;
@@ -580,7 +580,7 @@ pub fn mileage_weighted_score(days: &[(f64, f64)]) -> Option<f64> {
 
 /// True when the local wall-clock hour falls in the late-night window.
 pub fn is_night_hour(hour: u32) -> bool {
-    hour >= NIGHT_START_HOUR || hour < NIGHT_END_HOUR
+    !(NIGHT_END_HOUR..NIGHT_START_HOUR).contains(&hour)
 }
 
 #[cfg(test)]
@@ -746,13 +746,9 @@ mod tests {
         let mut r = route_with_speeds(vec![25.0; 61]);
         let mut ax = vec![0.0_f32; 61];
         let mut ay = vec![0.0_f32; 61];
-        for k in 30..33 {
-            ay[k] = 4.0; // stored Tesla SEI: positive Y is deceleration
-        }
+        ay[30..33].fill(4.0); // stored Tesla SEI: positive Y is deceleration
         ay[40] = 1.5; // 0.15 g — denominator only
-        for k in 45..47 {
-            ax[k] = 5.0; // 0.51 g lateral
-        }
+        ax[45..47].fill(5.0); // 0.51 g lateral
         ax[50] = 2.5; // 0.25 g — denominator only
         r.accel_x = ax;
         r.accel_y = ay;

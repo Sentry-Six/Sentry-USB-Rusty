@@ -32,6 +32,8 @@ fn acquire_path(path: &Path, timeout: Duration) -> io::Result<CycleGuard> {
         .read(true)
         .write(true)
         .create(true)
+        // Lock-only file: never truncate a file another process may hold.
+        .truncate(false)
         .open(path)?;
     let deadline = Instant::now() + timeout;
     loop {

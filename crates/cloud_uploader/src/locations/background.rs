@@ -7,7 +7,14 @@ use crate::{credentials_store::UnlockedCreds, state::CloudStateInner};
 
 const PAGE_SIZE: usize = 20;
 const DOWNLOADS_PER_PASS: usize = 4;
+/// Bump when the repair itself changes. A new version gets fresh scan and
+/// checked-record keys and walks every uploaded route again.
+const REPAIR_VERSION: u32 = 3;
+/// How often a finished walk checks, locally, whether another is needed.
 const RESCAN_SECONDS: i64 = 24 * 60 * 60;
+/// A full walk runs at least this often even when nothing local changed,
+/// in case a Cloud-side summary changed or a local change went unnoticed.
+const SAFETY_RESCAN_SECONDS: i64 = 30 * 24 * 60 * 60;
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -18,14 +25,123 @@ struct Scan {
     before: Option<String>,
     resume_at: i64,
 }
+/// Local evidence for the routes a completed walk covered: those uploaded at
+/// or before its watermark, and telemetry recorded by then. Each count only
+/// grows when something appears that could repair one of those routes
+/// (a restored or back-dated route, a location name, a reprocessed route,
+/// or a named telemetry sample); deletions only shrink it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Evidence { routes: i64, names: i64, updated: i64, samples: i64 }
+
+impl Evidence {
+    fn grew_since(&self, base: &Evidence) -> bool {
+        self.routes > base.routes || self.names > base.names || self.updated > base.updated || self.samples > base.samples
+    }
+}
+
+/// The walk in progress. `since` is set for a walk of new uploads only.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WalkStart {
+    repair: u32,
+    #[serde(deserialize_with = "nullable")]
+    since: Option<i64>,
+    watermark: i64,
+    evidence: Evidence,
+}
+
+/// When walks ran, kept beside the scan checkpoint in the drive database's
+/// meta table so a finished walk is not repeated without a reason.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Walks {
+    version: u8,
+    binding: String,
+    /// REPAIR_VERSION of the last completed full walk (0 when none).
+    repair: u32,
+    /// When that full walk completed.
+    full_at: i64,
+    /// Newest `cloud_uploaded_at` covered by the last completed walk.
+    watermark: i64,
+    /// Evidence at that watermark when the walk started.
+    evidence: Evidence,
+    #[serde(deserialize_with = "nullable")]
+    active: Option<WalkStart>,
+}
+
+impl Walks {
+    fn fresh(binding: &str) -> Self {
+        Walks {version:1,binding:binding.into(),repair:0,full_at:0,watermark:0,evidence:Evidence::default(),active:None}
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum Next {
+    /// Nothing relevant changed; check again later without any request.
+    Wait,
+    /// Walk routes uploaded after `since`, or every uploaded route when `None`.
+    Walk { since: Option<i64> },
+}
+
+fn needs_full_walk(walks: &Walks, now: i64) -> bool {
+    walks.repair != REPAIR_VERSION || walks.full_at <= 0
+        // A clock moved far backwards counts as elapsed too.
+        || now.abs_diff(walks.full_at) >= SAFETY_RESCAN_SECONDS.unsigned_abs()
+}
+
+/// Whether to start a walk once the previous one has finished. `current` is
+/// the evidence at the last walk's watermark, needed unless a full walk is
+/// already due. Only a full walk can find repairs for routes it covered
+/// before, so new uploads alone get a walk of just those routes.
+fn decide(walks: &Walks, now: i64, newest_upload: i64, current: Option<&Evidence>) -> Next {
+    match current {
+        _ if needs_full_walk(walks, now) => Next::Walk {since:None},
+        None => Next::Walk {since:None},
+        Some(current) if current.grew_since(&walks.evidence) => Next::Walk {since:None},
+        Some(_) if newest_upload > walks.watermark => Next::Walk {since:Some(walks.watermark)},
+        Some(_) => Next::Wait,
+    }
+}
+
+fn newest_upload(conn: &rusqlite::Connection) -> Result<i64> {
+    // Answered from the partial idx_routes_cloud_uploaded index.
+    Ok(conn.query_row("SELECT COALESCE(MAX(cloud_uploaded_at),0) FROM routes WHERE cloud_uploaded_at > 0", [], |row| row.get(0))?)
+}
+
+fn evidence_at(conn: &rusqlite::Connection, watermark: i64) -> Result<Evidence> {
+    let (routes,names,updated) = conn.query_row(
+        "SELECT COUNT(*),
+                COALESCE(SUM((TRIM(COALESCE(location_name_start,'')) <> '') + (TRIM(COALESCE(location_name_end,'')) <> '')),0),
+                COALESCE(MAX(updated_at),0)
+           FROM routes WHERE cloud_uploaded_at > 0 AND cloud_uploaded_at <= ?1",
+        [watermark], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?)))?;
+    let samples = conn.query_row(
+        "SELECT COUNT(*) FROM telemetry_samples WHERE ts <= ?1 AND TRIM(COALESCE(location_name,'')) <> ''",
+        [watermark], |row| row.get(0))?;
+    Ok(Evidence {routes,names,updated,samples})
+}
+
+fn walk_key(binding: &str) -> String { format!("cloud_summary_walk_v1:{binding}") }
+
+/// An unreadable record only means the next walk is a full one.
+fn load_walks(store: &DriveStore, binding: &str) -> Result<(Option<String>, Walks)> {
+    let raw = store.with_read_conn(|conn| schema::meta_get(conn, &walk_key(binding)))?;
+    let walks = raw.as_deref().filter(|raw| raw.len() <= 4096)
+        .and_then(|raw| serde_json::from_str::<Walks>(raw).ok())
+        .filter(|walks| walks.version == 1 && walks.binding == binding && walks.full_at >= 0 && walks.watermark >= 0)
+        .unwrap_or_else(|| Walks::fresh(binding));
+    Ok((raw, walks))
+}
+
 #[derive(Default)]
 struct Pass { checked: usize, updated: usize, unavailable: usize, failed: usize, downloads: usize, wait_seconds: u64 }
 struct Snapshot { route: Route, readings: Option<LocationReadings>, fingerprint: String }
 
 // A new derived walk revisits summaries for the additional evidence field.
 // Existing uncertain publication/cancellation receipts are still resolved first.
-fn scan_key(binding: &str) -> String { format!("cloud_summary_scan_v3:{binding}") }
-fn checked_key(binding: &str, id: &str) -> String { format!("cloud_summary_checked_v3:{binding}:{id}") }
+fn scan_key(binding: &str) -> String { format!("cloud_summary_scan_v{REPAIR_VERSION}:{binding}") }
+fn checked_key(binding: &str, id: &str) -> String { format!("cloud_summary_checked_v{REPAIR_VERSION}:{binding}:{id}") }
 
 fn load_scan(store: &DriveStore, binding: &str) -> Result<(Option<String>, Scan)> {
     let raw = store.with_read_conn(|conn| schema::meta_get(conn, &scan_key(binding)))?;
@@ -41,27 +157,45 @@ fn load_scan(store: &DriveStore, binding: &str) -> Result<(Option<String>, Scan)
     };
     Ok((raw, scan))
 }
-async fn save_scan(state: &CloudStateInner, creds: &CloudCredentialsV1, expected: Option<&str>, scan: &Scan) -> Result<()> {
+/// Saves the scan checkpoint and the walk record together. The record is
+/// rewritten only when it changed, which is when a walk starts or ends.
+async fn save_scan(state: &CloudStateInner, creds: &CloudCredentialsV1, expected: Option<&str>, scan: &Scan,
+    walks_expected: Option<&str>, walks: &Walks) -> Result<()> {
     let _guard = state.current_credentials(creds).await?;
     state.store.with_durable_conn(|conn| {
         let tx = conn.unchecked_transaction()?;
         let key = scan_key(&scan.binding);
         ensure!(schema::meta_get(&tx, &key)?.as_deref() == expected, "location scan checkpoint changed");
+        let walk = walk_key(&walks.binding);
+        ensure!(schema::meta_get(&tx, &walk)?.as_deref() == walks_expected, "location walk record changed");
         schema::meta_set(&tx, &key, &serde_json::to_string(scan)?)?;
+        let next = serde_json::to_string(walks)?;
+        if walks_expected != Some(next.as_str()) { schema::meta_set(&tx, &walk, &next)?; }
         tx.commit()?; Ok(())
     })
 }
-fn candidates(store: &DriveStore, before: Option<&str>) -> Result<Vec<String>> {
+fn candidates(store: &DriveStore, before: Option<&str>, since: Option<i64>) -> Result<Vec<String>> {
     store.with_read_conn(|conn| {
         // A keyset walk cannot skip rows merely because another file is deleted.
-        // Newer insertions are covered by normal uploads and the next full walk.
-        let files = if let Some(before) = before {
-            let mut stmt = conn.prepare_cached("SELECT file FROM routes WHERE cloud_uploaded_at > 0 AND file < ?1 ORDER BY file DESC LIMIT ?2")?;
-            stmt.query_map(rusqlite::params![before, PAGE_SIZE as i64], |row| row.get::<_,String>(0))?
-                .collect::<rusqlite::Result<Vec<_>>>()?
-        } else {
-            let mut stmt = conn.prepare_cached("SELECT file FROM routes WHERE cloud_uploaded_at > 0 ORDER BY file DESC LIMIT ?1")?;
-            stmt.query_map([PAGE_SIZE as i64], |row| row.get::<_,String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?
+        // Newer insertions are covered by normal uploads and the next walk,
+        // which covers every upload after the watermark taken at this start.
+        let files = match (before, since) {
+            (Some(before), None) => {
+                let mut stmt = conn.prepare_cached("SELECT file FROM routes WHERE cloud_uploaded_at > 0 AND file < ?1 ORDER BY file DESC LIMIT ?2")?;
+                stmt.query_map(rusqlite::params![before, PAGE_SIZE as i64], |row| row.get::<_,String>(0))?
+                    .collect::<rusqlite::Result<Vec<_>>>()?
+            }
+            (None, None) => {
+                let mut stmt = conn.prepare_cached("SELECT file FROM routes WHERE cloud_uploaded_at > 0 ORDER BY file DESC LIMIT ?1")?;
+                stmt.query_map([PAGE_SIZE as i64], |row| row.get::<_,String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?
+            }
+            // New uploads only: selected through the uploaded-routes index.
+            (before, Some(since)) => {
+                let mut stmt = conn.prepare_cached("SELECT file FROM routes WHERE cloud_uploaded_at > 0 AND cloud_uploaded_at > ?1
+                    AND (?2 IS NULL OR file < ?2) ORDER BY file DESC LIMIT ?3")?;
+                stmt.query_map(rusqlite::params![since, before, PAGE_SIZE as i64], |row| row.get::<_,String>(0))?
+                    .collect::<rusqlite::Result<Vec<_>>>()?
+            }
         };
         ensure!(files.iter().all(|file| !file.is_empty() && file.len() <= 4096), "invalid location scan filename");
         Ok(files)
@@ -73,7 +207,7 @@ async fn snapshot(store: Arc<DriveStore>, file: String) -> Result<Option<Snapsho
         ensure!(route.file == file, "location source path changed");
         let (uploaded, id): (Option<i64>,Option<String>) = conn.query_row(
             "SELECT cloud_uploaded_at,cloud_route_id FROM routes WHERE file=?1", [&file], |row| Ok((row.get(0)?,row.get(1)?)))?;
-        if !uploaded.is_some_and(|at| at > 0) {return Ok(None)}
+        if uploaded.is_none_or(|at| at <= 0) {return Ok(None)}
         ensure!(id.is_none_or(|id| id == ids::route_id_from_path(&file)), "local Cloud route identity changed");
         let readings = for_route_on_conn(conn, &route)?;
         let fingerprint = evidence_fingerprint(&route, readings.as_ref())?;
@@ -133,10 +267,37 @@ async fn run_pass(state: &CloudStateInner, creds: &CloudCredentialsV1, token: &[
     let binding = pairing_binding(creds)?;
     let (raw,mut scan) = load_scan(&state.store,&binding)?;
     if scan.resume_at > now { pass.wait_seconds=(scan.resume_at-now) as u64;return Ok(pass) }
-    let files = candidates(&state.store,scan.before.as_deref())?;
+    let (walks_raw,mut walks) = load_walks(&state.store,&binding)?;
+    // A walk begun by another repair version cannot complete this one.
+    if walks.active.is_some_and(|active| active.repair != REPAIR_VERSION) { walks.active=None; }
+    if scan.before.is_none() && walks.active.is_none() {
+        // Between walks: local reads only, no Cloud request.
+        let (newest,current) = state.store.with_read_conn(|conn| {
+            let current = if needs_full_walk(&walks,now) {None} else {Some(evidence_at(conn,walks.watermark)?)};
+            Ok::<_,anyhow::Error>((newest_upload(conn)?,current))
+        })?;
+        match decide(&walks,now,newest,current.as_ref()) {
+            Next::Wait => {
+                // Keep removals in the baseline so later additions still count.
+                if let Some(current) = current { walks.evidence=current; }
+                scan.resume_at=now.saturating_add(RESCAN_SECONDS);pass.wait_seconds=RESCAN_SECONDS as u64;
+                save_scan(state,creds,raw.as_deref(),&scan,walks_raw.as_deref(),&walks).await?;
+                return Ok(pass);
+            }
+            Next::Walk {since} => {
+                let evidence = state.store.with_read_conn(|conn| evidence_at(conn,newest))?;
+                walks.active=Some(WalkStart {repair:REPAIR_VERSION,since,watermark:newest,evidence});
+            }
+        }
+    }
+    let files = candidates(&state.store,scan.before.as_deref(),walks.active.and_then(|active| active.since))?;
     if files.is_empty() {
+        if let Some(done) = walks.active.take() {
+            walks.watermark=done.watermark;walks.evidence=done.evidence;
+            if done.since.is_none() { walks.repair=done.repair;walks.full_at=now; }
+        }
         scan.before=None;scan.resume_at=now.saturating_add(RESCAN_SECONDS);pass.wait_seconds=RESCAN_SECONDS as u64;
-        save_scan(state,creds,raw.as_deref(),&scan).await?;
+        save_scan(state,creds,raw.as_deref(),&scan,walks_raw.as_deref(),&walks).await?;
         return Ok(pass);
     }
     let ids:Vec<_> = files.iter().map(|file|ids::route_id_from_path(file)).collect();
@@ -184,7 +345,7 @@ async fn run_pass(state: &CloudStateInner, creds: &CloudCredentialsV1, token: &[
         }
         pass.checked += 1;scan.before=Some(file.clone());
     }
-    save_scan(state,creds,raw.as_deref(),&scan).await?;
+    save_scan(state,creds,raw.as_deref(),&scan,walks_raw.as_deref(),&walks).await?;
     Ok(pass)
 }
 
@@ -201,7 +362,15 @@ pub(crate) async fn run_loop(state: Arc<CloudStateInner>) {
             Ok(unlocked) => unlocked,
             Err(_) => {delay=300;continue;}
         };
-        match run_pass(&state,&creds,&unlocked.pi_auth_token,&unlocked.pi_key,&client,chrono::Utc::now().timestamp()).await {
+        let result = run_pass(&state,&creds,&unlocked.pi_auth_token,&unlocked.pi_key,&client,chrono::Utc::now().timestamp()).await;
+        // An explicit revoke from any repair request removes this pairing,
+        // even when the pass itself counted it as one failed record.
+        if client.take_remote_revoke() {
+            tracing::warn!("Cloud revoked this Pi during location repair; removing local pairing");
+            state.handle_remote_revoke(&creds).await;
+            delay=60;continue;
+        }
+        match result {
             Ok(pass) => {
                 delay=pass.wait_seconds.clamp(15,900);
                 if pass.updated > 0 || pass.failed > 0 {
@@ -210,7 +379,7 @@ pub(crate) async fn run_loop(state: Arc<CloudStateInner>) {
                 }
             }
             Err(_) => {
-                // Normal upload/tag sync handles revoked credentials and rekeys.
+                // Revokes are handled above; the upload sweep handles rekeys.
                 // Do not log source URLs, filenames or decrypted locations here.
                 delay=(delay.max(30)*2).min(900);
                 tracing::warn!("Cloud location repair paused; retry scheduled");
@@ -308,8 +477,10 @@ mod tests {
             Ok(())
         }).unwrap();
     }
+    /// Forces a fresh full walk: no checkpoint and no record of earlier walks.
     fn restart_scan(store: &DriveStore, creds: &CloudCredentialsV1) {
-        store.with_durable_conn(|conn|schema::meta_del(conn,&scan_key(&pairing_binding(creds).unwrap()))).unwrap();
+        let binding=pairing_binding(creds).unwrap();
+        store.with_durable_conn(|conn| {schema::meta_del(conn,&scan_key(&binding))?;schema::meta_del(conn,&walk_key(&binding))}).unwrap();
     }
     fn summary(fake: &Fake, file: &str) -> Value {
         let id=ids::route_id_from_path(file);let records=fake.records.lock().unwrap();let (source,_)=&records[&id];
@@ -324,7 +495,7 @@ mod tests {
         state.store.with_durable_conn(|conn|schema::meta_set(conn,&old_key,&old)).unwrap();
         let (expected,new)=load_scan(&state.store,&binding).unwrap();
         assert!(expected.is_none());assert!(new.before.is_none());assert_eq!(new.resume_at,0);
-        save_scan(&state,&creds,None,&new).await.unwrap();
+        save_scan(&state,&creds,None,&new,None,&Walks::fresh(&binding)).await.unwrap();
         assert_eq!(state.store.with_read_conn(|conn|schema::meta_get(conn,&old_key)).unwrap(),Some(old));
         assert!(load_scan(&state.store,&binding).unwrap().0.is_some());
     }
@@ -432,18 +603,121 @@ mod tests {
         current.store.with_locked_conn(|conn|conn.execute("DELETE FROM routes WHERE file=?1",[&files[40]])).unwrap();
         drop(current);
         let current=state(crate::open_test_store(path.to_str().unwrap()).unwrap(),&creds).await;
-        let added=seed(&current.store,&fake,59,true);fake.records.lock().unwrap().clear();
+        // A later upload than the walk's watermark.
+        let added=seed(&current.store,&fake,59,true);crate::db_ext::mark_uploaded(&current.store,&added,2).unwrap();
+        fake.records.lock().unwrap().clear();
         let pass=run_pass(&current,&creds,&[3;32],&[9;32],&fake,200).await.unwrap();assert_eq!(pass.checked,20);
         let pass=run_pass(&current,&creds,&[3;32],&[9;32],&fake,300).await.unwrap();assert_eq!(pass.checked,1);
         let visited:Vec<_>=fake.reads.lock().unwrap().iter().flatten().cloned().collect();
         assert_eq!(visited,files.iter().rev().map(|file|ids::route_id_from_path(file)).collect::<Vec<_>>());
         run_pass(&current,&creds,&[3;32],&[9;32],&fake,400).await.unwrap();
         run_pass(&current,&creds,&[3;32],&[9;32],&fake,400+RESCAN_SECONDS).await.unwrap();
-        assert_eq!(fake.reads.lock().unwrap().last().unwrap()[0],ids::route_id_from_path(&added));
+        // The next walk covers only the route uploaded after the full walk began.
+        assert_eq!(fake.reads.lock().unwrap().last().unwrap(),&vec![ids::route_id_from_path(&added)]);
         let plan=current.store.with_read_conn(|conn| -> Result<Vec<String>> {
             let mut stmt=conn.prepare("EXPLAIN QUERY PLAN SELECT file FROM routes WHERE cloud_uploaded_at > 0 AND file < ?1 ORDER BY file DESC LIMIT ?2")?;
             Ok(stmt.query_map(rusqlite::params![&files[20],20],|row|row.get(3))?.collect::<rusqlite::Result<Vec<_>>>()?)
         }).unwrap();assert!(plan.iter().any(|line|line.contains("SEARCH routes") && line.contains("file<?")),"{plan:?}");
+    }
+    #[test]
+    fn finished_walks_repeat_only_for_a_new_version_new_evidence_new_uploads_or_the_safety_interval() {
+        let base = Evidence {routes:40,names:30,updated:500,samples:7};
+        let done = Walks {repair:REPAIR_VERSION,full_at:1_000,watermark:900,evidence:base,..Walks::fresh("b")};
+        let day = RESCAN_SECONDS;
+        // Nothing changed: no walk, day after day, until the safety interval.
+        for n in 1..30 { assert_eq!(decide(&done,1_000+n*day,900,Some(&base)),Next::Wait,"day {n}"); }
+        assert_eq!(decide(&done,1_000+SAFETY_RESCAN_SECONDS,900,Some(&base)),Next::Walk {since:None});
+        // A clock moved far backwards also gets a full walk.
+        assert_eq!(decide(&done,1_000-SAFETY_RESCAN_SECONDS,900,Some(&base)),Next::Walk {since:None});
+        // Never walked, or walked by another repair version.
+        assert_eq!(decide(&Walks::fresh("b"),1_000,900,None),Next::Walk {since:None});
+        assert_eq!(decide(&Walks {repair:REPAIR_VERSION-1,..done.clone()},1_001,900,Some(&base)),Next::Walk {since:None});
+        assert_eq!(decide(&Walks {repair:REPAIR_VERSION+1,..done.clone()},1_001,900,Some(&base)),Next::Walk {since:None});
+        assert!(needs_full_walk(&Walks {full_at:0,..done.clone()},1_001));
+        // New evidence for already-covered routes needs a full walk.
+        for grown in [Evidence {routes:41,..base},Evidence {names:31,..base},Evidence {updated:501,..base},Evidence {samples:8,..base}] {
+            assert_eq!(decide(&done,1_001,900,Some(&grown)),Next::Walk {since:None},"{grown:?}");
+        }
+        // Even when other counts fell (a deletion), any growth still counts.
+        assert_eq!(decide(&done,1_001,900,Some(&Evidence {routes:30,names:31,..base})),Next::Walk {since:None});
+        // Deletions alone cannot create a repair.
+        assert_eq!(decide(&done,1_001,900,Some(&Evidence {routes:39,names:20,updated:400,samples:0})),Next::Wait);
+        // New uploads only: walk just the routes uploaded after the watermark.
+        assert_eq!(decide(&done,1_001,950,Some(&base)),Next::Walk {since:Some(900)});
+        // New evidence and new uploads together: one full walk covers both.
+        assert_eq!(decide(&done,1_001,950,Some(&Evidence {names:31,..base})),Next::Walk {since:None});
+    }
+    async fn walk_until_idle(state: &CloudStateInner, creds: &CloudCredentialsV1, fake: &Fake, now: i64) -> usize {
+        let before=fake.reads.lock().unwrap().len();
+        for step in 0..40 {
+            run_pass(state,creds,&[3;32],&[9;32],fake,now+step).await.unwrap();
+            let (_,scan)=load_scan(&state.store,&pairing_binding(creds).unwrap()).unwrap();
+            if scan.before.is_none() && scan.resume_at > now+step {break;}
+        }
+        fake.reads.lock().unwrap().len()-before
+    }
+    #[tokio::test]
+    async fn a_finished_walk_sends_no_requests_until_something_relevant_changes() {
+        let creds=creds();let state=state(DriveStore::open_memory().unwrap(),&creds).await;let fake=Fake::default();
+        let files:Vec<_>=(0..25).map(|n|seed(&state.store,&fake,n,false)).collect();
+        let binding=pairing_binding(&creds).unwrap();
+        let start=1_000_000;
+        // Four repair downloads per pass, so the first walk takes several passes.
+        assert!(walk_until_idle(&state,&creds,&fake,start).await >= 2);
+        let (_,walks)=load_walks(&state.store,&binding).unwrap();
+        assert_eq!((walks.repair,walks.watermark,walks.active),(REPAIR_VERSION,1,None));
+        assert!(walks.full_at >= start);
+        // Daily checks for four weeks: local reads only.
+        for day in 1..29 { assert_eq!(walk_until_idle(&state,&creds,&fake,start+day*RESCAN_SECONDS).await,0,"day {day}"); }
+
+        // A new upload: one request covering only that route.
+        let added=seed(&state.store,&fake,40,false);crate::db_ext::mark_uploaded(&state.store,&added,5).unwrap();
+        let day=29*RESCAN_SECONDS;
+        assert_eq!(walk_until_idle(&state,&creds,&fake,start+day).await,1);
+        assert_eq!(fake.reads.lock().unwrap().last().unwrap(),&vec![ids::route_id_from_path(&added)]);
+        let (_,after_delta)=load_walks(&state.store,&binding).unwrap();
+        assert_eq!((after_delta.full_at,after_delta.watermark),(walks.full_at,5));
+        assert_eq!(walk_until_idle(&state,&creds,&fake,start+day+RESCAN_SECONDS).await,0);
+
+        // A location name appearing for an already-covered route: full walk.
+        set_name(&state.store,&files[3],"Library");
+        let day=day+2*RESCAN_SECONDS;
+        assert!(walk_until_idle(&state,&creds,&fake,start+day).await >= 2);
+        assert_eq!(summary(&fake,&files[3])["ls"],"Library");
+        assert_eq!(walk_until_idle(&state,&creds,&fake,start+day+RESCAN_SECONDS).await,0);
+
+        // Thirty days after the last full walk, one more without any change.
+        let (_,walks)=load_walks(&state.store,&binding).unwrap();
+        assert_eq!(walk_until_idle(&state,&creds,&fake,walks.full_at+SAFETY_RESCAN_SECONDS-RESCAN_SECONDS).await,0);
+        assert!(walk_until_idle(&state,&creds,&fake,walks.full_at+SAFETY_RESCAN_SECONDS).await >= 2);
+    }
+    #[tokio::test]
+    async fn new_repair_version_or_unreadable_record_walks_everything_again() {
+        let creds=creds();let state=state(DriveStore::open_memory().unwrap(),&creds).await;let fake=Fake::default();
+        for n in 0..3 {seed(&state.store,&fake,n,false);}
+        let binding=pairing_binding(&creds).unwrap();
+        assert_eq!(walk_until_idle(&state,&creds,&fake,100).await,1);
+        assert_eq!(walk_until_idle(&state,&creds,&fake,100+RESCAN_SECONDS).await,0);
+        let (_,walks)=load_walks(&state.store,&binding).unwrap();
+        let older=serde_json::to_string(&Walks {repair:REPAIR_VERSION-1,..walks}).unwrap();
+        state.store.with_durable_conn(|conn|schema::meta_set(conn,&walk_key(&binding),&older)).unwrap();
+        assert_eq!(walk_until_idle(&state,&creds,&fake,100+2*RESCAN_SECONDS).await,1);
+        let (_,walks)=load_walks(&state.store,&binding).unwrap();
+        assert_eq!(walks.repair,REPAIR_VERSION);assert!(walks.full_at >= 100+2*RESCAN_SECONDS);
+        state.store.with_durable_conn(|conn|schema::meta_set(conn,&walk_key(&binding),"{not json")).unwrap();
+        // The previous walk finished a step after it began; check after its next due time.
+        assert_eq!(walk_until_idle(&state,&creds,&fake,110+3*RESCAN_SECONDS).await,1);
+        assert_eq!(load_walks(&state.store,&binding).unwrap().1.repair,REPAIR_VERSION);
+    }
+    #[test]
+    fn new_upload_walk_reads_through_the_uploaded_routes_index() {
+        let store=DriveStore::open_memory().unwrap();
+        let plan=store.with_read_conn(|conn| -> Result<Vec<String>> {
+            let mut stmt=conn.prepare("EXPLAIN QUERY PLAN SELECT file FROM routes WHERE cloud_uploaded_at > 0 AND cloud_uploaded_at > ?1
+                AND (?2 IS NULL OR file < ?2) ORDER BY file DESC LIMIT ?3")?;
+            Ok(stmt.query_map(rusqlite::params![5,Option::<String>::None,20],|row|row.get(3))?.collect::<rusqlite::Result<Vec<_>>>()?)
+        }).unwrap();
+        assert!(plan.iter().any(|line| line.contains("idx_routes_cloud_uploaded")),"{plan:?}");
     }
     #[tokio::test]
     async fn failed_scan_checkpoint_retries_without_republishing_confirmed_summaries() {

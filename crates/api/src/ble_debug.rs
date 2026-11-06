@@ -773,8 +773,8 @@ fn mask_vin_line(line: &str) -> String {
     format!("{}=\"{}\"", parts[0], masked)
 }
 
-/// Same as write_sample_db but a 1-hour window with per-source counts
-/// + per-10-minute bucket breakdown so a tester can see where the
+/// Same as write_sample_db but a 1-hour window with per-source counts +
+/// per-10-minute bucket breakdown so a tester can see where the
 /// gap was if the link dropped mid-bundle window.
 async fn write_sample_db_extended(out: &mut String, s: &AppState, now: i64) {
     let store = s.drives.store.clone();

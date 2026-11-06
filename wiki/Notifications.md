@@ -130,8 +130,8 @@ Generic — POSTs a JSON payload to any URL. Useful for Home Assistant, n8n, Nod
 |-------|---------|
 | Webhook URL | `http://homeassistant.local:8123/api/webhook/sentryusb` |
 
-### Mobile App (beta)
-Push notifications to the Sentry USB iOS companion app. Currently in beta. Toggle it on in the wizard if you've installed the app and paired it.
+### Mobile App
+Push notifications to the Sentry Connect app. Turn on **Enable mobile push notifications** in the wizard, then pair your phone under **Notifications → Delivery** and enter the code in the app.
 
 ---
 
@@ -140,9 +140,10 @@ Push notifications to the Sentry USB iOS companion app. Currently in beta. Toggl
 The **Send Test** action for the paired mobile app sends a Sentry Connect test
 notification. It does not test the other configured providers. Their delivery
 results appear in notification history when an enabled event is sent.
-# Automatic stable updates
 
-Settings → Device → Update Preferences includes **Automatically install stable updates**.
+## Automatic stable updates
+
+Settings → Device → Update Preferences includes **Install stable updates automatically**.
 It is off by default. When enabled, installation is considered only after an archive
 cycle transfers new footage and all configured follow-up work finishes successfully.
 Zero-file, cancelled, interrupted, failed and Travel Mode cycles skip installation.

@@ -46,18 +46,23 @@ If you are unsure which license applies to a file you are editing, check
 This is a Cargo workspace. Common commands from the repo root:
 
 ```bash
-cargo build            # build all crates
-cargo test             # run tests
-cargo fmt --all        # format
-cargo clippy --all-targets --all-features   # lint
+cargo build                       # build all crates
+cargo test --workspace --locked   # run tests
+cargo fmt --all                   # format
+bash check.sh                     # ShellCheck on the runtime scripts
+
+# Lint exactly as CI does (CI pins Rust 1.99.0 for clippy)
+cargo +1.99.0 clippy --workspace --all-targets --locked -- -D warnings
 ```
 
-The web UI lives in `web/` and uses its own toolchain (see `web/package.json`).
+The web UI lives in `web/` and uses its own toolchain (see `web/package.json`):
+`npm ci`, then `npm run lint`, `npm test` and `npm run build`. See
+[BUILD.md](BUILD.md) for details.
 
 ## Pull request guidelines
 
 - Keep changes focused; one logical change per PR.
-- Run `cargo fmt` and `cargo clippy` before submitting.
+- Run `cargo fmt` and the clippy command above before submitting; CI fails on clippy warnings.
 - Describe what the change does and why. Link any related issue.
 - For changes to MIT-derived scripts (see [NOTICE](NOTICE)), note it in the PR
   description so reviewers can preserve the license boundary.

@@ -50,7 +50,7 @@ pub fn read_partitions<R: Read + Seek>(dev: &mut R) -> Result<Vec<GptPartition>>
         let first_lba = u64::from_le_bytes(e[32..40].try_into().unwrap());
         let last_lba = u64::from_le_bytes(e[40..48].try_into().unwrap());
         let name: String = e[56..]
-            .chunks_exact(2)
+            .as_chunks::<2>().0.iter()
             .map(|c| u16::from_le_bytes([c[0], c[1]]))
             .take_while(|&u| u != 0)
             .map(|u| char::from_u32(u as u32).unwrap_or('?'))
