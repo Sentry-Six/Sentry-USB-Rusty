@@ -28,7 +28,7 @@ filter_binary() {
   [ "$2" = --root ] && [ "$3" = "$overlaymerged" ]
   [ "$4" = --input ] && [ "$5" = "$sentrylist" ]
   [ "$6" = --output ] && [ "$7" = "${sentrylist}.driving" ]
-  [ "$8" = --min-speed-mps ] && [ "$9" = "${ARCHIVE_RECENTCLIPS_MIN_SPEED_MPS-0.5}" ]
+  [ "$#" = 7 ]
   [ "$mode" != failure ] || return 1
   printf '%s\n' selected > "$7"
 }
@@ -40,7 +40,6 @@ ARCHIVE_RECENTCLIPS_DRIVING_ONLY=true
 filter_candidates
 [ "$filter_calls" = 1 ]
 [ "$(cat "$sentrylist")" = selected ]
-ARCHIVE_RECENTCLIPS_MIN_SPEED_MPS=2.5
 filter_candidates
 [ "$filter_calls" = 2 ]
 mode=failure

@@ -4,7 +4,6 @@ import { act, createElement } from "react"
 import { renderToStaticMarkup } from "react-dom/server"
 import { Window } from "happy-dom"
 import { ArchiveStep } from "./steps/ArchiveStep.tsx"
-import { archiveSpeedError } from "./archiveSpeed.ts"
 import { ReviewStep } from "./steps/ReviewStep.tsx"
 
 test("Unraid compatibility is opt-in and only shown for SMB", () => {
@@ -62,31 +61,6 @@ test("toggling compatibility sends the setting to Test Connection and supports d
       .find(node => node.textContent.includes("Recent Clips: only while driving"))!.querySelector("input")!
     await act(async () => drivingCheckbox.click())
     assert.equal(data.ARCHIVE_RECENTCLIPS_DRIVING_ONLY, "true")
-    const speedInput = () => container.querySelector('input[type="number"]')!
-    assert.equal(Number(speedInput().getAttribute("value")), 1)
-    await act(async () => {
-      Object.getOwnPropertyDescriptor(win.HTMLInputElement.prototype, "value")!.set!.call(speedInput(), "10")
-      speedInput().dispatchEvent(new win.Event("input", { bubbles: true }))
-    })
-    assert.ok(Math.abs(Number(data.ARCHIVE_RECENTCLIPS_MIN_SPEED_MPS) - 4.4704) < 0.000001)
-    data = { ...data, DRIVE_MAP_UNIT: "km" }
-    await act(async () => render())
-    assert.match(container.textContent, /Speed threshold \(km\/h\)/)
-    assert.equal(Number((speedInput() as HTMLInputElement).value), 16)
-    await act(async () => {
-      Object.getOwnPropertyDescriptor(win.HTMLInputElement.prototype, "value")!.set!.call(speedInput(), "36")
-      speedInput().dispatchEvent(new win.Event("input", { bubbles: true }))
-    })
-    assert.equal(Number(data.ARCHIVE_RECENTCLIPS_MIN_SPEED_MPS), 10)
-    await act(async () => speedInput().focus())
-    await act(async () => {
-      Object.getOwnPropertyDescriptor(win.HTMLInputElement.prototype, "value")!.set!.call(speedInput(), "36.7")
-      speedInput().dispatchEvent(new win.Event("input", { bubbles: true }))
-    })
-    assert.equal((speedInput() as HTMLInputElement).value, "37", "rounds fractional input to a whole speed")
-    assert.equal(Number(data.ARCHIVE_RECENTCLIPS_MIN_SPEED_MPS), 37 / 3.6)
-    await act(async () => speedInput().blur())
-    assert.equal((speedInput() as HTMLInputElement).value, "37", "formats the stored value after editing")
     await act(async () => checkbox().click())
     assert.equal(data.CIFS_NOSERVERINO, "true")
     await act(async () => testButton().click())
@@ -138,17 +112,4 @@ test("driving-only Recent Clips is opt-in, requires Recent Clips, and appears in
       data: { ARCHIVE_RECENTCLIPS_DRIVING_ONLY: "true" }, onChange() {}, onBatchChange() {},
     })), /ARCHIVE_RECENTCLIPS_DRIVING_ONLY.*true/)
   } finally { win.close() }
-})
-
-test("archive speed rejects invalid values and review uses preferred units", () => {
-  for (const value of [undefined, "0", "0.1", "10"]) assert.equal(archiveSpeedError(value), null)
-  for (const value of ["", " ", "-1", "NaN", "Infinity", "1e99", "no"])
-    assert.ok(archiveSpeedError(value))
-  for (const [unit, expected] of [["mi", "22 mph"], ["km", "36 km/h"]]) {
-    const html = renderToStaticMarkup(createElement(ReviewStep, {
-      data: { DRIVE_MAP_UNIT: unit, ARCHIVE_RECENTCLIPS_MIN_SPEED_MPS: "10" },
-      onChange() {}, onBatchChange() {},
-    }))
-    assert.ok(html.includes(expected))
-  }
 })

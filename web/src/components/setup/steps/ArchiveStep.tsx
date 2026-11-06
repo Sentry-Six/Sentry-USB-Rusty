@@ -11,7 +11,6 @@ import type { StepProps } from "../SetupWizard"
 import { SecretInput } from "../SecretInput"
 import { NasSSHKey } from "../NasSSHKey"
 import { rsyncSshPortError } from "../rsyncPort"
-import { ArchiveSpeedInput } from "../ArchiveSpeedInput"
 import { cn } from "@/lib/utils"
 
 const archiveSystems = [
@@ -336,15 +335,9 @@ export function ArchiveStep({ data, onChange }: StepProps) {
                     />
                     <span className="text-sm text-slate-300">Recent Clips: only while driving</span>
                   </label>
-                  <ArchiveSpeedInput
-                    value={data.ARCHIVE_RECENTCLIPS_MIN_SPEED_MPS}
-                    metric={data.DRIVE_MAP_UNIT ? data.DRIVE_MAP_UNIT === "km" : data.TEMPERATURE_UNIT !== "F"}
-                    disabled={(data.ARCHIVE_RECENTCLIPS ?? "true") !== "true" || data.ARCHIVE_RECENTCLIPS_DRIVING_ONLY !== "true"}
-                    onChange={(value) => onChange("ARCHIVE_RECENTCLIPS_MIN_SPEED_MPS", value)}
-                  />
                   <p className="ml-6 text-xs text-slate-500">
-                    Keep all camera angles when embedded metadata shows driving during the clip.
-                    Parked clips and clips without readable metadata are skipped.
+                    Keep all camera angles when gear is Drive, Reverse or Neutral, including stops.
+                    Clips without gear data are kept; Park-only clips are skipped.
                   </p>
                 </>
               )}
