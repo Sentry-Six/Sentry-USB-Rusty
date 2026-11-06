@@ -1,12 +1,11 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1040" height="728" viewBox="0 0 1040 728" role="img" aria-labelledby="title description">
-  <title id="title">Sentry USB status lights: same blink patterns on every supported Pi</title>
-  <desc id="description">Pi 5 alone uses amber, green and red. Pi 4, Zero 2 W and other supported single-colour boards use their activity LED with identical rhythms. Starting: one second on, one second off. Preparing: quarter second on, quarter second off. Waiting: one short flash every three seconds. Connected: two short flashes every three seconds. Camera-disk writes: four tenths on, one tenth off. Attention: mostly on with a brief dark dip every three seconds. Bars show six seconds; bright means on. Animations stop when reduced motion is requested.</desc>
+<svg xmlns="http://www.w3.org/2000/svg" width="640" height="792" viewBox="0 0 640 792" role="img" aria-labelledby="title description">
+  <title id="title">Sentry USB status light: a quick guide</title>
+  <desc id="description">Two short flashes every three seconds means connected. Fast pulses with brief dark gaps mean recent storage writes, not proof of saved video. One flash means waiting for USB. Slow even blinking means starting; fast even blinking means preparing. A mostly lit light with one brief dark dip every three seconds needs attention. Colours are for Pi 5 only; other supported Pis use the same rhythms on their green activity light. Animations stop when reduced motion is requested.</desc>
   <style>
     text { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #f8f4fa; }
-    .secondary { fill: #c3bacb; font-size: 15px; }
-    .heading { font-size: 16px; font-weight: 600; }
-    .state { font-size: 18px; font-weight: 650; }
-    .tick { fill: #b5aabd; font-size: 12px; }
+    .secondary { fill: #c3bacb; font-size: 19px; }
+    .state { font-size: 25px; font-weight: 650; }
+    .colour { fill: #c3bacb; font-size: 15px; }
     .led { animation-timing-function: steps(1, end); animation-iteration-count: infinite; }
     .starting { animation-name: half; animation-duration: 2s; }
     .preparing { animation-name: half; animation-duration: .5s; }
@@ -21,149 +20,76 @@
     @keyframes attention { 0% { opacity: 1; } 93.333333%, 100% { opacity: 0; } }
     @media (prefers-reduced-motion: reduce) { .led { animation: none; opacity: 1; } }
   </style>
-  <rect width="1040" height="728" rx="16" fill="#211c26"/>
-  <text x="32" y="48" font-size="28" font-weight="700">Know what your Sentry USB is doing</text>
-  <text x="32" y="77" class="secondary">Read the rhythm on every Pi. The different colours are for Pi 5 only.</text>
-  <path d="M32 100H1008" stroke="#453b4e"/>
-  <text x="32" y="130" class="heading">Status</text>
-  <text x="394" y="126" class="heading" text-anchor="middle">Pi 5</text>
-  <text x="394" y="146" class="tick" text-anchor="middle">Colour + rhythm</text>
-  <text x="528" y="126" class="heading" text-anchor="middle">Other Pis</text>
-  <text x="528" y="146" class="tick" text-anchor="middle">Same rhythm</text>
-  <text x="628" y="126" class="heading">Rhythm over 6 seconds</text>
-  <text x="628" y="146" class="tick">Bright = on · dark = off</text>
-  <!-- Starting Sentry USB: 1 s on / 1 s off. -->
-  <g id="starting">
-    <text x="32" y="194" class="state">Starting Sentry USB</text>
-    <text x="32" y="218" class="secondary">1 s on / 1 s off</text>
-    <circle cx="394" cy="192" r="16" fill="#463c4f" stroke="#5b4e66"/>
-    <circle cx="394" cy="192" r="16" fill="#efb85f" class="led starting"/>
-    <text x="394" y="225" class="tick" text-anchor="middle">Amber</text>
-    <circle cx="528" cy="192" r="16" fill="#463c4f" stroke="#5b4e66"/>
-    <circle cx="528" cy="192" r="16" fill="#83cf79" class="led starting"/>
-    <text x="528" y="225" class="tick" text-anchor="middle">Activity light</text>
-    <rect x="628" y="184" width="380" height="16" rx="2" fill="#463c4f"/>
-    <rect x="628.000" y="184" width="63.333" height="16" fill="#e1d9e7"/>
-    <rect x="754.667" y="184" width="63.333" height="16" fill="#e1d9e7"/>
-    <rect x="881.333" y="184" width="63.333" height="16" fill="#e1d9e7"/>
-    <text x="628" y="221" class="tick">0 s</text>
-    <text x="818" y="221" class="tick" text-anchor="middle">3 s</text>
-    <text x="1008" y="221" class="tick" text-anchor="end">6 s</text>
-  </g>
-  <path d="M32 245H1008" stroke="#352c3d"/>
-  <!-- Preparing / busy: 250 ms on / 250 ms off. -->
-  <g id="preparing">
-    <text x="32" y="276" class="state">Preparing / busy</text>
-    <text x="32" y="300" class="secondary">250 ms on / 250 ms off</text>
-    <circle cx="394" cy="274" r="16" fill="#463c4f" stroke="#5b4e66"/>
-    <circle cx="394" cy="274" r="16" fill="#efb85f" class="led preparing"/>
-    <text x="394" y="307" class="tick" text-anchor="middle">Amber</text>
-    <circle cx="528" cy="274" r="16" fill="#463c4f" stroke="#5b4e66"/>
-    <circle cx="528" cy="274" r="16" fill="#83cf79" class="led preparing"/>
-    <text x="528" y="307" class="tick" text-anchor="middle">Activity light</text>
-    <rect x="628" y="266" width="380" height="16" rx="2" fill="#463c4f"/>
-    <rect x="628.000" y="266" width="15.833" height="16" fill="#e1d9e7"/>
-    <rect x="659.667" y="266" width="15.833" height="16" fill="#e1d9e7"/>
-    <rect x="691.333" y="266" width="15.833" height="16" fill="#e1d9e7"/>
-    <rect x="723.000" y="266" width="15.833" height="16" fill="#e1d9e7"/>
-    <rect x="754.667" y="266" width="15.833" height="16" fill="#e1d9e7"/>
-    <rect x="786.333" y="266" width="15.833" height="16" fill="#e1d9e7"/>
-    <rect x="818.000" y="266" width="15.833" height="16" fill="#e1d9e7"/>
-    <rect x="849.667" y="266" width="15.833" height="16" fill="#e1d9e7"/>
-    <rect x="881.333" y="266" width="15.833" height="16" fill="#e1d9e7"/>
-    <rect x="913.000" y="266" width="15.833" height="16" fill="#e1d9e7"/>
-    <rect x="944.667" y="266" width="15.833" height="16" fill="#e1d9e7"/>
-    <rect x="976.333" y="266" width="15.833" height="16" fill="#e1d9e7"/>
-    <text x="628" y="303" class="tick">0 s</text>
-    <text x="818" y="303" class="tick" text-anchor="middle">3 s</text>
-    <text x="1008" y="303" class="tick" text-anchor="end">6 s</text>
-  </g>
-  <path d="M32 327H1008" stroke="#352c3d"/>
-  <!-- Ready, waiting for USB: One short flash every 3 s. -->
-  <g id="waiting">
-    <text x="32" y="358" class="state">Ready, waiting for USB</text>
-    <text x="32" y="382" class="secondary">One short flash every 3 s</text>
-    <circle cx="394" cy="356" r="16" fill="#463c4f" stroke="#5b4e66"/>
-    <circle cx="394" cy="356" r="16" fill="#83cf79" class="led waiting"/>
-    <text x="394" y="389" class="tick" text-anchor="middle">Green</text>
-    <circle cx="528" cy="356" r="16" fill="#463c4f" stroke="#5b4e66"/>
-    <circle cx="528" cy="356" r="16" fill="#83cf79" class="led waiting"/>
-    <text x="528" y="389" class="tick" text-anchor="middle">Activity light</text>
-    <rect x="628" y="348" width="380" height="16" rx="2" fill="#463c4f"/>
-    <rect x="628.000" y="348" width="6.333" height="16" fill="#e1d9e7"/>
-    <rect x="818.000" y="348" width="6.333" height="16" fill="#e1d9e7"/>
-    <text x="628" y="385" class="tick">0 s</text>
-    <text x="818" y="385" class="tick" text-anchor="middle">3 s</text>
-    <text x="1008" y="385" class="tick" text-anchor="end">6 s</text>
-  </g>
-  <path d="M32 409H1008" stroke="#352c3d"/>
-  <!-- Connected over USB: Two short flashes every 3 s. -->
-  <rect x="16" y="410" width="1008" height="80" rx="8" fill="#392f43"/>
+  <rect width="640" height="792" rx="16" fill="#211c26"/>
+  <text x="24" y="43" font-size="30" font-weight="700">Sentry USB status light</text>
+  <text x="24" y="75" font-size="18" fill="#c3bacb">Colours on Pi 5 only. Same rhythms on other Pis.</text>
+  <path d="M24 96H616" stroke="#453b4e"/>
+  <text x="24" y="130" font-size="18" font-weight="600">Look for the rhythm</text>
+  <text x="454" y="125" font-size="18" font-weight="600" text-anchor="middle">Pi 5</text>
+  <text x="565" y="125" font-size="18" font-weight="600" text-anchor="middle">Other Pis</text>
+  <text x="565" y="145" font-size="13" text-anchor="middle" fill="#c3bacb">Pi 4 / Zero / 3A+</text>
   <g id="connected">
-    <text x="32" y="440" class="state">Connected over USB</text>
-    <text x="32" y="464" class="secondary">Two short flashes every 3 s</text>
-    <circle cx="394" cy="438" r="16" fill="#463c4f" stroke="#5b4e66"/>
-    <circle cx="394" cy="438" r="16" fill="#83cf79" class="led connected"/>
-    <text x="394" y="471" class="tick" text-anchor="middle">Green</text>
-    <circle cx="528" cy="438" r="16" fill="#463c4f" stroke="#5b4e66"/>
-    <circle cx="528" cy="438" r="16" fill="#83cf79" class="led connected"/>
-    <text x="528" y="471" class="tick" text-anchor="middle">Activity light</text>
-    <rect x="628" y="430" width="380" height="16" rx="2" fill="#463c4f"/>
-    <rect x="628.000" y="430" width="6.333" height="16" fill="#e1d9e7"/>
-    <rect x="643.833" y="430" width="6.333" height="16" fill="#e1d9e7"/>
-    <rect x="818.000" y="430" width="6.333" height="16" fill="#e1d9e7"/>
-    <rect x="833.833" y="430" width="6.333" height="16" fill="#e1d9e7"/>
-    <text x="628" y="467" class="tick">0 s</text>
-    <text x="818" y="467" class="tick" text-anchor="middle">3 s</text>
-    <text x="1008" y="467" class="tick" text-anchor="end">6 s</text>
+    <rect x="12" y="156" width="616" height="83" rx="10" fill="#303b32"/>
+    <text x="24" y="185" class="state">Connected</text>
+    <text x="24" y="212" class="secondary">2 short flashes, then a pause</text>
+    <circle cx="454" cy="190" r="18" fill="#463c4f" stroke="#5b4e66"/>
+    <circle cx="454" cy="190" r="18" fill="#83cf79" class="led connected"/>
+    <text x="454" y="224" class="colour" text-anchor="middle">Green</text>
+    <circle cx="565" cy="190" r="18" fill="#463c4f" stroke="#5b4e66"/>
+    <circle cx="565" cy="190" r="18" fill="#83cf79" class="led connected"/>
   </g>
-  <path d="M32 491H1008" stroke="#352c3d"/>
-  <!-- Camera-disk writes: 400 ms on / 100 ms off. -->
+  <path d="M24 239H616" stroke="#352c3d"/>
   <g id="writing">
-    <text x="32" y="522" class="state">Camera-disk writes</text>
-    <text x="32" y="546" class="secondary">400 ms on / 100 ms off</text>
-    <circle cx="394" cy="520" r="16" fill="#463c4f" stroke="#5b4e66"/>
-    <circle cx="394" cy="520" r="16" fill="#83cf79" class="led writing"/>
-    <text x="394" y="553" class="tick" text-anchor="middle">Green</text>
-    <circle cx="528" cy="520" r="16" fill="#463c4f" stroke="#5b4e66"/>
-    <circle cx="528" cy="520" r="16" fill="#83cf79" class="led writing"/>
-    <text x="528" y="553" class="tick" text-anchor="middle">Activity light</text>
-    <rect x="628" y="512" width="380" height="16" rx="2" fill="#463c4f"/>
-    <rect x="628.000" y="512" width="25.333" height="16" fill="#e1d9e7"/>
-    <rect x="659.667" y="512" width="25.333" height="16" fill="#e1d9e7"/>
-    <rect x="691.333" y="512" width="25.333" height="16" fill="#e1d9e7"/>
-    <rect x="723.000" y="512" width="25.333" height="16" fill="#e1d9e7"/>
-    <rect x="754.667" y="512" width="25.333" height="16" fill="#e1d9e7"/>
-    <rect x="786.333" y="512" width="25.333" height="16" fill="#e1d9e7"/>
-    <rect x="818.000" y="512" width="25.333" height="16" fill="#e1d9e7"/>
-    <rect x="849.667" y="512" width="25.333" height="16" fill="#e1d9e7"/>
-    <rect x="881.333" y="512" width="25.333" height="16" fill="#e1d9e7"/>
-    <rect x="913.000" y="512" width="25.333" height="16" fill="#e1d9e7"/>
-    <rect x="944.667" y="512" width="25.333" height="16" fill="#e1d9e7"/>
-    <rect x="976.333" y="512" width="25.333" height="16" fill="#e1d9e7"/>
-    <text x="628" y="549" class="tick">0 s</text>
-    <text x="818" y="549" class="tick" text-anchor="middle">3 s</text>
-    <text x="1008" y="549" class="tick" text-anchor="end">6 s</text>
+    <text x="24" y="277" class="state">Storage writes</text>
+    <text x="24" y="304" class="secondary">Fast pulses, mostly lit</text>
+    <circle cx="454" cy="282" r="18" fill="#463c4f" stroke="#5b4e66"/>
+    <circle cx="454" cy="282" r="18" fill="#83cf79" class="led writing"/>
+    <text x="454" y="316" class="colour" text-anchor="middle">Green</text>
+    <circle cx="565" cy="282" r="18" fill="#463c4f" stroke="#5b4e66"/>
+    <circle cx="565" cy="282" r="18" fill="#83cf79" class="led writing"/>
   </g>
-  <path d="M32 573H1008" stroke="#352c3d"/>
-  <!-- Needs attention: Mostly on / brief dark dip every 3 s. -->
+  <path d="M24 331H616" stroke="#352c3d"/>
+  <g id="waiting">
+    <text x="24" y="369" class="state">Waiting for USB</text>
+    <text x="24" y="396" class="secondary">1 short flash, then a pause</text>
+    <circle cx="454" cy="374" r="18" fill="#463c4f" stroke="#5b4e66"/>
+    <circle cx="454" cy="374" r="18" fill="#83cf79" class="led waiting"/>
+    <text x="454" y="408" class="colour" text-anchor="middle">Green</text>
+    <circle cx="565" cy="374" r="18" fill="#463c4f" stroke="#5b4e66"/>
+    <circle cx="565" cy="374" r="18" fill="#83cf79" class="led waiting"/>
+  </g>
+  <path d="M24 423H616" stroke="#352c3d"/>
+  <g id="starting">
+    <text x="24" y="461" class="state">Starting</text>
+    <text x="24" y="488" class="secondary">Slow, even blinking</text>
+    <circle cx="454" cy="466" r="18" fill="#463c4f" stroke="#5b4e66"/>
+    <circle cx="454" cy="466" r="18" fill="#efb85f" class="led starting"/>
+    <text x="454" y="500" class="colour" text-anchor="middle">Amber</text>
+    <circle cx="565" cy="466" r="18" fill="#463c4f" stroke="#5b4e66"/>
+    <circle cx="565" cy="466" r="18" fill="#83cf79" class="led starting"/>
+  </g>
+  <path d="M24 515H616" stroke="#352c3d"/>
+  <g id="preparing">
+    <text x="24" y="553" class="state">Preparing</text>
+    <text x="24" y="580" class="secondary">Fast, even blinking</text>
+    <circle cx="454" cy="558" r="18" fill="#463c4f" stroke="#5b4e66"/>
+    <circle cx="454" cy="558" r="18" fill="#efb85f" class="led preparing"/>
+    <text x="454" y="592" class="colour" text-anchor="middle">Amber</text>
+    <circle cx="565" cy="558" r="18" fill="#463c4f" stroke="#5b4e66"/>
+    <circle cx="565" cy="558" r="18" fill="#83cf79" class="led preparing"/>
+  </g>
+  <path d="M24 607H616" stroke="#352c3d"/>
   <g id="attention">
-    <text x="32" y="604" class="state">Needs attention</text>
-    <text x="32" y="628" class="secondary">Mostly on / brief dark dip every 3 s</text>
-    <circle cx="394" cy="602" r="16" fill="#463c4f" stroke="#5b4e66"/>
-    <circle cx="394" cy="602" r="16" fill="#ff8088" class="led attention"/>
-    <text x="394" y="635" class="tick" text-anchor="middle">Red</text>
-    <circle cx="528" cy="602" r="16" fill="#463c4f" stroke="#5b4e66"/>
-    <circle cx="528" cy="602" r="16" fill="#83cf79" class="led attention"/>
-    <text x="528" y="635" class="tick" text-anchor="middle">Activity light</text>
-    <rect x="628" y="594" width="380" height="16" rx="2" fill="#463c4f"/>
-    <rect x="628.000" y="594" width="177.333" height="16" fill="#e1d9e7"/>
-    <rect x="818.000" y="594" width="177.333" height="16" fill="#e1d9e7"/>
-    <text x="628" y="631" class="tick">0 s</text>
-    <text x="818" y="631" class="tick" text-anchor="middle">3 s</text>
-    <text x="1008" y="631" class="tick" text-anchor="end">6 s</text>
+    <text x="24" y="645" class="state">Needs attention</text>
+    <text x="24" y="672" class="secondary">Brief dark dip every 3 s</text>
+    <circle cx="454" cy="650" r="18" fill="#463c4f" stroke="#5b4e66"/>
+    <circle cx="454" cy="650" r="18" fill="#ff8088" class="led attention"/>
+    <text x="454" y="684" class="colour" text-anchor="middle">Red</text>
+    <circle cx="565" cy="650" r="18" fill="#463c4f" stroke="#5b4e66"/>
+    <circle cx="565" cy="650" r="18" fill="#83cf79" class="led attention"/>
   </g>
-  <path d="M32 668H1008" stroke="#453b4e"/>
-  <text x="32" y="696" class="secondary">Pi 4, Pi Zero 2 W and Pi 3A+ use the same rhythms. Any separate power light stays under Pi control.</text>
-  <text x="32" y="718" class="tick">Examples show Sentry USB after Linux boots. Camera-disk activity does not certify valid video footage.</text>
+  <path d="M24 705H616" stroke="#453b4e"/>
+  <text x="24" y="734" font-size="18">Writing: mostly lit. Preparing: equal on/off.</text>
+  <text x="24" y="758" font-size="16" fill="#c3bacb">Writes do not confirm that valid video was saved.</text>
+  <text x="24" y="781" font-size="14" fill="#c3bacb">Examples apply after Sentry USB takes over the LED.</text>
 </svg>

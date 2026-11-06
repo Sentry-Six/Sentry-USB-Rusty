@@ -29,6 +29,7 @@ pub mod support;
 pub mod community;
 pub mod healthcheck;
 pub mod clips;
+pub mod clips_refresh;
 pub mod teslacam_media;
 pub mod preferences;
 pub mod auto_update;

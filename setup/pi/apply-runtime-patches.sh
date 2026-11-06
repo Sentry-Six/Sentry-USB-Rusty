@@ -902,8 +902,11 @@ RCLONEREACH_EOF
 # mid-run. The replacement monitor treats "probe up OR file completed" as
 # alive, kills after ARCHIVE_STALL_GRACE_SECONDS of neither (60s default,
 # 300s absolute ceiling), and scopes the kill to this run's rsync.
+# Both variants rsync with --no-o --no-g --no-perms, so shares that reject
+# chown (common on SMB NAS accounts) do not fail the archive with exit 23.
 # /root/bin scripts are only rewritten at wizard time, so existing
-# installs need this refresh.
+# installs need this refresh; any archive-clips.sh without the
+# MOUNTED_ARCHIVE_CLIPS_V2 marker is replaced.
 #
 # The heredocs below MUST stay byte-identical to
 # run/mounted-archive-monitor.sh, run/cifs_archive/archive-clips.sh and
@@ -919,17 +922,20 @@ apply_mounted_archive_watchdog() {
         log "mounted-watchdog: not applicable"
         return 0
     fi
-    if grep -q 'MOUNTED_ARCHIVE_MONITOR_V1' "$clips" 2>/dev/null \
+    if grep -q 'MOUNTED_ARCHIVE_CLIPS_V2' "$clips" 2>/dev/null \
        && grep -q 'MOUNTED_ARCHIVE_MONITOR_V1' /root/bin/mounted-archive-monitor.sh 2>/dev/null; then
         log "mounted-watchdog: already patched"
         return 0
     fi
 
-    # NFS keeps --no-o --no-g for root-squashed shares; that flag pair is
-    # the only difference between the two variants and identifies which
-    # one is installed.
-    local variant=cifs
-    grep -q -- '--no-o --no-g' "$clips" 2>/dev/null && variant=nfs
+    # Current scripts name their variant on a MOUNTED_ARCHIVE_VARIANT line.
+    # Scripts without it carry --no-o --no-g only in the NFS variant.
+    local variant
+    variant=$(sed -nE 's/^# MOUNTED_ARCHIVE_VARIANT=(cifs|nfs)$/\1/p' "$clips" 2>/dev/null | head -n 1)
+    if [ -z "$variant" ]; then
+        variant=cifs
+        grep -q -- '--no-o --no-g' "$clips" 2>/dev/null && variant=nfs
+    fi
 
     local ro_before=no
     findmnt -no OPTIONS / 2>/dev/null | grep -qE '(^|,)ro(,|$)' && ro_before=yes
@@ -1045,6 +1051,11 @@ MOUNTEDMON_EOF
         cat > "$clips.new" <<'NFSCLIPS_EOF'
 #!/bin/bash -eu
 
+# MOUNTED_ARCHIVE_VARIANT=nfs
+# MOUNTED_ARCHIVE_CLIPS_V2: rsync leaves owner, group and permissions to
+# the share (--no-o --no-g --no-perms), so the share account only needs
+# to create, write, rename and delete files.
+
 # MOUNTED_ARCHIVE_MONITOR_V1: the connection watchdog lives in
 # mounted-archive-monitor.sh (shared with the CIFS variant) and only kills
 # rsync when probes fail AND no file has completed for a grace window —
@@ -1066,7 +1077,6 @@ mkdir -p "$ARCHIVE_MOUNT/$rsynctmp"
 
 while [ -n "${1+x}" ]
 do
-  # Using --no-o --no-g to prevent permission errors on NFS root squashed shares
   # Low I/O + CPU priority so the archive reads never starve the car's
   # dashcam writes on the same disk (see run/rsync_archive/archive-clips.sh
   # for the full rationale; -c2 -n7 not -c3 so progress is guaranteed).
@@ -1090,6 +1100,11 @@ NFSCLIPS_EOF
     else
         cat > "$clips.new" <<'CIFSCLIPS_EOF'
 #!/bin/bash -eu
+
+# MOUNTED_ARCHIVE_VARIANT=cifs
+# MOUNTED_ARCHIVE_CLIPS_V2: rsync leaves owner, group and permissions to
+# the share (--no-o --no-g --no-perms), so the share account only needs
+# to create, write, rename and delete files.
 
 # MOUNTED_ARCHIVE_MONITOR_V1: the connection watchdog lives in
 # mounted-archive-monitor.sh (shared with the NFS variant) and only kills
@@ -1117,7 +1132,7 @@ do
   # for the full rationale; -c2 -n7 not -c3 so progress is guaranteed).
   # --log-file-format contains %b so records are written at the END of each
   # file's transfer — the watchdog counts them as its progress signal.
-  if ! (ionice -c2 -n7 nice -n19 rsync -avhRL --remove-source-files --temp-dir="$rsynctmp" --no-perms --omit-dir-times --stats \
+  if ! (ionice -c2 -n7 nice -n19 rsync -avhRL --no-o --no-g --remove-source-files --temp-dir="$rsynctmp" --no-perms --omit-dir-times --stats \
         --log-file=/tmp/archive-rsync-cmd.log --log-file-format='%i %b %n%L' --ignore-missing-args \
         --files-from="$2" "$1/" "$ARCHIVE_MOUNT" &> /tmp/rsynclog || [[ "$?" = "24" ]] )
   then
@@ -1138,7 +1153,9 @@ CIFSCLIPS_EOF
 
     if ! bash -n /root/bin/mounted-archive-monitor.sh.new 2>/dev/null \
        || ! bash -n "$clips.new" 2>/dev/null \
-       || ! grep -q 'MOUNTED_ARCHIVE_MONITOR_V1' "$clips.new"; then
+       || ! grep -q 'MOUNTED_ARCHIVE_MONITOR_V1' /root/bin/mounted-archive-monitor.sh.new \
+       || ! grep -qx "# MOUNTED_ARCHIVE_VARIANT=$variant" "$clips.new" \
+       || ! grep -q 'MOUNTED_ARCHIVE_CLIPS_V2' "$clips.new"; then
         err "mounted-watchdog: staged script failed verification (disk full? truncated write?)"
         rm -f /root/bin/mounted-archive-monitor.sh.new "$clips.new"
         _mounted_wd_relock
@@ -1148,7 +1165,7 @@ CIFSCLIPS_EOF
     mv /root/bin/mounted-archive-monitor.sh.new /root/bin/mounted-archive-monitor.sh
     mv "$clips.new" "$clips"
     _mounted_wd_relock
-    log "mounted-watchdog: $variant archive-clips.sh refreshed (dual-signal monitor, scoped kill)"
+    log "mounted-watchdog: $variant archive-clips.sh refreshed (dual-signal monitor, scoped kill, share-assigned ownership)"
 }
 
 # ── Rock 4C+ WiFi NVRAM: remove the TX-collapsing AP6256 relink ──────────

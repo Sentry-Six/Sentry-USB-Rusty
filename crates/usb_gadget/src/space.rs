@@ -185,6 +185,20 @@ fn halt_inode_eviction(free_inodes: Option<u64>) {
     );
 }
 
+/// Whether the backing filesystem already meets the targets
+/// [`manage_free_space`] enforces with the default reserve: the block
+/// reserve, and the /mutable inode reserve while /mutable is rw-mounted.
+/// A standing inode stall latch counts as not met. Optional snapshots (the
+/// Clips refresh) start only when this holds, so they never push the Pi
+/// into cleanup; archiveloop's freespacemanager keeps enforcing the rest.
+pub fn meets_default_reserve() -> Result<bool> {
+    let (total, free) = get_space(BACKINGFILES)?;
+    let mutable_inodes = if mutable_rw_mounted() { get_inodes(MUTABLE).ok() } else { None };
+    let ireserve = mutable_inodes.map_or(0, |(t, _)| inode_reserve(t));
+    let stalled = std::path::Path::new(INODE_STALL_LATCH).exists();
+    Ok(!stalled && targets_met(free, default_reserve_bytes(total), mutable_inodes.map(|(_, f)| f), ireserve))
+}
+
 /// Release old snapshots until `free >= reserve`.
 ///
 /// `reserve_bytes` is the caller's target (archiveloop forwards its

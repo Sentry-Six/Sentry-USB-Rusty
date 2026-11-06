@@ -1,7 +1,7 @@
 import { useEffect, useRef } from "react"
 import L from "leaflet"
 import "leaflet/dist/leaflet.css"
-import { MAP_TILES } from "@/lib/mapTiles"
+import { attachBasemap } from "@/lib/mapTiles"
 import { normalizeLon } from "@/lib/geo"
 
 // A CSS divIcon avoids bundled default-marker image URLs.
@@ -57,7 +57,8 @@ export function KeepAccessoryMap({
     const map = L.map(el, { attributionControl: true, zoomControl: true, worldCopyJump: true })
     mapRef.current = map
     map.attributionControl.setPrefix(false)
-    L.tileLayer(MAP_TILES.dark.url, { ...MAP_TILES.dark, minZoom: 2 }).addTo(map)
+    map.setMinZoom(2)
+    attachBasemap(map, "dark", { minZoom: 2 })
     map.setView(center, hasHome ? 16 : 4)
 
     const marker = L.marker(center, { draggable: true, icon: HOME_ICON }).addTo(map)

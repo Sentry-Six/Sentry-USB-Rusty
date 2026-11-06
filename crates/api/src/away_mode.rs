@@ -31,18 +31,45 @@ const FIVE_GHZ_AP_CHANNELS: [u32; 9] = [36, 40, 44, 48, 149, 153, 157, 161, 165]
 enum ApBand {
     /// No band set: the shared radio stays on the home network's channel.
     FollowStation,
+    /// 5 GHz at 80 MHz. With the automatic width a Pi 5 hotspot came up at
+    /// 20 MHz, sometimes off the requested channel or on 2.4 GHz.
+    FiveGhzWide(u32),
+    /// 5 GHz at the automatic width, for radios that refuse 80 MHz.
     FiveGhz(u32),
     TwoPointFourGhz,
 }
 
 /// Bands to try, in order. Connected to home Wi-Fi, the radio can only use
 /// the home network's channel. Away, prefer 5 GHz when the radio offers a
-/// usable channel, with 2.4 GHz as the fallback.
+/// usable channel, first at 80 MHz and then at the automatic width, with
+/// 2.4 GHz as the fallback.
 fn ap_band_plan(station_connected: bool, five_ghz_channel: Option<u32>) -> Vec<ApBand> {
     if station_connected {
         return vec![ApBand::FollowStation];
     }
-    five_ghz_channel.map(ApBand::FiveGhz).into_iter().chain([ApBand::TwoPointFourGhz]).collect()
+    five_ghz_channel
+        .into_iter()
+        .flat_map(|channel| [ApBand::FiveGhzWide(channel), ApBand::FiveGhz(channel)])
+        .chain([ApBand::TwoPointFourGhz])
+        .collect()
+}
+
+/// `802-11-wireless` band, channel and channel-width values for `band`.
+/// Empty values reset a property (NetworkManager rejects channel 0). Only
+/// the 5 GHz steps touch the width: the automatic-width step follows the
+/// 80 MHz one, and 2.4 GHz-only radios never set it.
+fn ap_band_settings(band: ApBand) -> (&'static str, String, Option<&'static str>) {
+    match band {
+        ApBand::FollowStation => ("", String::new(), None),
+        ApBand::FiveGhzWide(channel) => ("a", channel.to_string(), Some("80mhz")),
+        ApBand::FiveGhz(channel) => ("a", channel.to_string(), Some("auto")),
+        ApBand::TwoPointFourGhz => ("bg", String::new(), None),
+    }
+}
+
+/// Whether `plan` may leave a channel width on the profile to reset.
+fn plan_sets_width(plan: &[ApBand]) -> bool {
+    plan.iter().any(|&band| ap_band_settings(band).2.is_some())
 }
 
 /// First of [`FIVE_GHZ_AP_CHANNELS`] that `iw phy <phy> info` lists without
@@ -560,19 +587,28 @@ async fn five_ghz_channel() -> Option<u32> {
 /// root filesystem is read-only, and after a reboot the saved profile (no
 /// band, follow the station) applies again.
 async fn set_ap_band(band: ApBand) -> Result<(), String> {
-    let (band_value, channel) = match band {
-        ApBand::FollowStation => ("".to_string(), 0),
-        ApBand::FiveGhz(channel) => ("a".to_string(), channel),
-        ApBand::TwoPointFourGhz => ("bg".to_string(), 0),
-    };
-    let channel = channel.to_string();
+    let (band_value, channel, width) = ap_band_settings(band);
     sentryusb_shell::run("nmcli", &[
         "con", "modify", "--temporary", AP_PROFILE,
-        "802-11-wireless.band", &band_value, "802-11-wireless.channel", &channel,
+        "802-11-wireless.band", band_value, "802-11-wireless.channel", &channel,
     ])
     .await
-    .map(|_| ())
-    .map_err(|e| format!("setting hotspot band: {e}"))
+    .map_err(|e| format!("setting hotspot band: {e}"))?;
+    let Some(width) = width else { return Ok(()) };
+    match set_ap_width(width).await {
+        Err(e) if matches!(band, ApBand::FiveGhzWide(_)) => Err(format!("setting hotspot channel width: {e}")),
+        _ => Ok(()),
+    }
+}
+
+/// Separate from the band, because NetworkManager before 1.50 has no
+/// channel-width: the 80 MHz step is then skipped, and there is nothing
+/// to reset.
+async fn set_ap_width(width: &str) -> anyhow::Result<String> {
+    sentryusb_shell::run("nmcli", &[
+        "con", "modify", "--temporary", AP_PROFILE, "802-11-wireless.channel-width", width,
+    ])
+    .await
 }
 
 /// Starts the NetworkManager hotspot on the first band in `plan` that works.
@@ -629,6 +665,9 @@ async fn start_ap() -> Result<(), String> {
             if plan != [ApBand::FollowStation] {
                 if let Err(e) = set_ap_band(ApBand::FollowStation).await {
                     warn!("[away-mode] {e}");
+                }
+                if plan_sets_width(&plan) {
+                    let _ = set_ap_width("auto").await;
                 }
             }
             started?;
@@ -1633,9 +1672,33 @@ mod ap_band_tests {
     }
 
     #[test]
-    fn away_tries_5ghz_then_2_4ghz_and_home_follows_the_station() {
+    fn band_settings_reset_with_empty_values_and_widen_only_the_80mhz_step() {
+        assert_eq!(ap_band_settings(ApBand::FollowStation), ("", String::new(), None));
+        assert_eq!(ap_band_settings(ApBand::FiveGhzWide(36)), ("a", "36".into(), Some("80mhz")));
+        assert_eq!(ap_band_settings(ApBand::FiveGhz(36)), ("a", "36".into(), Some("auto")));
+        assert_eq!(ap_band_settings(ApBand::TwoPointFourGhz), ("bg", String::new(), None));
+        assert!(plan_sets_width(&ap_band_plan(false, Some(36))));
+        assert!(!plan_sets_width(&ap_band_plan(true, Some(36))));
+    }
+
+    #[test]
+    fn a_2_4ghz_only_radio_tries_only_2_4ghz_and_never_sets_a_width() {
+        // Pi Zero 2 W, Zero W, Pi 3 Model B: `iw phy` lists no 5 GHz band.
+        let two_four_only = "Wiphy phy0\n\tBand 1:\n\t\tFrequencies:\n\
+            \t\t\t* 2412.0 MHz [1] (20.0 dBm)\n\t\t\t* 2437.0 MHz [6] (20.0 dBm)\n\
+            \t\t\t* 2462.0 MHz [11] (20.0 dBm)\n";
+        let plan = ap_band_plan(false, usable_five_ghz_channel(two_four_only));
+        assert_eq!(plan, vec![ApBand::TwoPointFourGhz]);
+        assert!(!plan_sets_width(&plan));
+    }
+
+    #[test]
+    fn away_tries_5ghz_at_80mhz_then_auto_then_2_4ghz_and_home_follows_the_station() {
         assert_eq!(ap_band_plan(true, Some(36)), vec![ApBand::FollowStation]);
-        assert_eq!(ap_band_plan(false, Some(36)), vec![ApBand::FiveGhz(36), ApBand::TwoPointFourGhz]);
+        assert_eq!(
+            ap_band_plan(false, Some(36)),
+            vec![ApBand::FiveGhzWide(36), ApBand::FiveGhz(36), ApBand::TwoPointFourGhz]
+        );
         assert_eq!(ap_band_plan(false, None), vec![ApBand::TwoPointFourGhz]);
     }
 }

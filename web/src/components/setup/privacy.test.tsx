@@ -63,7 +63,7 @@ function step(dom: Awaited<ReturnType<typeof setup>>, label: string) {
   return dom.win.document.querySelector<HTMLButtonElement>(`[aria-label="${label}"]`)!
 }
 
-for (const header of [false, true]) test(`new default saves only on forward ${header ? 'step-header' : 'Next'} navigation, once`, async () => {
+for (const header of [false, true]) test(`a new installation chooses before ${header ? 'step-header' : 'Next'} navigation and saves once`, async () => {
   const dom = await setup()
   let finishSave: ((response: Response) => void) | undefined
   const writes = mockApi({ write: () => new Promise(resolve => { finishSave = resolve }) })
@@ -71,7 +71,7 @@ for (const header of [false, true]) test(`new default saves only on forward ${he
     await wizard(dom, {}, true)
     const yes = dom.button('Yes, count me')
     const no = dom.button('No thanks')
-    assert.equal(yes.getAttribute('aria-pressed'), 'true')
+    assert.equal(yes.getAttribute('aria-pressed'), 'false')
     assert.equal(no.getAttribute('aria-pressed'), 'false')
     assert.equal(yes.disabled, false)
     assert.equal(no.disabled, false)
@@ -79,9 +79,13 @@ for (const header of [false, true]) test(`new default saves only on forward ${he
     assert.equal(writes.length, 0, 'mounting and reading must never enable reporting')
     assert.equal(dom.win.document.querySelector('details')!.open, false)
     assert.ok(yes.compareDocumentPosition(dom.win.document.querySelector('details')!) & dom.win.Node.DOCUMENT_POSITION_FOLLOWING)
-    assert.match(dom.win.document.body.textContent, /On for new installations when you continue/)
+    assert.match(dom.win.document.body.textContent, /Choose Yes, count me or No thanks to continue/)
     await act(async () => (header ? step(dom, 'Step 3: Network') : dom.button('Next')).click())
-    assert.deepEqual(writes, [{ key: 'analytics_opt_in', value: true, only_if_unset: true }])
+    assert.deepEqual(writes, [], 'continuing without a choice must not save or advance')
+    assert.match(dom.win.document.body.textContent, /Step 2 of 11 · Privacy/)
+    await act(async () => yes.click())
+    await act(async () => (header ? step(dom, 'Step 3: Network') : dom.button('Next')).click())
+    assert.deepEqual(writes, [{ key: 'analytics_opt_in', value: true }])
     assert.match(dom.win.document.body.textContent, /Step 2 of 11 · Privacy/)
     assert.equal(dom.button('Next').disabled, true)
     assert.equal(dom.button('Cancel').disabled, true)
@@ -181,7 +185,7 @@ test('unresolved setup status never briefly selects the new-install default for 
   } finally { await dom.cleanup() }
 })
 
-for (const invalid of [false, true]) test(`${invalid ? 'invalid' : 'failed'} setup status cannot turn on the default and can be retried`, async () => {
+for (const invalid of [false, true]) test(`${invalid ? 'invalid' : 'failed'} setup status selects nothing and can be retried`, async () => {
   const dom = await setup()
   let healthy = false
   const writes = mockApi({ status: async () => healthy ? Response.json({ setup_finished: false }) : invalid ? Response.json({}) : new Response('', { status: 503 }) })
@@ -192,12 +196,13 @@ for (const invalid of [false, true]) test(`${invalid ? 'invalid' : 'failed'} set
     assert.match(dom.win.document.body.textContent, /Couldn't confirm this device/)
     healthy = true
     await act(async () => dom.button('Retry setup status').click())
-    assert.equal(dom.button('Yes, count me').getAttribute('aria-pressed'), 'true')
+    assert.equal(dom.button('Yes, count me').getAttribute('aria-pressed'), 'false')
+    assert.equal(dom.button('Next').disabled, false)
     assert.deepEqual(writes, [])
   } finally { await dom.cleanup() }
 })
 
-test('failed privacy reads do not select or save the default', async () => {
+test('failed privacy reads do not select or save a choice', async () => {
   const dom = await setup()
   let healthy = false
   const writes = mockApi({ read: async () => healthy ? Response.json({ value: null, is_set: false }) : new Response('', { status: 503 }) })
@@ -209,7 +214,7 @@ test('failed privacy reads do not select or save the default', async () => {
     assert.deepEqual(writes, [])
     healthy = true
     await act(async () => dom.button('Reload saved choice').click())
-    assert.equal(dom.button('Yes, count me').getAttribute('aria-pressed'), 'true')
+    assert.equal(dom.button('Yes, count me').getAttribute('aria-pressed'), 'false')
     assert.deepEqual(writes, [])
   } finally { await dom.cleanup() }
 })
@@ -249,30 +254,13 @@ for (const restored of ['false', 'true']) for (const choice of [false, true]) te
   } finally { await dom.cleanup() }
 })
 
-test('a concurrent saved No wins over accepting the displayed default', async () => {
-  const dom = await setup()
-  let value: boolean | null = null
-  const writes = mockApi({
-    read: async () => Response.json({ value, is_set: value !== null }),
-    write: async () => { value = false; return Response.json({ success: true, value: false, is_set: true, applied: false }) },
-  })
-  try {
-    await wizard(dom)
-    await act(async () => dom.button('Next').click())
-    assert.match(dom.win.document.body.textContent, /Step 3 of 11 · Network/)
-    await act(async () => dom.button('Back').click())
-    assert.equal(dom.button('No thanks').getAttribute('aria-pressed'), 'true')
-    assert.deepEqual(writes, [{ key: 'analytics_opt_in', value: true, only_if_unset: true }])
-  } finally { await dom.cleanup() }
-})
-
-for (const conditional of [false, true]) test(`${conditional ? 'default' : 'explicit No'} save failure stays on Privacy and retries without assuming success`, async () => {
+for (const choice of [false, true]) test(`explicit ${choice ? 'Yes' : 'No'} save failure stays on Privacy and retries without assuming success`, async () => {
   const dom = await setup()
   let healthy = false
   const writes = mockApi({ write: async body => healthy ? Response.json({ success: true, value: body.value, is_set: true }) : new Response('', { status: 500 }) })
   try {
     await wizard(dom)
-    if (!conditional) await act(async () => dom.button('No thanks').click())
+    await act(async () => dom.button(choice ? 'Yes, count me' : 'No thanks').click())
     await act(async () => dom.button('Next').click())
     assert.match(dom.win.document.body.textContent, /Step 2 of 11 · Privacy/)
     assert.match(dom.win.document.body.textContent, /Couldn't save preference/)
@@ -282,17 +270,6 @@ for (const conditional of [false, true]) test(`${conditional ? 'default' : 'expl
     assert.equal(writes.length, 2)
     assert.deepEqual(writes[0], writes[1])
     assert.match(dom.win.document.body.textContent, /Step 3 of 11 · Network/)
-  } finally { await dom.cleanup() }
-})
-
-for (const response of [() => new Response('', { status: 409 }), () => Response.json({ success: true, value: null, is_set: true }), () => Response.json({ success: true }), () => Response.json({ success: false, value: true })]) test('an unconfirmed or no-longer-eligible default cannot advance', async () => {
-  const dom = await setup()
-  mockApi({ write: async () => response() })
-  try {
-    await wizard(dom)
-    await act(async () => dom.button('Next').click())
-    assert.match(dom.win.document.body.textContent, /Step 2 of 11 · Privacy/)
-    assert.match(dom.win.document.body.textContent, /Couldn't save preference/)
   } finally { await dom.cleanup() }
 })
 
@@ -359,6 +336,7 @@ test('a stalled privacy save restores navigation after a bounded timeout', async
   }
   try {
     await wizard(dom)
+    await act(async () => dom.button('Yes, count me').click())
     await act(async () => dom.button('Next').click())
     assert.equal(dom.button('Cancel').disabled, true)
     await act(async () => expire!())

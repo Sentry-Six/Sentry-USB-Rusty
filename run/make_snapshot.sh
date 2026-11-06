@@ -260,8 +260,9 @@ function snapshot {
     rm -rf "$newsnapname"
   fi
 
-  # make a copy-on-write snapshot of the current image
-  cp --reflink=always /backingfiles/cam_disk.bin "$newsnapname"
+  # make a copy-on-write snapshot of the current image, at the lowest
+  # best-effort I/O and CPU priority so it yields to the car's USB I/O
+  ionice -c2 -n7 nice -n19 cp --reflink=always /backingfiles/cam_disk.bin "$newsnapname"
   # at this point we have a snapshot of the cam image, which is completely
   # independent of the still in-use image exposed to the car
 

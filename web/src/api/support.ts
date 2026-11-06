@@ -1,4 +1,4 @@
-export const SUPPORT_DISCLOSURE_VERSION = "rusty-ai-support-2026-08-30-device-context"
+export const SUPPORT_DISCLOSURE_VERSION = "rusty-ai-support-2026-10-31-anthropic"
 export const DIAGNOSTIC_CONSENT_VERSION = "diagnostic-upload-v1"
 
 const SUPPORT_API = "/api/support/ai"

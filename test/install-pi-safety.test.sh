@@ -116,6 +116,44 @@ if grep -q 'raw.githubusercontent.com/${REPO}/main/' "$script"; then
   exit 1
 fi
 
+# Optional XFS tool preparation must not break installation when its download
+# fails or times out. Run the real section under errexit without touching the
+# host filesystem or executing a repair.
+awk '/^# Cache compatible XFS tools/{keep=1} /^# Fetch envsetup.sh/{exit} keep' \
+  "$script" > "$tmp/xfs-tool-section.sh"
+for failed in download prepare timeout none; do
+  (
+    set -e
+    load_installer_functions
+    # Used by the sourced section.
+    # shellcheck disable=SC2034
+    SOURCE_REF=v-test
+    # These stubs are invoked by the sourced installer section.
+    # shellcheck disable=SC2329
+    curl() { [ "$failed" != download ]; }
+    # shellcheck disable=SC2329
+    mv() { :; }
+    # shellcheck disable=SC2329
+    chmod() { :; }
+    # shellcheck disable=SC2329
+    timeout() {
+      [ "$*" = '240 python3 /root/bin/xfs-repair-tool.py --cache-persistent' ] || return 99
+      case "$failed" in prepare) return 1 ;; timeout) return 124 ;; esac
+      return 0
+    }
+    # shellcheck disable=SC1091
+    source "$tmp/xfs-tool-section.sh"
+    echo 'installer continued'
+  ) > "$tmp/xfs-tool-$failed.out" 2>&1
+  grep -q 'installer continued' "$tmp/xfs-tool-$failed.out"
+  if [ "$failed" = none ]; then
+    grep -q 'Compatible XFS repair tool prepared' "$tmp/xfs-tool-$failed.out"
+  else
+    grep -q '\[WARN\]' "$tmp/xfs-tool-$failed.out"
+    ! grep -q 'Compatible XFS repair tool prepared' "$tmp/xfs-tool-$failed.out"
+  fi
+done
+
 # A release is a protocol-compatible bundle: every CPU variant gets the main
 # daemon and both native BLE helpers from the same pinned tag.
 (

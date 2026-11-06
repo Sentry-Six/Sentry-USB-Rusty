@@ -870,7 +870,7 @@ function DisclosureGate({ onAcknowledge }: { onAcknowledge: () => void }) {
         </span>
         <h2 className="mt-3 text-base font-semibold text-slate-100">Before you chat</h2>
         <p className="mt-2 text-xs leading-relaxed text-slate-400">
-          This is an online AI assistant. Messages, product/version context, SBC model, selected non-secret support settings, and the Pi connection's public IP for abuse prevention are sent to Sentry Six; relevant content is processed by Ollama Cloud. The support settings are limited to Dashcam Size, Travel Mode flags, archive category toggles, and whether Wraps and Lock Chimes are enabled. Redacted chats may be kept for up to 90 days after the last activity and reviewed by authorized maintainers.
+          This is an online AI assistant. Messages, product/version context, SBC model, selected non-secret support settings, and the Pi connection's public IP for abuse prevention are sent to Sentry Six; relevant content is processed by Anthropic. The support settings are limited to Dashcam Size, Travel Mode flags, archive category toggles, and whether Wraps and Lock Chimes are enabled. Redacted chats are stored on Sentry Six servers in Canada for up to 90 days after the last activity and may be reviewed by authorized maintainers.
         </p>
         <p className="mt-2 text-xs leading-relaxed text-slate-500">
           AI can be wrong and cannot approve refunds or commitments. Do not share secrets, and use a trusted local network because your browser may connect to the Pi over HTTP.
@@ -1210,7 +1210,7 @@ function FileConsentCard({
       <dl className="grid gap-x-3 gap-y-1 border-y border-white/[0.06] bg-black/10 px-3 py-2 text-[10px] sm:grid-cols-[100px_1fr]">
         <dt className="text-slate-500">File</dt><dd className="break-all text-slate-300">{request.fileName} · includes BLE telemetry and recent archiveloop.log · max {formatBytes(Math.min(request.maxBytes, LOCAL_DIAGNOSTIC_HARD_LIMIT))}</dd>
         <dt className="text-slate-500">Destination</dt><dd className="text-slate-300">api.sentry-six.com · Sentry Six support servers</dd>
-        <dt className="text-slate-500">AI processing</dt><dd className="text-slate-300">May be processed by Ollama Cloud for this answer</dd>
+        <dt className="text-slate-500">AI processing</dt><dd className="text-slate-300">May be processed by Anthropic for this answer</dd>
         <dt className="text-slate-500">Retention</dt><dd className="text-slate-300">Deleted within 7 days</dd>
       </dl>
       <div className="px-3 py-2.5">

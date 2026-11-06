@@ -18,6 +18,39 @@ const VERSION_FILE: &str = "/opt/sentryusb/version";
 const MIGRATE_DIR: &str = "/opt/sentryusb";
 const MIGRATE_REPO: &str = "Sentry-Six/Sentry-USB-Rusty";
 const MIGRATE_BRANCH: &str = "main";
+const REPAIR_TOOL_SELECTOR: &str = include_str!("../../../run/xfs-repair-tool.py");
+
+/// Optional upgrade preparation, separate from the required migration's
+/// timeout. This only caches a command; it never starts filesystem repair.
+async fn prepare_upgrade_repair_tool(selector: &str, timeout: Duration) -> bool {
+    match sentryusb_shell::run_with_timeout(
+        timeout, "python3", &["-c", selector, "--cache-persistent"],
+    ).await {
+        Ok(_) => {
+            info!("[migrate] Compatible XFS repair tool prepared for offline recovery");
+            true
+        }
+        Err(error) => {
+            warn!("[migrate] XFS repair tool preparation deferred: {error}. Setup or repair can retry; recovery may need internet access until the tool is cached.");
+            false
+        }
+    }
+}
+
+async fn finish_migration(
+    marker_file: &str,
+    preparation: impl std::future::Future<Output = bool> + Send + 'static,
+) -> bool {
+    if let Err(error) = tokio::fs::write(marker_file, b"migrated\n").await {
+        warn!("[migrate] Failed to write marker {marker_file}: {error}");
+        return false;
+    }
+    // Settle required migration independently. Waiting for an optional
+    // download here would leave an automatic update in `verifying`, so a
+    // restart during that wait could incorrectly mark the update failed.
+    tokio::spawn(preparation);
+    true
+}
 
 pub async fn run_startup_migration() -> bool {
     // Skip in dev mode (no version file, or explicit "dev")
@@ -116,9 +149,16 @@ pub async fn run_startup_migration() -> bool {
                     info!("[migrate] runtime-patches script not present (pre-bootstrap install) — skipping; OTA path will populate it");
                 }
 
+                // Existing installations don't rerun setup after an update.
+                // The migration has made the root card writable, so prepare
+                // the embedded release's tool now, for both update modes.
+                // Startup migration already runs in a background task; the
+                // UI keeps starting, and an unavailable download must not
+                // turn an otherwise successful update into a failed one.
                 let _ = tokio::fs::create_dir_all(MIGRATE_DIR).await;
-                if let Err(e) = tokio::fs::write(&marker_file, b"migrated\n").await {
-                    warn!("[migrate] Failed to write marker {}: {}", marker_file, e);
+                if !finish_migration(&marker_file, prepare_upgrade_repair_tool(
+                    REPAIR_TOOL_SELECTOR, Duration::from_secs(240),
+                )).await {
                     return false;
                 }
                 info!("[migrate] Startup migration complete for {}", current_version);
@@ -601,6 +641,67 @@ rm -f /root/bin/tesla-control /root/bin/tesla-keygen \
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn required_migration_finishes_while_optional_preparation_is_pending() {
+        let nonce = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let root = std::env::temp_dir().join(format!("sentryusb-upgrade-cache-{}-{nonce}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let marker = root.join("migrated");
+        let (release, wait) = tokio::sync::oneshot::channel::<()>();
+        let (finished, mut completion) = tokio::sync::oneshot::channel();
+        let preparation = async move {
+            let _ = wait.await;
+            let _ = finished.send(());
+            false // Even a failed optional download cannot undo completion.
+        };
+        let result = tokio::time::timeout(Duration::from_secs(1),
+            finish_migration(marker.to_str().unwrap(), preparation)).await;
+        assert!(matches!(result, Ok(true)), "optional preparation held required migration completion");
+        assert_eq!(std::fs::read(&marker).unwrap(), b"migrated\n");
+        assert!(matches!(completion.try_recv(), Err(tokio::sync::oneshot::error::TryRecvError::Empty)));
+        release.send(()).unwrap();
+        completion.await.unwrap();
+        assert!(marker.exists());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn failed_migration_marker_does_not_start_optional_preparation() {
+        use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
+        let started = Arc::new(AtomicBool::new(false));
+        let observed = started.clone();
+        let nonce = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let missing = std::env::temp_dir().join(format!("sentryusb-missing-{}-{nonce}/migrated", std::process::id()));
+        assert!(!finish_migration(missing.to_str().unwrap(), async move {
+            observed.store(true, Ordering::SeqCst);
+            true
+        }).await);
+        tokio::task::yield_now().await;
+        assert!(!started.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn upgrade_prepares_persistent_cache_without_requesting_repair() {
+        let selector = "import sys\nassert sys.argv[1:] == ['--cache-persistent'], sys.argv\nprint('prepared')\n";
+        assert!(prepare_upgrade_repair_tool(selector, Duration::from_secs(5)).await);
+    }
+
+    #[tokio::test]
+    async fn upgrade_cache_download_failure_is_nonfatal() {
+        let selector = "import sys\nprint('download unavailable', file=sys.stderr)\nsys.exit(1)\n";
+        assert!(!prepare_upgrade_repair_tool(selector, Duration::from_secs(5)).await);
+        // Failure returns to the migration caller instead of aborting it.
+        assert!(prepare_upgrade_repair_tool("print('retry succeeded')", Duration::from_secs(5)).await);
+    }
+
+    #[tokio::test]
+    async fn upgrade_cache_preparation_has_a_bounded_timeout() {
+        let started = std::time::Instant::now();
+        assert!(!prepare_upgrade_repair_tool("import time; time.sleep(10)", Duration::from_millis(100)).await);
+        assert!(started.elapsed() < Duration::from_secs(3));
+    }
+
     #[test]
     fn automatic_migration_uses_cached_payload_and_preserves_manual_fallback() {
         let automatic = migration_script_for_mode("https://example.invalid/release.tar.gz", "v0.0.0", true);

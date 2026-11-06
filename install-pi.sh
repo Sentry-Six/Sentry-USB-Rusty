@@ -386,6 +386,21 @@ chmod +x /root/bin/disable_gadget.sh
 
 ok "Gadget shims installed at /root/bin/{enable,disable}_gadget.sh"
 
+# Cache compatible XFS tools on the root card for offline recovery. Foreign
+# architecture libraries remain private to this helper, never installed globally.
+if curl -fsSL --max-time 30 "https://raw.githubusercontent.com/${REPO}/${SOURCE_REF}/run/xfs-repair-tool.py" \
+       -o /root/bin/xfs-repair-tool.py.tmp 2>/dev/null; then
+    mv /root/bin/xfs-repair-tool.py.tmp /root/bin/xfs-repair-tool.py
+    chmod +x /root/bin/xfs-repair-tool.py
+    if timeout 240 python3 /root/bin/xfs-repair-tool.py --cache-persistent; then
+        ok "Compatible XFS repair tool prepared"
+    else
+        warn "XFS repair tool preparation deferred; repair may need internet access"
+    fi
+else
+    warn "Could not fetch XFS repair helper; the app can prepare it when repair is requested"
+fi
+
 # Fetch envsetup.sh from the repo. archiveloop sources this at runtime to read
 # /root/sentryusb.conf and export CAM_MOUNT / MUSIC_MOUNT / ARCHIVE_* etc. The
 # pi-gen image build deploys it as part of the image; install-pi.sh users never

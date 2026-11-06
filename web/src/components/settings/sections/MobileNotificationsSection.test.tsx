@@ -78,6 +78,8 @@ test("paired-device failures and malformed responses preserve last good devices"
   globalThis.fetch=async()=>response()
   await act(async()=>root.render(createElement(MobileNotificationsSection)))
   assert.match(container.textContent ?? "",/Test phone/)
+  // Sentry Connect pairs itself; the web UI no longer offers a code to type in.
+  assert.doesNotMatch(container.textContent ?? "",/Generate Code|Expires in|Enter this code/)
   response=()=>Response.json({success:true})
   await act(async()=>button(container,"Refresh").click())
   assert.match(container.textContent ?? "",/invalid paired-device list/)

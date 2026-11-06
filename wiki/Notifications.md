@@ -8,7 +8,7 @@ Sentry USB can send you push notifications when:
 - A keep-awake command fails, or accessory-power automation changes state
 - An update is available or music has been synchronized
 
-Configure providers in the [Setup Wizard](Setup-Wizard-Guide#8-notifications), or anytime later under **Settings** → **Notifications**.
+Configure providers in the [Setup Wizard](Setup-Wizard-Guide#8-notifications), or anytime later on the **Notifications** page → **Delivery** tab (choose which events alert you on the **Events** tab).
 
 You can enable as many providers as you want at once.
 

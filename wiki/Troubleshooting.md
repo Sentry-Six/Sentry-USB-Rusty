@@ -2,6 +2,51 @@
 
 Most install problems fall into a few buckets. If your issue isn't here, ping **[Discord](https://discord.gg/9QZEzVwdnt)** — answers come fast and we'll add common ones to this page over time.
 
+## Storage repair on 32-bit and 64-bit installations
+
+Repair Storage selects its executable from the kernel architecture and the
+executable's ELF header, not the filesystem or the web server's architecture.
+A Pi running a 64-bit ARM kernel with 32-bit userspace uses a private ARM64 XFS
+tool and libraries. The read-only check, normal repair, log-replay retry, and
+confirmed force repair all use the same selected tool, recorded in the repair log.
+
+Setup, the installer, and the first startup migration after an update prepare a
+checksum-verified tool cache on the root card for offline recovery. Existing
+installations do not need to rerun setup or toggle Auto Repair to receive it.
+Compatible native tools and already-verified caches are reused without downloading.
+Update preparation runs in the background and only prepares the tool; it never
+starts a repair. A failed download is logged without failing the update. Setup or
+an actual repair can retry, but offline recovery is not ready until the tool is
+available. If repair must prepare it while the root card is read-only, the temporary
+cache lives in `/run` and disappears on reboot. Repair preparation failure stops
+before storage is disconnected; it does not fall back to a 32-bit tool.
+
+If a writable cache is damaged, preparation moves it to a `.bad-*` directory
+for inspection and rebuilds from checksum-verified packages. Writable preparation
+keeps only the newest quarantined copy and removes older copies under the lock.
+If cleanup fails, it logs a warning without blocking an otherwise valid tool.
+Interrupted downloads can be retried; abandoned `.prepare-*` trees are removed during the
+next locked preparation. Cache reuse checks the full file inventory, hashes,
+and that library symlinks stay inside the private tree. This detects accidental
+damage; it is not protection against someone with root access rewriting both
+the files and their local verification record.
+
+Only one manual or boot-time repair can run in the server at a time. A second
+request returns an already-in-progress message. When automatic repair cannot
+prepare its tool, it still retries on later boots; the matching push notification
+is limited to once per 24 hours while `/mutable` can retain the notice marker.
+A successful repair preflight or a healthy boot clears that notice limit.
+
+The uncommon reported architecture `armv8l` is currently unsupported by the
+selector. It stops before repair rather than assuming ARM64 execution support.
+The normal `armv6l`/`armv7l` paths retain native 32-bit tool selection.
+
+Force repair still requires its existing destructive confirmation or automatic
+force-repair preference. Selecting a compatible executable does not make force
+repair lossless, and a repair-tool failure alone does not prove SSD hardware failure.
+Legacy setup now attempts a normal mount for journal replay and stops with a
+Repair Storage message if mounting fails; it no longer clears the journal itself.
+
 ## Can't reach http://sentryusb.local
 
 The Pi is up but its hostname isn't resolving on your network.
@@ -63,7 +108,7 @@ The Bluetooth keep-awake holds your Tesla awake by talking to the car over BLE. 
 **Try:**
 
 1.  **Logs → Bluetooth** — shows which adapter the daemon picked, connection state, sample-DB counts, and the recent sampler journal lines.
-2.  Click **Download Bluetooth Bundle** on that tab to grab a single text report (full journal, LE params, hciconfig, rfkill, pairing state, dmesg, and the per-minute history) for sharing on Discord — saves a lot of back-and-forth.
+2.  Click **Download bundle** on that tab to grab a single text report (full journal, LE params, hciconfig, rfkill, pairing state, dmesg, and the per-minute history) for sharing on Discord — saves a lot of back-and-forth.
 3.  Re-pair from **Settings → Car & Network → "BLE Pairing"** card: confirm the VIN, click **Re-pair**, stay near the car, and **tap your key card on the center console** when prompted. The pair handler power-cycles the adapter and verifies the link before declaring success.
 4.  Reduce nearby BLE keys before re-pairing — Tesla allows only a few active BLE keys, and phones, watches, and BLE commanders can use them all up and block the Pi from pairing.
 

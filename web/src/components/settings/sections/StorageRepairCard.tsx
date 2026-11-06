@@ -66,12 +66,15 @@ export function StorageRepairCard() {
   const [forceMsg, setForceMsg] = useState<string>("")
   const [doneMsg, setDoneMsg] = useState<string>("")
   const [errorMsg, setErrorMsg] = useState<string>("")
+  const [requestError, setRequestError] = useState("")
+  const [starting, setStarting] = useState(false)
   const [rebooting, setRebooting] = useState(false)
   const [autoRepair, setAutoRepair] = useState(false)
   const [autoForce, setAutoForce] = useState(false)
   const [prefsLoaded, setPrefsLoaded] = useState(false)
   const logRef = useRef<HTMLDivElement>(null)
   const rebootPollRef = useRef<number | null>(null)
+  const pendingMessagesRef = useRef<RepairMsg[] | null>(null)
 
   const refreshHealth = useCallback(() => {
     fetch("/api/storage/health")
@@ -124,26 +127,33 @@ export function StorageRepairCard() {
     }).catch(() => {})
   }
 
-  // Backend repair progress and terminal state.
+  const applyRepairMsg = useCallback((d: RepairMsg) => {
+    setRequestError("")
+    if (d.status === "running") {
+      setPhase("running")
+      if (d.line) setLines((prev) => [...prev, d.line as string])
+    } else if (d.status === "needs_force") {
+      setPhase("needs_force")
+      setForceMsg(d.message || "Destructive repair required.")
+    } else if (d.status === "reboot_required") {
+      setPhase("reboot_required")
+      setDoneMsg(d.message || "Repair complete. A reboot is required.")
+    } else if (d.status === "error") {
+      setPhase("error")
+      setErrorMsg(d.error || "Repair failed.")
+    }
+  }, [])
+
+  // Continue showing live progress while POST admission is pending. Keep a
+  // copy so acceptance can clear the old run without losing early WS events.
   useEffect(() => {
     const unsub = wsClient.subscribe("storage_repair", (data: unknown) => {
       const d = data as RepairMsg
-      if (d.status === "running") {
-        setPhase("running")
-        if (d.line) setLines((prev) => [...prev, d.line as string])
-      } else if (d.status === "needs_force") {
-        setPhase("needs_force")
-        setForceMsg(d.message || "Destructive repair required.")
-      } else if (d.status === "reboot_required") {
-        setPhase("reboot_required")
-        setDoneMsg(d.message || "Repair complete. A reboot is required.")
-      } else if (d.status === "error") {
-        setPhase("error")
-        setErrorMsg(d.error || "Repair failed.")
-      }
+      pendingMessagesRef.current?.push(d)
+      applyRepairMsg(d)
     })
     return () => unsub()
-  }, [])
+  }, [applyRepairMsg])
 
   useEffect(() => {
     if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight
@@ -157,25 +167,33 @@ export function StorageRepairCard() {
   )
 
   async function startRepair(force: boolean) {
-    setLines([])
-    setForceMsg("")
-    setDoneMsg("")
-    setErrorMsg("")
-    setPhase("running")
+    // The ref also blocks two clicks before React renders the disabled button.
+    if (pendingMessagesRef.current) return
+    pendingMessagesRef.current = []
+    setStarting(true)
+    setRequestError("")
     try {
       const res = await fetch("/api/storage/repair", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ confirm_destructive: force }),
       })
-      if (!res.ok) {
+      if (res.ok) {
+        setLines([])
+        setForceMsg("")
+        setDoneMsg("")
+        setErrorMsg("")
+        setPhase("running")
+        for (const message of pendingMessagesRef.current) applyRepairMsg(message)
+      } else {
         const body = await res.json().catch(() => ({}))
-        setPhase("error")
-        setErrorMsg(body.error || `Could not start repair (HTTP ${res.status}).`)
+        setRequestError(body.error || `Could not start repair (HTTP ${res.status}).`)
       }
     } catch {
-      setPhase("error")
-      setErrorMsg("Could not reach the device to start the repair.")
+      setRequestError("Could not reach the device to start the repair.")
+    } finally {
+      pendingMessagesRef.current = null
+      setStarting(false)
     }
   }
 
@@ -319,6 +337,7 @@ export function StorageRepairCard() {
               <p className="mt-1 text-[11px] text-slate-400">{forceMsg}</p>
               <div className="mt-2.5 flex gap-2">
                 <button
+                  disabled={starting}
                   onClick={() => {
                     setPhase("idle")
                     setForceMsg("")
@@ -328,6 +347,7 @@ export function StorageRepairCard() {
                   Cancel
                 </button>
                 <button
+                  disabled={starting}
                   onClick={() => startRepair(true)}
                   className="rounded-lg bg-red-500/20 px-3 py-1.5 text-xs font-medium text-red-300 transition-colors hover:bg-red-500/30"
                 >
@@ -366,16 +386,17 @@ export function StorageRepairCard() {
         </div>
       )}
 
-      {phase === "error" && (
-        <div className="flex items-start gap-2 rounded-lg bg-red-500/10 px-3 py-2 text-[11px] text-red-300">
+      {(phase === "error" || requestError) && (
+        <div role="alert" className="flex items-start gap-2 rounded-lg bg-red-500/10 px-3 py-2 text-[11px] text-red-300">
           <ErrorIcon className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-          <span>{errorMsg}</span>
+          <span>{requestError || errorMsg}</span>
         </div>
       )}
 
       <div className="flex flex-wrap items-center gap-2">
         {canRepair && phase !== "running" && phase !== "needs_force" && phase !== "reboot_required" && (
           <button
+            disabled={starting}
             onClick={() => startRepair(false)}
             className="rounded-lg bg-amber-500/15 px-3 py-1.5 text-xs font-medium text-amber-300 transition-colors hover:bg-amber-500/25"
           >

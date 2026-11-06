@@ -30,7 +30,7 @@ The top of the page rolls up your selected time range into four totals: **DISTAN
 
 ## Bulk select
 
-Click **Select** in the top-right to enter multi-select mode. **Delete** works on the selection. **Bulk tag** and **bulk export** are currently placeholders — they'll show a "not implemented yet" notice; use the per-drive controls in the meantime.
+Click **Select** in the top-right to enter multi-select mode. **Tag** adds a tag to every selected drive, **Export** downloads the selection as a CSV file, and **Delete** removes the selected drive records.
 
 ## Drive detail
 

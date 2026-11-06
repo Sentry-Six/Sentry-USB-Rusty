@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from "react"
-import { NotificationsIcon, ProgressActivityIcon } from "@/components/icons"
+import { NotificationsIcon } from "@/components/icons"
 import { cn } from "@/lib/utils"
 import { PrefCard } from "@/components/settings/PrefCard"
 
@@ -35,10 +35,7 @@ function pairedDeviceList(value: unknown): PairedDevice[] {
 }
 
 export function MobileNotificationsSection() {
-  const [pairingCode, setPairingCode] = useState<string | null>(null)
-  const [expiresAt, setExpiresAt] = useState<string | null>(null)
   const [pairedDevices, setPairedDevices] = useState<PairedDevice[]>([])
-  const [loading, setLoading] = useState(false)
   const [devicesLoading, setDevicesLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [devicesError, setDevicesError] = useState<string | null>(null)
@@ -46,7 +43,6 @@ export function MobileNotificationsSection() {
   const devicesRequest = useRef<{ controller: AbortController; deadline: ReturnType<typeof setTimeout> | null } | null>(null)
   const mounted = useRef(false)
   const [removing, setRemoving] = useState<string | null>(null)
-  const [countdown, setCountdown] = useState(0)
   const [testState, setTestState] = useState<"idle" | "loading" | "success" | "error">("idle")
 
   const loadPairedDevices = useCallback(async () => {
@@ -96,41 +92,6 @@ export function MobileNotificationsSection() {
     }
   }, [loadPairedDevices])
 
-  useEffect(() => {
-    if (!expiresAt) return
-    const interval = setInterval(() => {
-      const remaining = Math.max(
-        0,
-        Math.floor((new Date(expiresAt).getTime() - Date.now()) / 1000)
-      )
-      setCountdown(remaining)
-      if (remaining <= 0) {
-        setPairingCode(null)
-        setExpiresAt(null)
-      }
-    }, 1000)
-    return () => clearInterval(interval)
-  }, [expiresAt])
-
-  async function generateCode() {
-    setLoading(true)
-    setError(null)
-    try {
-      const res = await fetch("/api/notifications/generate-code", { method: "POST" })
-      if (!res.ok) {
-        const data = await res.json()
-        throw new Error(data.error || "Failed to generate code")
-      }
-      const data = await res.json()
-      setPairingCode(data.code)
-      setExpiresAt(data.expires_at)
-      setCountdown(Math.max(0, Math.floor((new Date(data.expires_at).getTime() - Date.now()) / 1000)))
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to generate code")
-    }
-    setLoading(false)
-  }
-
   async function removeDevice(pairingId: string) {
     if (!pairingId || removing) return
     setRemoving(pairingId)
@@ -156,35 +117,6 @@ export function MobileNotificationsSection() {
 
   return (
     <PrefCard icon={<NotificationsIcon className="h-3.5 w-3.5" />} halo="violet" title="Mobile Notifications">
-      <div className="flex items-center gap-3">
-        {pairingCode ? (
-          <div className="flex items-center gap-4">
-            <span className="font-mono text-xl font-bold tracking-widest text-blue-400">
-              {pairingCode}
-            </span>
-            <span className="text-xs text-slate-500">
-              Expires in {Math.floor(countdown / 60)}:
-              {String(countdown % 60).padStart(2, "0")}
-            </span>
-          </div>
-        ) : (
-          <button
-            onClick={generateCode}
-            disabled={loading}
-            className="rounded-lg bg-blue-500 px-3 py-2 text-xs font-medium text-white transition-colors hover:bg-blue-600 disabled:opacity-50"
-          >
-            {loading && <ProgressActivityIcon className="mr-1 inline h-3.5 w-3.5 animate-spin" />}
-            Generate Code
-          </button>
-        )}
-      </div>
-
-      {pairingCode && (
-        <p className="text-xs text-slate-600">
-          Enter this code in the Sentry USB mobile app under Settings → Pair for Notifications.
-        </p>
-      )}
-
       {error && <p role="alert" className="text-xs text-red-400">{error}</p>}
 
       {devicesError && <p role="alert" className="text-xs text-rose-300">{devicesError} <button type="button" className="text-blue-400" disabled={devicesLoading} onClick={() => { setDevicesLoading(true); setDevicesError(null); void loadPairedDevices() }}>Retry</button></p>}

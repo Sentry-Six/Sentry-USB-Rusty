@@ -197,37 +197,43 @@ pub(crate) async fn release_snapshot_locked(snap_name: &str) -> Result<()> {
     };
 
     let snap_dir = format!("{}/{}", SNAPSHOTS_DIR, name);
-    if !Path::new(&snap_dir).exists() {
+    if std::fs::symlink_metadata(&snap_dir).is_err() {
         bail!("snapshot not found: {}", name);
     }
 
-    let mnt_dir = format!("{}/mnt", snap_dir);
-    if Path::new(&mnt_dir).exists() {
-        let _ = sentryusb_shell::run("umount", &[&mnt_dir]).await;
+    // Check the mount table rather than probing `snap-X/mnt`: that symlink
+    // leads into autofs, and any lookup through it mounts the image.
+    let autofs_mnt = format!("{}/{}", AUTOFS_SNAPSHOTS, name);
+    if is_mounted(Path::new(&autofs_mnt)) {
+        let _ = sentryusb_shell::run("umount", &[&autofs_mnt]).await;
     }
 
-    // Remember which links point into this snapshot before it goes, so clips
-    // that another snapshot still holds can be re-pointed instead of orphaned.
-    let orphans = collect_links_into(
-        Path::new(TESLACAM),
-        &name,
-        Path::new(SNAPSHOTS_DIR),
-        Path::new(AUTOFS_SNAPSHOTS),
-    );
+    release_snapshot_files(&name, &snap_dir)?;
+    info!("Released snapshot: {}", name);
+    Ok(())
+}
 
-    std::fs::remove_dir_all(&snap_dir)?;
+/// Synchronous body of a release, run at low I/O priority. It holds no await
+/// point, so the priority change can't leak to another task on this thread
+/// and cancelling the caller can't stop it halfway with the lock released.
+fn release_snapshot_files(name: &str, snap_dir: &str) -> Result<()> {
+    let _io = LowIoPriority::enter();
+    let snapshots = Path::new(SNAPSHOTS_DIR);
+    let autofs = Path::new(AUTOFS_SNAPSHOTS);
+
+    // Plan re-points from the surviving snapshots' TOCs before this snapshot
+    // goes, so clips another snapshot still holds aren't orphaned.
+    let orphans = collect_links_into(Path::new(TESLACAM), name, snapshots, autofs);
+    let plan = plan_relinks(&orphans, name, snapshots, autofs);
+
+    std::fs::remove_dir_all(snap_dir)?;
     // Remove stored-target links and directories they leave empty.
-    let pruned = prune_links_into(&name);
+    let pruned = prune_links_into(name);
     if pruned > 0 {
         info!("Pruned {} TeslaCam link(s) into {}", pruned, name);
     }
     if pruned > 0 && backingfiles_mounted() {
-        let relinked = relink_orphans_in(
-            &orphans,
-            &name,
-            Path::new(SNAPSHOTS_DIR),
-            Path::new(AUTOFS_SNAPSHOTS),
-        );
+        let relinked = apply_relinks(&plan.links);
         if relinked > 0 {
             info!(
                 "Re-pointed {} clip link(s) from {} at a surviving snapshot",
@@ -235,8 +241,63 @@ pub(crate) async fn release_snapshot_locked(snap_name: &str) -> Result<()> {
             );
         }
     }
-    info!("Released snapshot: {}", name);
+    if plan.unreadable_tocs > 0 {
+        warn!(
+            "Skipped {} surviving snapshot(s) with an unreadable TOC while releasing {}; \
+             {} clip link(s) found no matching copy in readable TOCs",
+            plan.unreadable_tocs, name, plan.unresolved
+        );
+    }
     Ok(())
+}
+
+/// Lowers the calling thread's I/O priority to best-effort level 7 until
+/// dropped, so snapshot work yields the SSD to the car's USB I/O under bfq.
+/// `who = 0` with `IOPRIO_WHO_PROCESS` names the calling thread only.
+struct LowIoPriority {
+    #[cfg(target_os = "linux")]
+    saved: Option<libc::c_long>,
+}
+
+#[cfg(target_os = "linux")]
+const IOPRIO_WHO_PROCESS: libc::c_long = 1;
+#[cfg(target_os = "linux")]
+const IOPRIO_BE_LOWEST: libc::c_long = (2 << 13) | 7;
+
+impl LowIoPriority {
+    fn enter() -> Self {
+        #[cfg(target_os = "linux")]
+        {
+            // SAFETY: ioprio_get/ioprio_set take only integer arguments.
+            let saved = unsafe { libc::syscall(libc::SYS_ioprio_get, IOPRIO_WHO_PROCESS, 0) };
+            if saved < 0 {
+                warn!("ioprio_get failed: {}", std::io::Error::last_os_error());
+                return Self { saved: None };
+            }
+            let set = unsafe {
+                libc::syscall(libc::SYS_ioprio_set, IOPRIO_WHO_PROCESS, 0, IOPRIO_BE_LOWEST)
+            };
+            if set < 0 {
+                warn!("ioprio_set failed: {}", std::io::Error::last_os_error());
+                return Self { saved: None };
+            }
+            Self { saved: Some(saved) }
+        }
+        #[cfg(not(target_os = "linux"))]
+        Self {}
+    }
+}
+
+impl Drop for LowIoPriority {
+    fn drop(&mut self) {
+        #[cfg(target_os = "linux")]
+        if let Some(saved) = self.saved {
+            // SAFETY: as in `enter`; restores the exact value read there.
+            if unsafe { libc::syscall(libc::SYS_ioprio_set, IOPRIO_WHO_PROCESS, 0, saved) } < 0 {
+                warn!("ioprio restore failed: {}", std::io::Error::last_os_error());
+            }
+        }
+    }
 }
 
 /// Links in the farm whose stored target names `snap_name` (stable `mnt` or
@@ -273,22 +334,71 @@ fn collect_links_into(
     out
 }
 
-/// Re-point links that pointed into the released snapshot at another live
-/// snapshot holding the same clip: the largest copy wins (an older snapshot
-/// can hold a clip the car was still writing), the highest slot breaks ties.
+/// Re-point plan for links into a released snapshot: each link that another
+/// live snapshot still holds the clip for, with its new target.
+struct RelinkPlan {
+    links: Vec<(std::path::PathBuf, std::path::PathBuf)>,
+    /// Owned links whose clip no surviving TOC lists.
+    unresolved: usize,
+    /// Surviving snapshots skipped because their TOC couldn't be read.
+    unreadable_tocs: usize,
+}
+
+/// Plan re-pointing links into the released snapshot at another live snapshot
+/// holding the same clip: the largest copy wins (an older snapshot can hold a
+/// clip the car was still writing), the highest slot breaks ties.
 ///
-/// Every snapshot re-links all clips it holds, so a clip's link always names
-/// the newest snapshot that had it. Eviction order is by image mtime, and a
-/// snapshot taken before the clock synced (no RTC, fake-hwclock in the past)
-/// is evicted early even though it is recent; without this, its clips were
-/// unlinked although an older surviving snapshot still had them, and archiving
-/// silently skipped that footage. Returns the number of links re-created.
-fn relink_orphans_in(
+/// Eviction order is by image mtime, and a snapshot taken before the clock
+/// synced (no RTC, fake-hwclock in the past) is evicted early even though it
+/// is recent; without this, its clips were unlinked although an older
+/// surviving snapshot still had them, and archiving silently skipped them.
+///
+/// Survivors are read from their committed `snap.bin.toc` (`<size> <path>`),
+/// one pass each, and never through `snap-X/mnt`: every lookup there makes
+/// autofs loop-mount a full cam image, and doing that across hundreds of
+/// snapshots starves the car's USB I/O until it drops the drive. A survivor
+/// with an unreadable TOC is skipped rather than holding up space reclaim.
+fn plan_relinks(
     orphans: &[(std::path::PathBuf, String)],
     released: &str,
     snapshots: &Path,
     autofs: &Path,
-) -> usize {
+) -> RelinkPlan {
+    use std::collections::HashMap;
+    use std::io::BufRead;
+
+    let below = |target: &'_ str, root: &Path| -> Option<String> {
+        Some(
+            target
+                .strip_prefix(root.to_str()?)?
+                .strip_prefix('/')?
+                .strip_prefix(released)?
+                .strip_prefix('/')?
+                .to_string(),
+        )
+    };
+    let mut wanted: Vec<(&std::path::PathBuf, bool, String)> = Vec::new();
+    for (link, target) in orphans {
+        let (stable, clip_rel) = if let Some(rest) = below(target, snapshots) {
+            match rest.strip_prefix("mnt/") {
+                Some(r) => (true, r.to_string()),
+                None => continue,
+            }
+        } else if let Some(rest) = below(target, autofs) {
+            (false, rest)
+        } else {
+            continue;
+        };
+        if clip_rel.split('/').any(|c| c.is_empty() || c == "." || c == "..") {
+            continue;
+        }
+        wanted.push((link, stable, clip_rel));
+    }
+    let mut plan = RelinkPlan { links: Vec::new(), unresolved: 0, unreadable_tocs: 0 };
+    if wanted.is_empty() {
+        return plan;
+    }
+
     let is_snap = |n: &str| {
         n.strip_prefix("snap-")
             .is_some_and(|d| !d.is_empty() && d.bytes().all(|b| b.is_ascii_digit()))
@@ -304,57 +414,67 @@ fn relink_orphans_in(
     // Zero-padded names sort by slot; highest first so it wins ties.
     live.sort_by(|a, b| b.cmp(a));
 
-    let below = |target: &'_ str, root: &Path| -> Option<String> {
-        Some(
-            target
-                .strip_prefix(root.to_str()?)?
-                .strip_prefix('/')?
-                .strip_prefix(released)?
-                .strip_prefix('/')?
-                .to_string(),
-        )
-    };
+    let mut best: HashMap<&str, Option<(u64, &str)>> =
+        wanted.iter().map(|(_, _, rel)| (rel.as_str(), None)).collect();
+    for snap in &live {
+        let Ok(file) = std::fs::File::open(snapshots.join(snap).join("snap.bin.toc")) else {
+            plan.unreadable_tocs += 1;
+            continue;
+        };
+        // Commit a survivor's matches only once its whole TOC has been read.
+        let mut hits: Vec<(&str, u64)> = Vec::new();
+        let mut complete = true;
+        for line in std::io::BufReader::new(file).lines() {
+            let Ok(line) = line else {
+                complete = false;
+                break;
+            };
+            let Some((size, path)) = line.split_once(' ') else { continue };
+            let Ok(size) = size.parse::<u64>() else { continue };
+            if let Some((key, _)) = best.get_key_value(path) {
+                hits.push((*key, size));
+            }
+        }
+        if !complete {
+            plan.unreadable_tocs += 1;
+            continue;
+        }
+        for (rel, size) in hits {
+            let slot = best.get_mut(rel).expect("hit keys come from the map");
+            if slot.is_none_or(|(len, _)| size > len) {
+                *slot = Some((size, snap.as_str()));
+            }
+        }
+    }
 
+    for (link, stable, clip_rel) in &wanted {
+        let Some(Some((_, snap))) = best.get(clip_rel.as_str()) else {
+            plan.unresolved += 1;
+            continue;
+        };
+        let new_target = if *stable {
+            snapshots.join(snap).join("mnt").join(clip_rel)
+        } else {
+            autofs.join(snap).join(clip_rel)
+        };
+        plan.links.push(((*link).clone(), new_target));
+    }
+    plan
+}
+
+/// Create the planned links, leaving any a new snapshot already re-created.
+/// Returns the number of links re-created.
+fn apply_relinks(links: &[(std::path::PathBuf, std::path::PathBuf)]) -> usize {
     let mut relinked = 0;
-    for (link, target) in orphans {
-        // Someone (a new snapshot) already re-created it.
+    for (link, new_target) in links {
         if std::fs::symlink_metadata(link).is_ok() {
             continue;
         }
-        let (stable, clip_rel) = if let Some(rest) = below(target, snapshots) {
-            match rest.strip_prefix("mnt/") {
-                Some(r) => (true, r.to_string()),
-                None => continue,
-            }
-        } else if let Some(rest) = below(target, autofs) {
-            (false, rest)
-        } else {
-            continue;
-        };
-        if clip_rel.split('/').any(|c| c.is_empty() || c == "." || c == "..") {
-            continue;
-        }
-        let mut best: Option<(u64, &String)> = None;
-        for snap in &live {
-            // `snap-X/mnt` is the autofs link in production; a real dir in tests.
-            let Ok(md) = std::fs::metadata(snapshots.join(snap).join("mnt").join(&clip_rel)) else {
-                continue;
-            };
-            if md.is_file() && best.is_none_or(|(len, _)| md.len() > len) {
-                best = Some((md.len(), snap));
-            }
-        }
-        let Some((_, snap)) = best else { continue };
-        let new_target = if stable {
-            snapshots.join(snap).join("mnt").join(&clip_rel)
-        } else {
-            autofs.join(snap).join(&clip_rel)
-        };
         if let Some(parent) = link.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
         #[cfg(unix)]
-        if std::os::unix::fs::symlink(&new_target, link).is_ok() {
+        if std::os::unix::fs::symlink(new_target, link).is_ok() {
             relinked += 1;
         }
     }
@@ -593,6 +713,13 @@ pub(crate) fn lock_snapshots_dir() -> Result<std::fs::File> {
         }
         std::thread::sleep(Duration::from_millis(250));
     }
+}
+
+/// Whether a snapshot producer, release or sweep holds the snapshots-dir
+/// lock right now. Probes without waiting; an unreadable lock counts as busy.
+pub fn snapshots_dir_busy() -> bool {
+    let Ok(file) = std::fs::File::open(SNAPSHOTS_DIR) else { return false };
+    !crate::cycle_lock::try_flock_exclusive(&file).unwrap_or(false)
 }
 
 /// True while archiveloop's archive overlay (lower = the TeslaCam farm) is
@@ -1761,13 +1888,13 @@ mod tests {
         let clip = "2026-10-19_08-43-55-front.mp4";
         let rel = format!("TeslaCam/RecentClips/{clip}");
         // snap-000035 (older, survives) and snap-000036 (released) both hold
-        // the clip; snap-000037 holds a partial copy; the link names 36.
+        // the clip; snap-000037 holds a partial copy; the link names 36. No
+        // survivor has a `mnt`: the plan must come from TOCs alone.
         for (snap, len) in [("snap-000035", 40usize), ("snap-000036", 40), ("snap-000037", 10)] {
-            let f = snaps.join(snap).join("mnt").join(&rel);
-            std::fs::create_dir_all(f.parent().unwrap()).unwrap();
-            std::fs::write(&f, vec![0u8; len]).unwrap();
-            std::fs::write(snaps.join(snap).join("snap.bin"), b"").unwrap();
+            write_snap_toc(&snaps, snap, &[(len, &rel)]);
         }
+        // A newer, uncommitted TOC must not be read.
+        std::fs::write(snaps.join("snap-000037/snap.bin.toc_"), format!("99 {rel}\n")).unwrap();
         let day = farm.join("RecentClips/2026-10-19");
         std::fs::create_dir_all(&day).unwrap();
         let link = day.join(clip);
@@ -1782,13 +1909,15 @@ mod tests {
 
         let orphans = collect_links_into(&farm, "snap-000036", &snaps, &autofs);
         assert_eq!(orphans.len(), 2);
+        let plan = plan_relinks(&orphans, "snap-000036", &snaps, &autofs);
+        assert_eq!((plan.links.len(), plan.unresolved, plan.unreadable_tocs), (1, 1, 0));
         std::fs::remove_dir_all(snaps.join("snap-000036")).unwrap();
         let dead = |_: &std::path::Path, t: &str| {
             released_link_is_dead(t, "snap-000036", &snaps, &autofs)
         };
         assert_eq!(prune_farm_links(&farm, &dead, &|| true, false), (2, false));
 
-        let relinked = relink_orphans_in(&orphans, "snap-000036", &snaps, &autofs);
+        let relinked = apply_relinks(&plan.links);
         assert_eq!(relinked, 1, "only the clip a live snapshot still holds comes back");
         assert_eq!(
             std::fs::read_link(&link).unwrap(),
@@ -1796,6 +1925,91 @@ mod tests {
             "the full copy wins over the larger slot's partial copy"
         );
         assert!(std::fs::symlink_metadata(&gone).is_err(), "no copy anywhere: stays pruned");
+    }
+
+    /// A committed snapshot: an empty `snap.bin` and a `<size> <path>` TOC.
+    fn write_snap_toc(snaps: &std::path::Path, snap: &str, files: &[(usize, &str)]) {
+        let dir = snaps.join(snap);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("snap.bin"), b"").unwrap();
+        let toc: String = files.iter().map(|(len, rel)| format!("{len} {rel}\n")).collect();
+        std::fs::write(dir.join("snap.bin.toc"), toc).unwrap();
+    }
+
+    #[test]
+    fn relink_plan_breaks_ties_by_slot_and_skips_unreadable_tocs() {
+        let tmp = tempfile::tempdir().unwrap();
+        let snaps = tmp.path().join("snapshots");
+        let autofs = tmp.path().join("autofs");
+        let s = snaps.to_str().unwrap();
+        let a = autofs.to_str().unwrap();
+        let tie = "TeslaCam/SavedClips/2026-10-30_20-50-00/2026-10-30_20-49-00-front.mp4";
+        let spaced = "TeslaCam/SentryClips/odd name/clip front.mp4";
+        let hidden = "TeslaCam/RecentClips/2026-10-30_20-51-00-back.mp4";
+        write_snap_toc(&snaps, "snap-000010", &[(5, "junk"), (30, tie), (7, spaced)]);
+        write_snap_toc(&snaps, "snap-000012", &[(30, tie)]);
+        write_snap_toc(&snaps, "snap-000011", &[(30, tie), (7, spaced), (50, hidden)]);
+        // Survivor 13 lists the hidden clip, but its TOC is gone.
+        std::fs::create_dir_all(snaps.join("snap-000013")).unwrap();
+        std::fs::write(snaps.join("snap-000013/snap.bin"), b"").unwrap();
+        // No snap.bin: not a live snapshot, never a target.
+        std::fs::create_dir_all(snaps.join("snap-000014")).unwrap();
+        std::fs::write(snaps.join("snap-000014/snap.bin.toc"), format!("99 {tie}\n")).unwrap();
+
+        let orphans: Vec<(std::path::PathBuf, String)> = vec![
+            ("/farm/a".into(), format!("{s}/snap-000009/mnt/{tie}")),
+            ("/farm/b".into(), format!("{a}/snap-000009/{spaced}")),
+            ("/farm/c".into(), format!("{s}/snap-000009/mnt/TeslaCam/RecentClips/missing.mp4")),
+            ("/farm/d".into(), format!("{s}/snap-000009/mnt/../escape.mp4")),
+        ];
+        let plan = plan_relinks(&orphans, "snap-000009", &snaps, &autofs);
+        assert_eq!(
+            plan.links,
+            vec![
+                (std::path::PathBuf::from("/farm/a"), snaps.join("snap-000012/mnt").join(tie)),
+                (std::path::PathBuf::from("/farm/b"), autofs.join("snap-000011").join(spaced)),
+            ],
+            "equal sizes go to the highest slot; autofs-form links keep their form"
+        );
+        assert_eq!((plan.unresolved, plan.unreadable_tocs), (1, 1));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn apply_relinks_keeps_a_link_recreated_after_planning() {
+        use std::os::unix::fs::symlink;
+        let tmp = tempfile::tempdir().unwrap();
+        let link = tmp.path().join("farm/RecentClips/clip.mp4");
+        let fresh = tmp.path().join("snapshots/snap-000050/mnt/clip.mp4");
+        let planned = vec![(link.clone(), tmp.path().join("snapshots/snap-000049/mnt/clip.mp4"))];
+        std::fs::create_dir_all(link.parent().unwrap()).unwrap();
+        // A new snapshot re-linked the clip between planning and applying.
+        symlink(&fresh, &link).unwrap();
+        assert_eq!(apply_relinks(&planned), 0);
+        assert_eq!(std::fs::read_link(&link).unwrap(), fresh);
+    }
+
+    #[test]
+    fn relink_plan_reads_no_toc_without_owned_links() {
+        let tmp = tempfile::tempdir().unwrap();
+        let snaps = tmp.path().join("snapshots");
+        // A TOC path that is a directory fails to read; untouched, it can't count.
+        std::fs::create_dir_all(snaps.join("snap-000001/snap.bin.toc")).unwrap();
+        std::fs::write(snaps.join("snap-000001/snap.bin"), b"").unwrap();
+        let plan = plan_relinks(&[], "snap-000002", &snaps, &tmp.path().join("autofs"));
+        assert_eq!((plan.links.len(), plan.unresolved, plan.unreadable_tocs), (0, 0, 0));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn low_io_priority_is_restored_on_drop() {
+        let get = || unsafe { libc::syscall(libc::SYS_ioprio_get, IOPRIO_WHO_PROCESS, 0) };
+        let before = get();
+        {
+            let _io = LowIoPriority::enter();
+            assert_eq!(get(), IOPRIO_BE_LOWEST);
+        }
+        assert_eq!(get(), before);
     }
 
     #[cfg(unix)]

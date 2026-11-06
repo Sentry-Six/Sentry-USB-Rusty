@@ -44,8 +44,8 @@ The card shows the paired VIN, current connection state, and a **Show output** b
 
 ## Bluetooth adapter
 
-The Pi has a built-in Bluetooth radio, but for the most reliable telemetry we recommend a **USB Bluetooth dongle** — it has its own antenna and isn't sharing one with WiFi. Sentry USB auto-detects the dongle when plugged in and uses it; unplug it and the Pi falls back to the built-in radio automatically. The choice applies to both Tesla BLE and the SentryUSB iOS app.
+The Pi has a built-in Bluetooth radio, but for the most reliable telemetry we recommend a **USB Bluetooth dongle** — it has its own antenna and isn't sharing one with WiFi. Sentry USB auto-detects the dongle when plugged in and uses it; unplug it and the Pi falls back to the built-in radio automatically. The choice applies to both Tesla BLE and the Sentry Connect app.
 
 ## Troubleshooting
 
-If pairing fails, the connection drops, or telemetry stops flowing, the **Logs → Bluetooth** tab has a live diagnostic dump and a **Download Bluetooth Bundle** button that grabs everything for sharing on Discord. Full steps: [Troubleshooting → BLE Keep Awake stops working / can't pair](Troubleshooting#ble-keep-awake-stops-working--cant-pair).
+If pairing fails, the connection drops, or telemetry stops flowing, the **Logs → Bluetooth** tab has a live diagnostic dump and a **Download bundle** button that grabs everything for sharing on Discord. Full steps: [Troubleshooting → BLE Keep Awake stops working / can't pair](Troubleshooting#ble-keep-awake-stops-working--cant-pair).

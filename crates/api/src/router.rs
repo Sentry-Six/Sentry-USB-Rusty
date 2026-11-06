@@ -68,6 +68,8 @@ pub fn build_router(state: AppState) -> Router {
         // Clips
         .route("/api/clips", get(crate::clips::get_clips))
         .route("/api/clips/telemetry", get(crate::clips::get_clip_telemetry))
+        .route("/api/clips/freshness", get(crate::clips_refresh::get_freshness))
+        .route("/api/clips/refresh", post(crate::clips_refresh::post_refresh))
         // Files
         .route("/api/files/ls", get(crate::files::list_files))
         .route("/api/files/mkdir", post(crate::files::create_dir))

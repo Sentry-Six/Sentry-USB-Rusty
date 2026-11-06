@@ -5,7 +5,6 @@ import { cn } from "@/lib/utils"
 
 export function PrivacyStep({ data, onChange, setupAlreadyFinished, setupStatusKnown = false, registerBeforeContinue }: StepProps) {
   const [savedChoice, setSavedChoice] = useState<boolean | null | "invalid" | undefined>(undefined)
-  const [unsetConfirmed, setUnsetConfirmed] = useState(false)
   const [draft, setDraft] = useState<boolean | undefined>(() =>
     data._analytics_draft === "true" ? true : data._analytics_draft === "false" ? false : undefined)
   const [saving, setSaving] = useState(false)
@@ -14,8 +13,8 @@ export function PrivacyStep({ data, onChange, setupAlreadyFinished, setupStatusK
   const [error, setError] = useState<string | null>(null)
   const saveController = useRef<AbortController | null>(null)
   const newInstallation = setupStatusKnown && !setupAlreadyFinished
-  const defaultSelected = !loading && unsetConfirmed && draft === undefined && savedChoice === null && newInstallation
-  const choice = draft ?? (typeof savedChoice === "boolean" ? savedChoice : defaultSelected ? true : null)
+  // Nothing is preselected: a new installation continues only after an explicit choice.
+  const choice = draft ?? (typeof savedChoice === "boolean" ? savedChoice : null)
 
   useEffect(() => {
     const controller = new AbortController()
@@ -30,7 +29,6 @@ export function PrivacyStep({ data, onChange, setupAlreadyFinished, setupStatusK
         if (controller.signal.aborted) return
         const saved = typeof result.value === "boolean" || result.value === null ? result.value : "invalid"
         setSavedChoice(saved)
-        setUnsetConfirmed(result.value === null && result.is_set === false)
         setError(saved === "invalid" ? "Your saved privacy choice needs confirmation. Choose either option to replace it." : null)
         onChange("_analytics_choice", typeof saved === "boolean" ? String(saved) : "")
         onChange("_analytics_ready", "true")
@@ -38,7 +36,6 @@ export function PrivacyStep({ data, onChange, setupAlreadyFinished, setupStatusK
       .catch(() => {
         if (!cancelled) {
           setSavedChoice(undefined)
-          setUnsetConfirmed(false)
           onChange("_analytics_ready", "false")
           setError("Couldn't load your privacy choice. Reload it to continue.")
         }
@@ -71,7 +68,7 @@ export function PrivacyStep({ data, onChange, setupAlreadyFinished, setupStatusK
         method: "PUT",
         signal: controller.signal,
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ key: "analytics_opt_in", value: choice, ...(defaultSelected ? { only_if_unset: true } : {}) }),
+        body: JSON.stringify({ key: "analytics_opt_in", value: choice }),
       })
       if (!res.ok) {
         const failure = await res.json().catch(() => null)
@@ -79,16 +76,6 @@ export function PrivacyStep({ data, onChange, setupAlreadyFinished, setupStatusK
       }
       const result = await res.json()
       if (result?.success !== true) throw new Error("Privacy choice was not confirmed")
-      if (defaultSelected && typeof result.value !== "boolean") {
-        if (result.is_set === true) {
-          setSavedChoice(result.value === null ? null : "invalid")
-          setUnsetConfirmed(false)
-          setDraft(undefined)
-          onChange("_analytics_draft", "")
-          onChange("_analytics_choice", "")
-        }
-        throw new Error("Privacy choice was not confirmed. Choose an option or reload.")
-      }
       if (controller.signal.aborted) return false
       const actual = typeof result.value === "boolean" ? result.value : choice
       setSavedChoice(actual)
@@ -108,7 +95,7 @@ export function PrivacyStep({ data, onChange, setupAlreadyFinished, setupStatusK
         onChange("_analytics_saving", "false")
       }
     }
-  }, [loading, saving, setupStatusKnown, savedChoice, choice, defaultSelected, newInstallation, onChange])
+  }, [loading, saving, setupStatusKnown, savedChoice, choice, newInstallation, onChange])
 
   useEffect(() => {
     registerBeforeContinue?.(persist)
@@ -126,9 +113,10 @@ export function PrivacyStep({ data, onChange, setupAlreadyFinished, setupStatusK
           Help us count devices?
         </h3>
         <p className="mt-2 text-xs leading-relaxed text-slate-400">
-          Share a hashed device ID and running software version so we can count devices
-          without counting reinstalls twice. We keep the first and last report times.
-          You can turn this off in Settings → System.
+          Share a pseudonymous device ID (a salted hash of the board serial) and running
+          software version so we can count devices without counting reinstalls twice. We
+          keep the first and last report times. Nothing is sent unless you choose Yes.
+          Change this any time in Settings → System.
         </p>
 
         <div className="mt-4 flex flex-col gap-2 sm:flex-row" role="group" aria-label="Share installation analytics">
@@ -161,7 +149,7 @@ export function PrivacyStep({ data, onChange, setupAlreadyFinished, setupStatusK
             : !setupStatusKnown ? "Waiting for this device's setup status."
               : saving ? "Saving your choice…"
                 : savedChoice === "invalid" && draft === undefined ? "Choose either option to replace the saved value."
-                  : defaultSelected ? "On for new installations when you continue. Choose No thanks to keep it off."
+                  : newInstallation && choice === null ? "Choose Yes, count me or No thanks to continue."
                     : draft !== undefined && choice !== savedChoice ? "Your choice is saved when you continue."
                       : typeof savedChoice === "boolean" ? `Saved: ${savedChoice ? "On" : "Off"}.`
                         : "Off. Continue without enabling device counting."}
@@ -185,33 +173,33 @@ export function PrivacyStep({ data, onChange, setupAlreadyFinished, setupStatusK
         <div className="divide-y divide-white/5">
           <FlowRow
             when="Device counting (when enabled)"
-            what="Hashed device ID and running software version"
+            what="Pseudonymous device ID and running software version"
             why="Count unique devices and show their latest reported versions"
-            note="Reports run after startup, when enabled, and daily, with retries if offline. The server keeps the latest version and first/last report times until deletion. Turning this off stops future reports."
+            note="Reports run after startup, when enabled, and daily, with retries if offline. The ID's salt is public in the source code. The server keeps the latest version and first/last report times until deletion. A private maintainers' Discord channel gets each new device's version and first-seen time. Turning this off stops future reports."
           />
           <FlowRow
-            when="When you use Sentry Cloud"
-            what="Your account login + the files you sync"
+            when="When you pair with Sentry Cloud"
+            what="Pairing details (code, public keys, hostname, board and version info, last 4 MAC digits) + drive, charging and Home data you sync, encrypted on the Pi"
             why="Sync requires it — the feature can't work otherwise"
-            note="Don't sign in to Cloud if you don't want this."
+            note="Unpair any time to stop this."
           />
           <FlowRow
             when="When you use AI Support & Help"
             what="Messages, product/software version, SBC model, selected non-secret support settings, the Pi connection's public IP for abuse prevention + only diagnostics you explicitly approve"
             why="Generate product-specific troubleshooting help"
-            note="Online AI: messages are processed by Ollama Cloud and stored redacted on Sentry Six servers for up to 90 days after the last activity; maintainers may review them. Approved diagnostics are retained for 7 days."
+            note="Online AI: messages are processed by Anthropic and stored redacted on Sentry Six servers in Canada for up to 90 days after the last activity; maintainers may review them. Approved diagnostics are retained for 7 days."
           />
           <FlowRow
             when="When you submit a wrap or lock chime"
-            what="The file you uploaded + your IP for rate-limiting"
+            what="The file you uploaded, display name and vehicle model + your IP for rate-limiting"
             why="Sharing the submission with the community"
             note="No device fingerprint is sent. Your IP is used and retained for rate-limiting and abuse handling."
           />
           <FlowRow
-            when="If you enable iOS push notifications"
-            what="A randomly-generated device pairing ID"
-            why="Routing push notifications to your phone"
-            note="Not tied to your hardware. Cleared when you unpair."
+            when="If you enable phone push notifications"
+            what="A random pairing ID and secret, the Pi's hostname, and each notification's title and message"
+            why="Routing push notifications to your phone through notifications.sentry-six.com and Apple or Google"
+            note="Hostname cleared when the last phone unpairs; inactive unpaired records deleted after 90 days."
           />
         </div>
       </details>

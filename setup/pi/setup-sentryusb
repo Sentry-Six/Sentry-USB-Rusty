@@ -384,6 +384,8 @@ function get_common_scripts () {
   copy_script run/remountfs_rw /root/bin
   copy_script run/make_snapshot.sh /root/bin
   copy_script run/release_snapshot.sh /root/bin
+  copy_script run/xfs-repair-tool.py /root/bin
+  timeout 240 python3 /root/bin/xfs-repair-tool.py --cache-persistent || setup_progress "XFS repair tool preparation deferred; repair may need internet access"
   copy_script run/manage_free_space.sh /root/bin
   copy_script run/force_sync.sh /root/bin
   copy_script run/mountoptsforimage /root/bin
@@ -755,14 +757,13 @@ function create_usb_drive_backing_files () {
       umount "$loop" 2>/dev/null || true
       losetup -d "$loop" 2>/dev/null || true
     done
-    # Clear the XFS log to prevent slow journal replay on dirty filesystems.
-    # On large drives (1TB+) previously used by TeslaUSB, replaying a dirty
-    # journal can take 10+ minutes and appear to hang.
-    bf_dev=$(findfs LABEL=backingfiles 2>/dev/null || true)
-    if [ -n "$bf_dev" ]; then
-      timeout 60 xfs_repair -L "$bf_dev" 2>/dev/null || true
+    # Let XFS replay its journal. Setup must never discard it merely because
+    # storage is unmounted; destructive recovery belongs to Repair Storage.
+    setup_progress "Journal replay on a large drive can take several minutes."
+    if ! mount "$BACKINGFILES_MOUNTPOINT"; then
+      setup_progress "Camera storage could not be mounted. Setup stopped before creating backing files. Use Repair Storage in the web UI; force repair requires explicit authorization."
+      return 1
     fi
-    mount $BACKINGFILES_MOUNTPOINT
     setup_progress "Mounted the partition for the backing files."
   fi
 

@@ -358,6 +358,7 @@ jobs:
           bash test/live-activity-processing.test.sh
           bash test/archive-retry.test.sh
           bash test/cifs-compatibility.test.sh
+          bash test/mounted-archive-ownership.test.sh
           bash test/diagnostics-capture.test.sh
           bash test/ap-profile.test.sh
           python3 test/networkd-ap.test.py
@@ -368,11 +369,16 @@ jobs:
           bash test/archiveloop-gadget-cycle-min.test.sh
           bash test/archiveloop-exfat-reclaim.test.sh
           bash test/archiveloop-camdisk-supervisor.test.sh
+          bash -n run/release_snapshot.sh
+          bash -n run/make_snapshot.sh
+          bash test/release-snapshot.test.sh
       - name: Run tests
         run: cargo test --workspace --locked
       - name: Run installer safety regressions
         run: |
+          python3 test/xfs-repair-tool.test.py
           bash test/install-pi-safety.test.sh
+          bash test/legacy-storage-repair.test.sh
           bash test/sentryusb-pick-binary.test.sh
           bash test/ble-setup-recovery.test.sh
 
@@ -460,6 +466,7 @@ jobs:
         uses: softprops/action-gh-release@v3
         with:
           files: release/*
-          generate_release_notes: true
+          # Release notes are written by hand for end users; generated notes would be appended to them.
+          generate_release_notes: false
           # Respect tag convention, the nominated tag, or an existing manual flag.
           prerelease: ${{ contains(github.ref_name, '-') || vars.SENTRYUSB_PRERELEASE_TAG == github.ref_name || steps.relmeta.outputs.prerelease == 'true' }}

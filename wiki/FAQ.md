@@ -22,7 +22,7 @@ Settings → Safety → Dashcam → "Encrypt Dashcam Recordings"
 
 The Pi software itself is **free and source-available** under the Polyform Noncommercial license. You only pay for the hardware (Pi + SD card + cable).
 
-The optional [Sentry Cloud](Sentry-Cloud) service has a paid tier — see [sentryusb.com](https://sentryusb.com) for details.
+The optional [Sentry Cloud](Sentry-Cloud) service is free and includes 3 GB of shared cloud storage. See [sentryusb.com](https://sentryusb.com) for details.
 
 ## Can I use it without internet?
 
@@ -31,6 +31,8 @@ Yes. Sentry USB only needs internet for:
 *   **First-time setup** (downloads the binary, installs system packages).
 *   **Updates** (auto-update checks).
 *   **Cloud sync** (if you use Sentry Cloud).
+*   **Maps** in the web UI (tiles load from `tiles.sentryusb.com`).
+*   **AI Support & Help** (if you use it).
 *   Some **archive backends** (rclone to cloud storage).
 
 All local archive methods (CIFS, NFS, rsync to a LAN server) work offline.
