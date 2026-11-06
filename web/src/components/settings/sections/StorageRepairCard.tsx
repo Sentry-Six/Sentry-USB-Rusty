@@ -17,12 +17,16 @@ type HealthState =
   | "unmounted"
   | "corrupt"
   | "missing_images"
+  | "not_repairable"
   | "no_external"
   | "unknown"
 
 interface StorageHealth {
   state: HealthState
   external: boolean
+  /** Whether Repair Storage can run on this device (older servers omit it). */
+  repairable?: boolean
+  repair_blocked?: string | null
   device: string | null
   fstype: string | null
   mounted: boolean
@@ -34,8 +38,9 @@ interface StorageHealth {
 
 /** Mirrors the backend `storage_repair` WS payloads. */
 interface RepairMsg {
-  status: "running" | "needs_force" | "reboot_required" | "error"
+  status: "running" | "needs_force" | "rebooting" | "reboot_required" | "error"
   phase?: string
+  seconds?: number
   line?: string
   message?: string
   error?: string
@@ -44,20 +49,30 @@ interface RepairMsg {
   lost_found_count?: number
 }
 
-type Phase = "idle" | "running" | "needs_force" | "reboot_required" | "error"
+type Phase = "idle" | "running" | "needs_force" | "rebooting" | "reboot_required" | "error"
+
+/** Saved outcome of the latest repair (GET /api/storage/repair). */
+interface RepairRecord {
+  phase: "running" | "needs_force" | "rebooting" | "failed" | "interrupted"
+  device: string | null
+  message: string | null
+  log_file: string | null
+}
 
 const STATE_META: Record<HealthState, { label: string; tone: string }> = {
   healthy: { label: "Healthy", tone: "bg-emerald-500/15 text-emerald-300" },
   unmounted: { label: "Not mounted", tone: "bg-amber-500/15 text-amber-300" },
   corrupt: { label: "Corrupt", tone: "bg-red-500/15 text-red-300" },
   missing_images: { label: "Images missing", tone: "bg-amber-500/15 text-amber-300" },
+  not_repairable: { label: "Not repairable", tone: "bg-slate-500/15 text-slate-300" },
   no_external: { label: "No external drive", tone: "bg-slate-500/15 text-slate-300" },
   unknown: { label: "Unknown", tone: "bg-slate-500/15 text-slate-300" },
 }
 
 /**
- * Repairs the external XFS camera-storage partition. The card is disabled for
- * SD-card storage, and destructive `xfs_repair -L` requires explicit confirmation.
+ * Repairs the XFS footage partition (external drive or the SD card's own
+ * footage partition). Destructive `xfs_repair -L` requires explicit
+ * confirmation. The latest outcome is restored from the server on load.
  */
 export function StorageRepairCard() {
   const [health, setHealth] = useState<StorageHealth | null>(null)
@@ -69,12 +84,19 @@ export function StorageRepairCard() {
   const [requestError, setRequestError] = useState("")
   const [starting, setStarting] = useState(false)
   const [rebooting, setRebooting] = useState(false)
+  const [countdown, setCountdown] = useState(0)
   const [autoRepair, setAutoRepair] = useState(false)
   const [autoForce, setAutoForce] = useState(false)
   const [prefsLoaded, setPrefsLoaded] = useState(false)
   const logRef = useRef<HTMLDivElement>(null)
   const rebootPollRef = useRef<number | null>(null)
   const pendingMessagesRef = useRef<RepairMsg[] | null>(null)
+  // Bumped by every live WS message; a saved-state fetch that started
+  // before one arrived is older than what the card shows.
+  const liveSeqRef = useRef(0)
+  // Bumped per saved-state fetch; only the newest response is applied.
+  const fetchSeqRef = useRef(0)
+  const [stateSaved, setStateSaved] = useState(true)
 
   const refreshHealth = useCallback(() => {
     fetch("/api/storage/health")
@@ -96,6 +118,55 @@ export function StorageRepairCard() {
   useEffect(() => {
     refreshHealth()
   }, [refreshHealth])
+
+  // A refresh, a service restart or a dropped connection must not forget
+  // "the destructive step is needed" or how a repair ended: the server keeps
+  // the latest outcome. Live WS messages are newer, so they win if any
+  // arrived while this was loading.
+  const loadSaved = useCallback(() => {
+    const live = liveSeqRef.current
+    const mine = ++fetchSeqRef.current
+    fetch("/api/storage/repair", { cache: "no-store" })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d: { active?: boolean; record?: RepairRecord | null; saved?: boolean } | null) => {
+        // Older than a later fetch or a live message: drop all of it.
+        if (!d || fetchSeqRef.current !== mine || liveSeqRef.current !== live) return
+        setStateSaved(d.saved !== false)
+        const rec = d.record
+        if (!rec) {
+          // Nothing saved and nothing running: a repair the card still shows
+          // as running ended while the connection was down (a successful
+          // repair is cleared once the drive is back after the reboot).
+          if (!d.active) {
+            setPhase((current) => (current === "running" ? "idle" : current))
+            refreshHealth()
+          }
+          return
+        }
+        if (rec.phase === "running" && d.active) {
+          setPhase("running")
+        } else if (rec.phase === "needs_force") {
+          setForceMsg(rec.message || "Destructive repair required.")
+          setPhase("needs_force")
+        } else if (rec.phase === "rebooting") {
+          setDoneMsg(rec.message || "Repair complete. Rebooting.")
+          setPhase("rebooting")
+        } else {
+          setErrorMsg(rec.message || "The last repair did not finish.")
+          setPhase("error")
+        }
+      })
+      .catch(() => {})
+  }, [refreshHealth])
+
+  useEffect(() => {
+    loadSaved()
+  }, [loadSaved])
+
+  // Messages sent while the connection was down are lost: catch up on reconnect.
+  useEffect(() => wsClient.onStatusChange((connected) => {
+    if (connected) loadSaved()
+  }), [loadSaved])
 
   // Preferences may contain booleans or their string representations.
   useEffect(() => {
@@ -135,6 +206,10 @@ export function StorageRepairCard() {
     } else if (d.status === "needs_force") {
       setPhase("needs_force")
       setForceMsg(d.message || "Destructive repair required.")
+    } else if (d.status === "rebooting") {
+      setPhase("rebooting")
+      setDoneMsg(d.message || "Repair complete. Rebooting.")
+      setCountdown(d.seconds ?? 15)
     } else if (d.status === "reboot_required") {
       setPhase("reboot_required")
       setDoneMsg(d.message || "Repair complete. A reboot is required.")
@@ -149,11 +224,14 @@ export function StorageRepairCard() {
   useEffect(() => {
     const unsub = wsClient.subscribe("storage_repair", (data: unknown) => {
       const d = data as RepairMsg
+      liveSeqRef.current += 1
       pendingMessagesRef.current?.push(d)
       applyRepairMsg(d)
+      // Learn whether the outcome was saved on the Pi.
+      if (d.status !== "running") loadSaved()
     })
     return () => unsub()
-  }, [applyRepairMsg])
+  }, [applyRepairMsg, loadSaved])
 
   useEffect(() => {
     if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight
@@ -165,6 +243,33 @@ export function StorageRepairCard() {
     },
     []
   )
+
+  // Reload only after observing both shutdown and recovery.
+  const waitForRestart = useCallback(() => {
+    let sawDown = false
+    if (rebootPollRef.current) window.clearInterval(rebootPollRef.current)
+    rebootPollRef.current = window.setInterval(async () => {
+      try {
+        const res = await fetch("/api/status", { cache: "no-store" })
+        if (res.ok && sawDown) {
+          if (rebootPollRef.current) window.clearInterval(rebootPollRef.current)
+          window.location.reload()
+        }
+      } catch {
+        sawDown = true
+      }
+    }, 3000)
+  }, [])
+
+  // The server reboots after its countdown; count along, then wait.
+  useEffect(() => {
+    if (phase !== "rebooting") return
+    if (countdown > 0) {
+      const timer = window.setTimeout(() => setCountdown((c) => c - 1), 1000)
+      return () => window.clearTimeout(timer)
+    }
+    waitForRestart()
+  }, [phase, countdown, waitForRestart])
 
   async function startRepair(force: boolean) {
     // The ref also blocks two clicks before React renders the disabled button.
@@ -179,12 +284,16 @@ export function StorageRepairCard() {
         body: JSON.stringify({ confirm_destructive: force }),
       })
       if (res.ok) {
+        // Saved-state replies requested before this repair started are stale.
+        fetchSeqRef.current += 1
         setLines([])
         setForceMsg("")
         setDoneMsg("")
         setErrorMsg("")
         setPhase("running")
         for (const message of pendingMessagesRef.current) applyRepairMsg(message)
+        // A terminal result that arrived early: ask again whether it was saved.
+        if (pendingMessagesRef.current.some((m) => m.status !== "running")) loadSaved()
       } else {
         const body = await res.json().catch(() => ({}))
         setRequestError(body.error || `Could not start repair (HTTP ${res.status}).`)
@@ -204,36 +313,25 @@ export function StorageRepairCard() {
     } catch {
       /* the box is going down — a failed fetch here is expected */
     }
-    // Reload only after observing both shutdown and recovery.
-    let sawDown = false
-    if (rebootPollRef.current) window.clearInterval(rebootPollRef.current)
-    rebootPollRef.current = window.setInterval(async () => {
-      try {
-        const res = await fetch("/api/status", { cache: "no-store" })
-        if (res.ok && sawDown) {
-          if (rebootPollRef.current) window.clearInterval(rebootPollRef.current)
-          window.location.reload()
-        }
-      } catch {
-        sawDown = true
-      }
-    }, 3000)
+    waitForRestart()
   }
 
-  if (health && !health.external) {
+  const repairable = health ? (health.repairable ?? health.external) : true
+  if (health && !repairable) {
     return (
       <PrefCard
         icon={<HardDriveIcon className="h-3.5 w-3.5" />}
         halo="slate"
         title="Repair Storage"
         disabled={{
-          reason:
-            "Storage repair is only available when camera storage is on a separate external drive (e.g. a USB SSD).",
+          reason: health.repair_blocked
+            ? `Storage repair isn't available here: ${health.repair_blocked}.`
+            : "Storage repair isn't available: no footage partition was found.",
         }}
       >
         <p className="t-xs">
-          Detects and repairs filesystem corruption on the external drive that
-          holds your dashcam storage.
+          Detects and repairs filesystem corruption on the drive that holds
+          your dashcam footage.
         </p>
       </PrefCard>
     )
@@ -259,9 +357,10 @@ export function StorageRepairCard() {
       }
     >
       <p className="t-xs">
-        Checks and repairs the external drive that holds your dashcam storage
+        Checks and repairs the drive that holds your dashcam footage
         (<span className="text-slate-300">{health?.mountpoint || "/backingfiles"}</span>).
-        Use this if storage disappears after a power loss or update.
+        Use this if SentryUSB can&apos;t find the footage drive after a power
+        loss or update.
       </p>
 
       {health && (
@@ -359,6 +458,24 @@ export function StorageRepairCard() {
         </div>
       )}
 
+      {phase === "rebooting" && (
+        <div className="rounded-xl border border-emerald-500/20 bg-emerald-500/5 p-3">
+          <div className="flex items-start gap-2.5">
+            <CheckCircleIcon className="mt-0.5 h-4 w-4 shrink-0 text-emerald-400" />
+            <div>
+              <p className="text-xs font-medium text-emerald-300">Repair complete</p>
+              <p className="mt-1 text-[11px] text-slate-400">{doneMsg}</p>
+              <p className="mt-2 flex items-center gap-1.5 text-[11px] text-slate-300">
+                <ProgressActivityIcon className="h-3.5 w-3.5 animate-spin" />
+                {countdown > 0
+                  ? `Rebooting in ${countdown} s…`
+                  : "Rebooting — this page reloads when the Pi is back."}
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
+
       {phase === "reboot_required" && (
         <div className="rounded-xl border border-emerald-500/20 bg-emerald-500/5 p-3">
           <div className="flex items-start gap-2.5">
@@ -386,6 +503,13 @@ export function StorageRepairCard() {
         </div>
       )}
 
+      {!stateSaved && phase !== "idle" && (
+        <p className="text-[10px] text-amber-300/90">
+          This result couldn&apos;t be saved on the Pi (its settings partition
+          isn&apos;t available), so it won&apos;t be shown again after a restart.
+        </p>
+      )}
+
       {(phase === "error" || requestError) && (
         <div role="alert" className="flex items-start gap-2 rounded-lg bg-red-500/10 px-3 py-2 text-[11px] text-red-300">
           <ErrorIcon className="mt-0.5 h-3.5 w-3.5 shrink-0" />
@@ -394,7 +518,7 @@ export function StorageRepairCard() {
       )}
 
       <div className="flex flex-wrap items-center gap-2">
-        {canRepair && phase !== "running" && phase !== "needs_force" && phase !== "reboot_required" && (
+        {canRepair && phase !== "running" && phase !== "needs_force" && phase !== "rebooting" && phase !== "reboot_required" && (
           <button
             disabled={starting}
             onClick={() => startRepair(false)}
@@ -448,10 +572,11 @@ export function StorageRepairCard() {
                 Auto force fix (destructive)
               </span>
               <span className="mt-0.5 block text-[10px] text-slate-500">
-                If the regular repair fails, automatically run{" "}
+                If the safe repair fails, automatically run{" "}
                 <span className="font-mono">xfs_repair -L</span> and reboot.
-                Destroys the pending XFS log — can lose the most recently
-                written data (typically the newest clips).
+                It discards the pending XFS log, and the repair can then
+                remove or move files, including disk images and snapshots.
+                Losses can go beyond the newest clips.
               </span>
             </div>
           </div>
@@ -467,8 +592,10 @@ export function StorageRepairCard() {
 
       <p className="text-[10px] leading-relaxed text-slate-500">
         While repairing, the archive loop and the car-facing USB drive are
-        stopped (the Tesla pauses recording). The web UI stays up. Nothing
-        destructive runs without your confirmation.
+        stopped (the Tesla pauses recording). The web UI stays up. After a
+        successful repair the Pi reboots by itself to reconnect the drive.
+        Nothing destructive runs without your confirmation unless you turn
+        on the auto force fix.
       </p>
     </PrefCard>
   )

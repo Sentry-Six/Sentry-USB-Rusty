@@ -8,8 +8,12 @@
 //!
 //!   * The real backing device is resolved at runtime (never the hard-coded
 //!     `/dev/sda2`), and the repair refuses to touch the root disk.
-//!   * It is only offered when `/backingfiles` lives on a *separate external*
-//!     drive — `external` in the health response gates the card.
+//!   * It is only offered for a dedicated XFS data partition that is not the
+//!     root, boot, mutable or swap device — on an external drive or on the
+//!     SD card itself (`repairable` in the health response gates the card).
+//!   * It only runs while the server is in database-free degraded mode, so no
+//!     database handle can keep the drive busy, and it holds the same slot
+//!     the degraded-mode reopen probe and USB enable take.
 //!   * It NEVER stops the `sentryusb` service: that service is the web server
 //!     running this very handler. Only the archive loop and the USB gadget are
 //!     quiesced; the UI keeps serving from the (separate) root card.
@@ -17,9 +21,11 @@
 //!     `xfs_repair`, and a mount-to-replay-log retry). It HARD STOPS before the
 //!     destructive `xfs_repair -L` — that only runs when the user explicitly
 //!     re-submits with `confirm_destructive: true`.
-//!   * On success it lands in a "reboot required" state. The user reboots to
-//!     bring storage + gadget back through the clean boot path (the live
-//!     gadget re-enable is the fragile part — a reboot is the reliable fix).
+//!   * On success it verifies the mounted drive and its disk images, then
+//!     reboots the Pi after a short countdown: the normal boot path brings
+//!     storage, the database, archiving and the USB drive back together.
+//!   * Its outcome is saved on /mutable, so "the destructive step is needed"
+//!     survives a page refresh or a service restart.
 
 use std::time::Duration;
 
@@ -49,6 +55,37 @@ const REPAIR_TOOL_SELECTOR: &str = include_str!("../../../run/xfs-repair-tool.py
 // Move the permit into the task so cancellation of the HTTP request cannot
 // release admission while a repair is still running.
 static REPAIR_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+/// Set once the server decides to run without a database (degraded mode).
+/// Repair unmounts the footage drive, which a live database would hold busy.
+static DATABASE_FREE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Called by the server when it enters degraded mode.
+pub fn set_database_free() {
+    DATABASE_FREE.store(true, std::sync::atomic::Ordering::SeqCst);
+}
+
+fn database_free() -> bool {
+    DATABASE_FREE.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+/// Take the repair slot without running a repair, so the caller's work
+/// can't overlap one (the degraded-mode reopen probe, USB enable). `None`
+/// while a repair is running.
+pub fn try_pause_repairs() -> Option<tokio::sync::MutexGuard<'static, ()>> {
+    REPAIR_LOCK.try_lock().ok()
+}
+
+/// Any xfs_repair process, including the bundled one started through the
+/// dynamic loader (its command line ends in `.../xfs_repair ARGS`).
+async fn xfs_repair_running() -> bool {
+    run_capture(PROBE_TIMEOUT, "pgrep", &["-f", "(^|/)xfs_repair( |$)"]).await.ok
+}
+
+/// Seconds between "repair succeeded" and the automatic reboot.
+const REBOOT_COUNTDOWN: Duration = Duration::from_secs(15);
+const TELEMETRY_UNIT: &str = "sentryusb-telemetry";
+const ARCHIVE_UNIT: &str = "sentryusb-archive";
 
 /// Selected once per repair, before stopping services. Every stage (including
 /// destructive escalation) uses this exact executable/loader combination.
@@ -225,14 +262,45 @@ fn marker_exists(path: &str) -> bool {
     std::path::Path::new(path).exists()
 }
 
-fn write_marker(path: &str) {
-    let ts = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
-    if let Err(e) = std::fs::write(path, format!("{{\"ts\":{ts}}}\n")) {
-        tracing::warn!("[storage-boot] failed to write marker {path}: {e}");
+/// Durably record a marker. `false` if /mutable isn't its own mounted
+/// filesystem or the write failed: the caller must not rely on it.
+fn write_marker(path: &str) -> bool {
+    let ts = unix_seconds();
+    match write_durable(path, format!("{{\"ts\":{ts}}}\n").as_bytes()) {
+        Ok(()) => true,
+        Err(e) => {
+            tracing::warn!("[storage-boot] failed to write marker {path}: {e:#}");
+            false
+        }
     }
+}
+
+/// Write `path` atomically (temp file, fsync, rename, fsync the directory),
+/// only when its parent is a separately mounted filesystem — never onto the
+/// SD card root underneath an unmounted /mutable.
+fn write_durable(path: &str, data: &[u8]) -> anyhow::Result<()> {
+    let dir = std::path::Path::new(path).parent().ok_or_else(|| anyhow::anyhow!("no parent directory"))?;
+    let dir = dir.to_string_lossy();
+    if !sentryusb_drives::storage::is_separate_mount(&dir) {
+        anyhow::bail!("{dir} is not mounted");
+    }
+    write_atomic(path, data)
+}
+
+/// Temp file, fsync, rename, fsync the directory.
+fn write_atomic(path: &str, data: &[u8]) -> anyhow::Result<()> {
+    use std::io::Write;
+    let path = std::path::Path::new(path);
+    let dir = path.parent().ok_or_else(|| anyhow::anyhow!("no parent directory"))?;
+    let tmp = dir.join(format!(".{}.tmp", path.file_name().unwrap_or_default().to_string_lossy()));
+    {
+        let mut f = std::fs::File::create(&tmp)?;
+        f.write_all(data)?;
+        f.sync_all()?;
+    }
+    std::fs::rename(&tmp, path)?;
+    std::fs::File::open(dir)?.sync_all()?;
+    Ok(())
 }
 
 fn clear_marker(path: &str) {
@@ -257,7 +325,7 @@ enum BootAction {
 fn decide_boot_action(
     auto_enabled: bool,
     device_found: bool,
-    external: bool,
+    repairable: bool,
     mounted: bool,
     marker_present: bool,
 ) -> BootAction {
@@ -267,8 +335,8 @@ fn decide_boot_action(
     if !device_found {
         return BootAction::Skip("no backingfiles device found");
     }
-    if !external {
-        return BootAction::Skip("backingfiles not on an external drive");
+    if !repairable {
+        return BootAction::Skip("backingfiles is not a repairable data partition");
     }
     if mounted {
         return BootAction::ClearMarker;
@@ -320,6 +388,41 @@ pub(crate) enum RepairMode {
     /// failure when pre-authorized, and reboots itself on success.
     AutoBoot { force_allowed: bool },
 }
+
+/// Did the plain repair reach a real verdict that clearing the log could
+/// change? Automatic mode only clears the log when it could.
+fn force_may_help(r: &CmdResult) -> bool {
+    if r.ok || r.code <= 0 {
+        // Success, a timeout, a spawn failure or a signal (no exit code).
+        return false;
+    }
+    !device_trouble(&r.output)
+}
+
+/// Output that points at the disk or the system rather than at the
+/// filesystem's metadata: clearing the log can't fix these.
+fn device_trouble(output: &str) -> bool {
+    let l = output.to_ascii_lowercase();
+    l.contains("input/output error")
+        || l.contains("i/o error")
+        || l.contains("no such device")
+        || l.contains("cannot allocate memory")
+        || l.contains("out of memory")
+        || l.contains("killed")
+}
+
+/// The escalation for this run. In automatic mode a failure that clearing
+/// the log can't fix (see [`force_may_help`]), or a replay mount that hit
+/// device errors, stops at a plain failure even when the log is dirty.
+fn decide_escalation(rep: &CmdResult, auto: bool, force_allowed: bool, replay_device_trouble: bool) -> Escalation {
+    if auto && !rep.ok && (!force_may_help(rep) || replay_device_trouble) {
+        return Escalation::Fail;
+    }
+    escalation_action(rep.ok, needs_log_replay(&rep.output), auto, force_allowed)
+}
+
+/// Shown before the destructive step, and saved with the state.
+const MSG_LOG_RESET: &str = "The safe repair couldn't fix the footage drive. The last option resets the XFS log (xfs_repair -L). That discards pending filesystem changes, and the repair can then remove or move files and folders, including the car's disk images, snapshots and the drive database. Losses can go beyond the newest clips, and the repair can still fail after making changes. Confirm only if you accept that.";
 
 // Auto-repair notification copy (spec-fixed wording — do not edit).
 const MSG_AUTO_SUCCESS: &str = "Backing-files corruption detected at boot. Automatic repair succeeded — rebooting the Pi now.";
@@ -403,15 +506,21 @@ async fn boot_check(hub: sentryusb_ws::Hub, marker: &str) {
         }
     };
 
+    // Before anything touches the device, including the mount retry below.
+    if xfs_repair_running().await {
+        tracing::warn!("[storage-boot] boot check skipped: an xfs_repair is running");
+        return;
+    }
+
     let device = resolve_backing_device().await;
-    let external = match &device {
-        Some(d) => is_external(d).await,
+    let repairable = match &device {
+        Some(d) => repair_eligibility(d).await.is_ok(),
         None => false,
     };
     let mut mounted = resolve_mount_source(&read_proc_mounts().await, BACKINGFILES).is_some();
 
     // Mount retry: separates "corrupt" from "wasn't there when fstab ran".
-    if auto_enabled && external && !mounted {
+    if auto_enabled && repairable && !mounted {
         if let Some(d) = &device {
             let r = run_capture(CMD_TIMEOUT, "mount", &[d.as_str(), BACKINGFILES]).await;
             if r.ok {
@@ -423,13 +532,14 @@ async fn boot_check(hub: sentryusb_ws::Hub, marker: &str) {
         }
     }
 
-    match decide_boot_action(auto_enabled, device.is_some(), external, mounted, marker_exists(marker)) {
+    match decide_boot_action(auto_enabled, device.is_some(), repairable, mounted, marker_exists(marker)) {
         BootAction::Skip(reason) => {
             tracing::info!("[storage-boot] auto repair skipped: {reason}");
         }
         BootAction::ClearMarker => {
             clear_marker(marker);
             clear_marker(PREFLIGHT_NOTICE_MARKER);
+            clear_state_if_settled().await;
         }
         BootAction::NotifyRepeatCorruption => {
             tracing::warn!(
@@ -442,14 +552,14 @@ async fn boot_check(hub: sentryusb_ws::Hub, marker: &str) {
         }
         BootAction::Repair => {
             let device = device.expect("BootAction::Repair implies device_found");
-            // Belt-and-suspenders: same root-disk refusal as the HTTP handler.
-            if let Some(rp) = root_disk().await {
-                if parent_disk(&device) == rp {
-                    tracing::error!(
-                        "[storage-boot] refusing auto repair: {device} resolves to the root disk"
-                    );
-                    return;
-                }
+            if !database_free() {
+                // Only reachable before setup provisioned the drive.
+                tracing::info!("[storage-boot] auto repair skipped: the server is using the drive database");
+                return;
+            }
+            if let Err(reason) = repair_eligibility(&device).await {
+                tracing::error!("[storage-boot] refusing auto repair of {device}: {reason}");
+                return;
             }
             tracing::warn!(
                 "[storage-boot] /backingfiles corrupt — starting auto repair (force_allowed={force_allowed})"
@@ -511,7 +621,8 @@ async fn device_fstype(dev: &str) -> Option<String> {
 }
 
 /// `/backingfiles` lives on a different physical disk than root and isn't the
-/// onboard SD slot — the precondition for offering repair.
+/// onboard SD slot. Reported for the UI; repair itself uses
+/// [`repair_eligibility`], which also allows SD-card-only installs.
 async fn is_external(dev: &str) -> bool {
     let bp = parent_disk(dev);
     if bp == "mmcblk0" {
@@ -521,6 +632,81 @@ async fn is_external(dev: &str) -> bool {
         Some(rp) => bp != rp,
         None => true,
     }
+}
+
+/// `maj:min` of a block device, from sysfs (no device open).
+fn block_dev_id(dev: &str) -> Option<String> {
+    let name = std::fs::canonicalize(dev).ok()?;
+    let name = name.file_name()?.to_string_lossy().into_owned();
+    let id = std::fs::read_to_string(format!("/sys/class/block/{name}/dev")).ok()?;
+    Some(id.trim().to_string())
+}
+
+/// `maj:min` of the filesystem holding `path` (for swap files).
+fn containing_dev_id(path: &str) -> Option<String> {
+    use std::os::unix::fs::MetadataExt;
+    let dev = std::fs::metadata(path).ok()?.dev();
+    let major = ((dev >> 8) & 0xfff) | ((dev >> 32) & !0xfff);
+    let minor = (dev & 0xff) | ((dev >> 12) & !0xff);
+    Some(format!("{major}:{minor}"))
+}
+
+/// Whether `dev` may be repaired: a partition (not a whole disk) that is not
+/// the root, boot, mutable or swap device. The SD card's own data partition
+/// qualifies — xfs_repair only needs the target itself unmounted. Fails
+/// closed when the protected devices can't be identified.
+async fn repair_eligibility(dev: &str) -> Result<(), String> {
+    let dev = dev.to_string();
+    tokio::task::spawn_blocking(move || {
+        let name = std::fs::canonicalize(&dev)
+            .map_err(|e| format!("cannot resolve {dev}: {e}"))?;
+        let name = name.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        if !std::path::Path::new(&format!("/sys/class/block/{name}/partition")).exists() {
+            return Err(format!("{dev} is a whole disk, not a data partition"));
+        }
+        let target = block_dev_id(&dev).ok_or_else(|| format!("cannot identify {dev}"))?;
+        let mountinfo = std::fs::read_to_string("/proc/self/mountinfo")
+            .map_err(|e| format!("cannot read mounts: {e}"))?;
+        let swaps = std::fs::read_to_string("/proc/swaps").unwrap_or_default();
+        eligibility_from(&target, &sentryusb_drives::storage::visible_mounts(&mountinfo), &swaps)
+    })
+    .await
+    .unwrap_or_else(|e| Err(format!("eligibility check failed: {e}")))
+}
+
+/// Pure core of [`repair_eligibility`] once `target` is known to be a partition.
+fn eligibility_from(
+    target: &str,
+    mounts: &std::collections::HashMap<String, String>,
+    swaps: &str,
+) -> Result<(), String> {
+    let root = mounts.get("/").ok_or("cannot identify the system partition")?;
+    let mut protected = vec![("system", root.clone())];
+    for (label, mp) in [("boot", "/boot/firmware"), ("boot", "/boot"), ("settings (/mutable)", "/mutable")] {
+        if let Some(id) = mounts.get(mp) {
+            protected.push((label, id.clone()));
+        }
+    }
+    for line in swaps.lines().skip(1) {
+        let mut f = line.split_whitespace();
+        let (Some(file), Some(kind)) = (f.next(), f.next()) else { continue };
+        let id = if kind == "partition" { block_dev_id(file) } else { containing_dev_id(file) };
+        match id {
+            Some(id) => protected.push(("swap", id)),
+            None => return Err(format!("cannot identify swap {file}")),
+        }
+    }
+    if let Some((label, _)) = protected.iter().find(|(_, id)| id == target) {
+        return Err(format!("it is the {label} partition"));
+    }
+    Ok(())
+}
+
+/// Whether the device is still mounted anywhere (by device number).
+async fn device_still_mounted(dev: &str) -> bool {
+    let Some(id) = block_dev_id(dev) else { return true };
+    let mountinfo = tokio::fs::read_to_string("/proc/self/mountinfo").await.unwrap_or_default();
+    mountinfo.is_empty() || sentryusb_drives::storage::device_is_mounted(&mountinfo, &id)
 }
 
 /// True for a genuine XFS *error* line for this device, excluding the benign
@@ -582,6 +768,10 @@ fn persist_log(buf: &str) -> Option<String> {
         .unwrap_or(0);
     let name = format!("storage_repair_{ts}.log");
     let path = format!("{REPAIR_LOG_DIR}/{name}");
+    if !sentryusb_drives::storage::is_separate_mount(REPAIR_LOG_DIR) {
+        tracing::warn!("repair log not saved: {REPAIR_LOG_DIR} is not mounted");
+        return None;
+    }
     match std::fs::write(&path, buf) {
         Ok(_) => Some(name),
         Err(e) => {
@@ -613,10 +803,14 @@ fn latest_repair_log() -> Option<String> {
 
 #[derive(Serialize)]
 struct StorageHealth {
-    /// `healthy` | `unmounted` | `corrupt` | `missing_images` | `no_external`
+    /// `healthy` | `unmounted` | `corrupt` | `missing_images` | `not_repairable`
     state: String,
-    /// Whether `/backingfiles` is on a separate external drive (gates the UI).
+    /// Whether `/backingfiles` is on a separate external drive.
     external: bool,
+    /// Whether Repair Storage can run on this device (gates the UI).
+    repairable: bool,
+    /// Why not, when `repairable` is false.
+    repair_blocked: Option<String>,
     device: Option<String>,
     fstype: Option<String>,
     mounted: bool,
@@ -637,12 +831,17 @@ pub async fn storage_health() -> (StatusCode, Json<serde_json::Value>) {
         Some(d) => is_external(d).await,
         None => false,
     };
+    let eligibility = match &device {
+        Some(d) => repair_eligibility(d).await,
+        None => Err("no footage partition found".to_string()),
+    };
+    let repairable = eligibility.is_ok();
     let fstype = match &device {
         Some(d) => device_fstype(d).await,
         None => None,
     };
     let cam = cam_disk_present();
-    let dmesg_errors = if external {
+    let dmesg_errors = if repairable {
         match &device {
             Some(d) => recent_xfs_errors(d).await,
             None => vec![],
@@ -651,8 +850,8 @@ pub async fn storage_health() -> (StatusCode, Json<serde_json::Value>) {
         vec![]
     };
 
-    let state = if !external {
-        "no_external"
+    let state = if !repairable {
+        "not_repairable"
     } else if mounted {
         if cam { "healthy" } else { "missing_images" }
     } else if !dmesg_errors.is_empty() {
@@ -664,6 +863,8 @@ pub async fn storage_health() -> (StatusCode, Json<serde_json::Value>) {
     let health = StorageHealth {
         state: state.to_string(),
         external,
+        repairable,
+        repair_blocked: eligibility.err(),
         device,
         fstype,
         mounted,
@@ -727,7 +928,26 @@ pub async fn storage_repair(State(hub): State<sentryusb_ws::Hub>, body: String) 
             StatusCode::CONFLICT, "Storage repair is already in progress. Wait for it to finish.",
         ),
     };
-    let req: RepairRequest = serde_json::from_str(&body).unwrap_or_default();
+    let req: RepairRequest = if body.trim().is_empty() {
+        RepairRequest::default()
+    } else {
+        match serde_json::from_str(&body) {
+            Ok(req) => req,
+            Err(e) => return crate::json_error(StatusCode::BAD_REQUEST, &format!("Invalid repair request: {e}")),
+        }
+    };
+    if !database_free() {
+        return crate::json_error(
+            StatusCode::CONFLICT,
+            "SentryUSB is using the footage drive right now, so it can't be repaired. Reboot the Pi; if the drive still can't be mounted, Repair Storage will be available.",
+        );
+    }
+    if xfs_repair_running().await {
+        return crate::json_error(
+            StatusCode::CONFLICT,
+            "An earlier xfs_repair is still running. Wait for it to finish or reboot the Pi.",
+        );
+    }
 
     let device = match resolve_backing_device().await {
         Some(d) => d,
@@ -738,20 +958,11 @@ pub async fn storage_repair(State(hub): State<sentryusb_ws::Hub>, body: String) 
             )
         }
     };
-    if !is_external(&device).await {
+    if let Err(reason) = repair_eligibility(&device).await {
         return crate::json_error(
             StatusCode::BAD_REQUEST,
-            "Storage repair is only available when camera storage is on a separate external drive.",
+            &format!("Refusing to repair {device}: {reason}."),
         );
-    }
-    // Belt-and-suspenders: never aim the repair at the root disk.
-    if let Some(rp) = root_disk().await {
-        if parent_disk(&device) == rp {
-            return crate::json_error(
-                StatusCode::BAD_REQUEST,
-                "Refusing to repair: the resolved device is the system/root disk.",
-            );
-        }
     }
     if let Some(fs) = device_fstype(&device).await {
         if fs != "xfs" {
@@ -775,6 +986,234 @@ pub async fn storage_repair(State(hub): State<sentryusb_ws::Hub>, body: String) 
     (StatusCode::OK, Json(serde_json::json!({ "status": "started" })))
 }
 
+// ───────────────────────── saved repair state ─────────────────────────
+
+/// Saved outcome of the latest repair, so the card can show it after a
+/// page refresh or a service restart. Lives on /mutable (its own partition,
+/// also where the transcripts go); RAM-only when /mutable isn't mounted.
+const STATE_FILE: &str = "/mutable/storage_repair_state.json";
+
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
+pub(crate) struct RepairRecord {
+    /// `running` | `needs_force` | `rebooting` | `failed` | `interrupted`
+    phase: String,
+    device: Option<String>,
+    message: Option<String>,
+    log_file: Option<String>,
+    started: u64,
+    updated: u64,
+    /// Boot the record was written in (tells "rebooted" from "service restarted").
+    #[serde(default)]
+    boot_id: Option<String>,
+}
+
+fn current_boot_id() -> Option<String> {
+    std::fs::read_to_string("/proc/sys/kernel/random/boot_id").ok().map(|s| s.trim().to_string())
+}
+
+static RECORD: std::sync::Mutex<Option<RepairRecord>> = std::sync::Mutex::new(None);
+/// Bumped per save; a write abandoned by its timeout must not publish an
+/// older record over a newer one once a stalled /mutable wakes up.
+static RECORD_GEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// One state-file write at a time (they share the temp file name).
+static RECORD_WRITE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+/// False when the last save didn't reach /mutable.
+static RECORD_SAVED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+
+fn current_record() -> Option<RepairRecord> {
+    RECORD.lock().unwrap_or_else(|e| e.into_inner()).clone()
+}
+
+/// Update the record in RAM and try to save it. A hung /mutable must not
+/// hang the repair: the save gets 10 seconds.
+async fn save_record(record: Option<RepairRecord>) -> bool {
+    *RECORD.lock().unwrap_or_else(|e| e.into_inner()) = record.clone();
+    let generation = RECORD_GEN.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+    let write = tokio::task::spawn_blocking(move || {
+        let _one_at_a_time = RECORD_WRITE.lock().unwrap_or_else(|e| e.into_inner());
+        if RECORD_GEN.load(std::sync::atomic::Ordering::SeqCst) != generation {
+            return Ok(()); // a newer record is queued behind us
+        }
+        match &record {
+            Some(r) => write_durable(STATE_FILE, &serde_json::to_vec_pretty(r)?),
+            None => {
+                if sentryusb_drives::storage::is_separate_mount(REPAIR_LOG_DIR) {
+                    match std::fs::remove_file(STATE_FILE) {
+                        Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e.into()),
+                        _ => {}
+                    }
+                }
+                Ok(())
+            }
+        }
+    });
+    let saved = matches!(tokio::time::timeout(Duration::from_secs(10), write).await, Ok(Ok(Ok(()))));
+    if !saved {
+        tracing::warn!("[storage-repair] could not save the repair state to {STATE_FILE}");
+    }
+    RECORD_SAVED.store(saved, std::sync::atomic::Ordering::SeqCst);
+    saved
+}
+
+async fn set_phase(phase: &str, device: &str, message: Option<String>, log_file: Option<String>) -> bool {
+    let now = unix_seconds();
+    let started = current_record()
+        .filter(|r| r.phase == "running")
+        .map(|r| r.started)
+        .unwrap_or(now);
+    save_record(Some(RepairRecord {
+        phase: phase.into(),
+        device: Some(device.into()),
+        message,
+        log_file,
+        started,
+        updated: now,
+        boot_id: current_boot_id(),
+    }))
+    .await
+}
+
+/// What a saved record means after this process starts. A repair runs
+/// inside this process, so one saved as running has stopped. A reboot
+/// after a repair is finished business once the Pi really rebooted; if
+/// only the service restarted (same boot), the reboot never happened and
+/// the drive is still unmounted.
+fn after_restart(record: RepairRecord, boot_id: Option<&str>) -> Option<RepairRecord> {
+    match record.phase.as_str() {
+        "running" => Some(RepairRecord {
+            phase: "interrupted".into(),
+            message: Some("The repair stopped before it finished (the Pi restarted or lost power). Run Repair Storage again.".into()),
+            updated: unix_seconds(),
+            ..record
+        }),
+        "rebooting" if boot_id.is_some() && record.boot_id.as_deref() == boot_id => Some(RepairRecord {
+            phase: "interrupted".into(),
+            message: Some("The repair finished, but the Pi didn't reboot afterwards. Reboot the Pi to reconnect the drive to the car.".into()),
+            updated: unix_seconds(),
+            ..record
+        }),
+        "rebooting" => None,
+        _ => Some(record),
+    }
+}
+
+/// Called once at startup, before any repair can start.
+pub async fn recover_state_after_restart() {
+    // Bounded: a stalled /mutable must not keep the recovery UI from starting.
+    let read = tokio::task::spawn_blocking(|| {
+        if !sentryusb_drives::storage::is_separate_mount(REPAIR_LOG_DIR) {
+            return None;
+        }
+        let text = std::fs::read_to_string(STATE_FILE).ok()?;
+        serde_json::from_str::<RepairRecord>(&text).ok()
+    });
+    let loaded = match tokio::time::timeout(Duration::from_secs(5), read).await {
+        Ok(Ok(record)) => record,
+        _ => {
+            tracing::warn!("[storage-repair] could not read {STATE_FILE} in time; starting without it");
+            None
+        }
+    };
+    let Some(record) = loaded else { return };
+    let next = after_restart(record.clone(), current_boot_id().as_deref());
+    if next.as_ref() != Some(&record) {
+        save_record(next).await;
+    } else {
+        *RECORD.lock().unwrap_or_else(|e| e.into_inner()) = next;
+    }
+    clear_state_if_settled().await;
+}
+
+/// Storage is working again: an old failure no longer applies.
+async fn clear_state_if_settled() {
+    let settled = current_record().is_some_and(|r| r.phase != "running")
+        && resolve_mount_source(&read_proc_mounts().await, BACKINGFILES).is_some()
+        && tokio::time::timeout(
+            Duration::from_secs(10),
+            tokio::task::spawn_blocking(|| {
+                sentryusb_drives::storage::check_footage().is_ok()
+                    && sentryusb_gadget::validate_storage().is_ok()
+            }),
+        )
+        .await
+        .is_ok_and(|r| r.unwrap_or(false));
+    if settled {
+        save_record(None).await;
+    }
+}
+
+/// GET /api/storage/repair — the latest repair outcome, for the card to
+/// restore after a refresh.
+pub async fn repair_status() -> (StatusCode, Json<serde_json::Value>) {
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({
+            "active": REPAIR_LOCK.try_lock().is_err(),
+            "record": current_record(),
+            "saved": RECORD_SAVED.load(std::sync::atomic::Ordering::SeqCst),
+        })),
+    )
+}
+
+// ───────────────────────── the repair ─────────────────────────
+
+/// Bring back what quiescing stopped, after a repair that won't reboot.
+/// archiveloop waits for usable storage on its own.
+async fn resume_services(log: &mut RepairLog) {
+    for unit in [TELEMETRY_UNIT, ARCHIVE_UNIT] {
+        let r = run_capture(CMD_TIMEOUT, "systemctl", &["start", unit]).await;
+        if !r.ok {
+            log.cmd("resume", &format!("systemctl start {unit}"), &r);
+        }
+    }
+}
+
+/// End a repair that didn't succeed: save the outcome, tell the UI, restart
+/// what was stopped (if anything was), and notify in auto mode.
+async fn fail_repair(
+    hub: &sentryusb_ws::Hub,
+    log: &mut RepairLog,
+    device: &str,
+    quiesced: bool,
+    error: &str,
+    push: Option<(&str, &str)>,
+) {
+    if quiesced {
+        resume_services(log).await;
+    }
+    let log_file = persist_log(&log.buf);
+    set_phase("failed", device, Some(error.to_string()), log_file.clone()).await;
+    hub.broadcast(
+        "storage_repair",
+        serde_json::json!({ "status": "error", "device": device, "log_file": log_file, "error": error }),
+    );
+    if let Some((message, summary)) = push {
+        notify_storage_repair(message, summary).await;
+    }
+}
+
+/// Unmount the footage drive and everything exposed from it, then prove
+/// the device is mounted nowhere.
+async fn release_mounts(log: &mut RepairLog, device: &str) -> bool {
+    let mut mps: Vec<&str> = SUBMOUNTS.to_vec();
+    mps.push(BACKINGFILES);
+    for mp in mps {
+        let r = run_capture(CMD_TIMEOUT, "umount", &[mp]).await;
+        if !r.ok && !r.output.contains("not mounted") && !r.output.contains("not found") {
+            log.cmd("unmount", &format!("umount {mp}"), &r);
+        }
+    }
+    let r = run_capture(CMD_TIMEOUT, "umount", &[device]).await;
+    if !r.ok && !r.output.contains("not mounted") {
+        log.cmd("unmount", &format!("umount {device}"), &r);
+    }
+    if device_still_mounted(device).await {
+        log.line("unmount", format!("{device} is still mounted; not repairing a filesystem in use."));
+        return false;
+    }
+    true
+}
+
 async fn run_repair(
     hub: sentryusb_ws::Hub, device: String, mode: RepairMode,
     _permit: tokio::sync::MutexGuard<'static, ()>,
@@ -785,6 +1224,7 @@ async fn run_repair(
         RepairMode::Interactive { confirm_destructive } => (false, confirm_destructive),
         RepairMode::AutoBoot { force_allowed } => (true, force_allowed),
     };
+    let hard_fail_push = auto.then_some((MSG_HARD_FAIL, "Drive repair failed. Check the drive's power, cable and enclosure, then open Repair Storage."));
 
     log.line(
         "preflight",
@@ -799,9 +1239,10 @@ async fn run_repair(
         Err(error) => {
             log.line("preflight", &error);
             let log_file = persist_log(&log.buf);
+            let message = format!("Cannot prepare compatible XFS repair tool: {error}. Storage was not changed.");
+            set_phase("failed", &device, Some(message.clone()), log_file.clone()).await;
             hub.broadcast("storage_repair", serde_json::json!({
-                "status": "error", "device": device, "log_file": log_file,
-                "error": format!("Cannot prepare compatible XFS repair tool: {error}. Storage was not changed."),
+                "status": "error", "device": device, "log_file": log_file, "error": message,
             }));
             if auto && claim_preflight_notice(PREFLIGHT_NOTICE_MARKER, unix_seconds()) {
                 notify_storage_repair("Automatic storage repair could not start", &error).await;
@@ -814,9 +1255,10 @@ async fn run_repair(
     log.cmd("preflight", "selected xfs_repair -V", &version);
     if !version.ok {
         let log_file = persist_log(&log.buf);
+        let message = "Selected XFS repair tool cannot run. Storage was not changed.".to_string();
+        set_phase("failed", &device, Some(message.clone()), log_file.clone()).await;
         hub.broadcast("storage_repair", serde_json::json!({
-            "status": "error", "device": device, "log_file": log_file,
-            "error": "Selected XFS repair tool cannot run. Storage was not changed.",
+            "status": "error", "device": device, "log_file": log_file, "error": message,
         }));
         if auto && claim_preflight_notice(PREFLIGHT_NOTICE_MARKER, unix_seconds()) {
             notify_storage_repair("Automatic storage repair could not start", &version.output).await;
@@ -825,34 +1267,65 @@ async fn run_repair(
     }
     // Tool acquisition is not a repair attempt. An offline first boot must
     // not suppress a later attempt once the compatible tool is available.
-    if auto {
-        write_marker(AUTO_REPAIR_MARKER);
+    // An automatic attempt that can't be recorded doesn't start: without the
+    // marker, a repair that ends in a reboot could repeat on every boot.
+    if auto && !write_marker(AUTO_REPAIR_MARKER) {
+        let message = "Automatic repair did not start: its attempt couldn't be recorded on /mutable. Run Repair Storage from Settings.".to_string();
+        log.line("preflight", &message);
+        set_phase("failed", &device, Some(message.clone()), None).await;
+        hub.broadcast("storage_repair", serde_json::json!({ "status": "error", "device": device, "error": message }));
+        return;
     }
     clear_marker(PREFLIGHT_NOTICE_MARKER);
+    set_phase("running", &device, None, None).await;
 
     // ── 1. Quiesce — NEVER stop the `sentryusb` service (it's us). ──
-    log.line("quiesce", "Stopping the archive loop and USB gadget (the web UI stays up)…");
-    let _ = run_capture(t, "systemctl", &["stop", "sentryusb-archive"]).await;
-    let _ = run_capture(t, "bash", &["-c", "killall archiveloop 2>/dev/null || true"]).await;
-    match tokio::task::spawn_blocking(sentryusb_gadget::disable).await {
-        Ok(Ok(())) => log.line("quiesce", "USB gadget disabled."),
-        Ok(Err(e)) => log.line("quiesce", format!("Gadget disable warning (continuing): {e}")),
-        Err(e) => log.line("quiesce", format!("Gadget disable task error (continuing): {e}")),
-    }
-
-    // ── 2. Release mounts so xfs_repair won't refuse on a busy device. ──
-    log.line("unmount", "Releasing mounts…");
-    let mut mps: Vec<&str> = SUBMOUNTS.to_vec();
-    mps.push(BACKINGFILES);
-    for mp in mps {
-        let r = run_capture(t, "umount", &[mp]).await;
-        if !r.ok && !r.output.contains("not mounted") && !r.output.contains("not found") {
-            log.cmd("unmount", &format!("umount {mp}"), &r);
+    // The server runs without a database here (admission requires it), so
+    // its own process holds nothing on the drive.
+    log.line("quiesce", "Stopping telemetry, the archive loop and the USB drive (the web UI stays up)…");
+    for unit in [TELEMETRY_UNIT, ARCHIVE_UNIT] {
+        let r = run_capture(t, "systemctl", &["stop", unit]).await;
+        if !r.ok {
+            log.cmd("quiesce", &format!("systemctl stop {unit}"), &r);
         }
     }
-    let r = run_capture(t, "umount", &[device.as_str()]).await;
-    if !r.ok && !r.output.contains("not mounted") {
-        log.cmd("unmount", &format!("umount {device}"), &r);
+    let _ = run_capture(t, "bash", &["-c", "killall archiveloop 2>/dev/null || true"]).await;
+    if run_capture(PROBE_TIMEOUT, "pgrep", &["-f", "/root/bin/archiveloop"]).await.ok {
+        log.line("quiesce", "The archive loop is still running.");
+        fail_repair(&hub, &mut log, &device, true,
+            "Couldn't stop the archive loop, so the drive wasn't touched. Reboot the Pi and try again.", None).await;
+        return;
+    }
+    let gadget = tokio::task::spawn_blocking(|| {
+        sentryusb_gadget::disable()?;
+        if sentryusb_gadget::is_active() {
+            anyhow::bail!("the USB drive is still presented to the car");
+        }
+        Ok(())
+    })
+    .await;
+    match gadget {
+        Ok(Ok(())) => log.line("quiesce", "USB drive disconnected from the car."),
+        Ok(Err(e)) => {
+            log.line("quiesce", format!("USB disconnect failed: {e:#}"));
+            fail_repair(&hub, &mut log, &device, true,
+                "Couldn't disconnect the USB drive from the car, so the drive wasn't touched. Reboot the Pi and try again.", None).await;
+            return;
+        }
+        Err(e) => {
+            log.line("quiesce", format!("USB disconnect task error: {e}"));
+            fail_repair(&hub, &mut log, &device, true,
+                "Couldn't disconnect the USB drive from the car, so the drive wasn't touched. Reboot the Pi and try again.", None).await;
+            return;
+        }
+    }
+
+    // ── 2. Release mounts; xfs_repair must never run on a mounted filesystem. ──
+    log.line("unmount", "Releasing mounts…");
+    if !release_mounts(&mut log, &device).await {
+        fail_repair(&hub, &mut log, &device, true,
+            "The footage drive is still in use, so it wasn't repaired. Reboot the Pi and try again.", None).await;
+        return;
     }
 
     // ── 3. Read-only diagnosis. ──
@@ -860,18 +1333,27 @@ async fn run_repair(
     let dry = tool.run(t, &["-n", &device]).await;
     log.cmd("dryrun", &format!("xfs_repair -n {device}"), &dry);
 
-    // ── 4. Non-destructive repair, with a mount-to-replay-log retry. ──
-    log.line("repair", "Attempting repair (xfs_repair)…");
+    // ── 4. Repair without clearing the log, with a mount-to-replay-log retry. ──
+    log.line("repair", "Attempting repair without clearing the log (xfs_repair)…");
     let mut rep = tool.run(t, &[&device]).await;
     log.cmd("repair", &format!("xfs_repair {device}"), &rep);
+    let mut replay_device_trouble = false;
 
     if !rep.ok && needs_log_replay(&rep.output) {
         log.line("repair", "Dirty log detected — mounting to replay it, then retrying…");
         let m = run_capture(t, "mount", &[&device, BACKINGFILES]).await;
         log.cmd("repair", &format!("mount {device} {BACKINGFILES}"), &m);
+        // A replay mount that timed out, couldn't start or hit device errors
+        // gave no verdict on the log: automatic mode won't clear it.
+        replay_device_trouble = !m.ok && (m.code <= 0 || device_trouble(&m.output));
         if m.ok {
             let u = run_capture(t, "umount", &[BACKINGFILES]).await;
             log.cmd("repair", &format!("umount {BACKINGFILES}"), &u);
+            if device_still_mounted(&device).await {
+                fail_repair(&hub, &mut log, &device, true,
+                    "The footage drive replayed its log but couldn't be unmounted again. Reboot the Pi; the drive may now mount normally.", None).await;
+                return;
+            }
             rep = tool.run(t, &[&device]).await;
             log.cmd("repair", &format!("xfs_repair {device} (after log replay)"), &rep);
         } else {
@@ -880,18 +1362,23 @@ async fn run_repair(
     }
 
     // ── 5. Escalation gate: policy differs by mode (see escalation_action). ──
+    // Automatic mode only clears the log after a real repair verdict that
+    // clearing it could change — never after a timeout or I/O errors.
     let mut force_ran = false;
-    match escalation_action(rep.ok, needs_log_replay(&rep.output), auto, force_allowed) {
+    match decide_escalation(&rep, auto, force_allowed, replay_device_trouble) {
         Escalation::Proceed | Escalation::Fail => {}
         Escalation::StopNeedsForce => {
             let log_file = persist_log(&log.buf);
+            // Saved before the UI hears about it, so a refresh still shows it.
+            set_phase("needs_force", &device, Some(MSG_LOG_RESET.into()), log_file.clone()).await;
+            resume_services(&mut log).await;
             hub.broadcast(
                 "storage_repair",
                 serde_json::json!({
                     "status": "needs_force",
                     "device": device,
                     "log_file": log_file,
-                    "message": "The filesystem log is damaged and can't be replayed. The only repair left destroys the pending XFS log (xfs_repair -L), which may lose the most recently written metadata — typically a few of the newest clips. Confirm to proceed.",
+                    "message": MSG_LOG_RESET,
                 }),
             );
             if auto {
@@ -908,6 +1395,11 @@ async fn run_repair(
                     "Confirmed — clearing the XFS log (xfs_repair -L)…"
                 },
             );
+            if device_still_mounted(&device).await {
+                fail_repair(&hub, &mut log, &device, true,
+                    "The footage drive became mounted again, so the log was not cleared. Reboot the Pi and try again.", hard_fail_push).await;
+                return;
+            }
             rep = tool.run(t, &["-L", &device]).await;
             log.cmd("repair", &format!("xfs_repair -L {device}"), &rep);
             force_ran = true;
@@ -915,78 +1407,80 @@ async fn run_repair(
     }
 
     if !rep.ok {
-        let log_file = persist_log(&log.buf);
-        hub.broadcast(
-            "storage_repair",
-            serde_json::json!({
-                "status": "error",
-                "device": device,
-                "log_file": log_file,
-                "error": "xfs_repair could not repair the filesystem. Review the log for filesystem, repair-tool, power, or connection errors; this alone does not establish SSD hardware failure.",
-            }),
-        );
-        if auto {
-            notify_storage_repair(MSG_HARD_FAIL, "Drive repair failed. The drive may be failing — check its power, cable and enclosure.").await;
-        }
+        fail_repair(&hub, &mut log, &device, true,
+            "xfs_repair could not repair the filesystem. Review the log for filesystem, repair-tool, power, or connection errors; this alone does not establish SSD hardware failure.",
+            hard_fail_push).await;
         return;
     }
 
-    // ── 6. Read-only verify, then unmount so the reboot mounts cleanly. ──
-    log.line("verify", "Repair succeeded — verifying contents…");
-    let mut cam_present = false;
-    let mut lost_found = 0usize;
+    // ── 6. Verify the real filesystem and the car's disk images. ──
+    log.line("verify", "Repair succeeded — verifying the drive and its disk images…");
     let m = run_capture(t, "mount", &[&device, BACKINGFILES]).await;
-    if m.ok {
-        cam_present = cam_disk_present();
-        if let Ok(rd) = std::fs::read_dir(format!("{BACKINGFILES}/lost+found")) {
-            lost_found = rd.flatten().count();
-        }
-        log.line(
-            "verify",
-            format!("cam_disk.bin present: {cam_present}; lost+found entries: {lost_found}"),
-        );
-        let _ = run_capture(t, "umount", &[BACKINGFILES]).await;
-    } else {
+    if !m.ok {
         log.cmd("verify", &format!("mount {device} {BACKINGFILES}"), &m);
-        log.line("verify", "Could not mount after repair to verify — the reboot will retry the mount.");
+        fail_repair(&hub, &mut log, &device, true,
+            "xfs_repair finished, but the footage drive still won't mount. Review the log, then reboot the Pi and run Repair Storage again.",
+            hard_fail_push).await;
+        return;
+    }
+    let lost_found = std::fs::read_dir(format!("{BACKINGFILES}/lost+found"))
+        .map(|rd| rd.flatten().count())
+        .unwrap_or(0);
+    let images = tokio::task::spawn_blocking(|| {
+        sentryusb_drives::storage::check_footage()?;
+        sentryusb_gadget::validate_storage()
+    })
+    .await
+    .map_err(anyhow::Error::from)
+    .and_then(|r| r);
+    let cam_present = cam_disk_present();
+    log.line("verify", format!("cam_disk.bin present: {cam_present}; lost+found entries: {lost_found}"));
+    let u = run_capture(t, "umount", &[BACKINGFILES]).await;
+    if !u.ok {
+        log.cmd("verify", &format!("umount {BACKINGFILES}"), &u);
+    }
+    if let Err(e) = images {
+        log.line("verify", format!("Disk images are not usable: {e:#}"));
+        fail_repair(&hub, &mut log, &device, true,
+            "The filesystem was repaired, but the car's disk images are missing or unusable. Re-run the Setup Wizard to recreate them (your other files stay).",
+            auto.then_some((MSG_HARD_FAIL, "Drive repaired, but the car's disk images are missing. Open Setup to recreate them."))).await;
+        return;
     }
 
-    // ── 7. Reboot-required terminal state (user initiates the reboot). ──
+    // ── 7. Reboot: the normal boot path brings storage, the database,
+    //      archiving and the USB drive back in order. ──
     let log_file = persist_log(&log.buf);
-    let message = if cam_present {
-        "Repair complete. A reboot is required to bring camera storage back online.".to_string()
-    } else {
-        "Repair complete, but cam_disk.bin is missing. After rebooting you'll need to recreate the backing files by re-running the Setup Wizard. A reboot is required first.".to_string()
-    };
+    let secs = REBOOT_COUNTDOWN.as_secs();
+    let message = format!(
+        "Repair complete and the disk images check out{}. Rebooting in {secs} seconds to reconnect the drive to the car.",
+        if lost_found > 0 { format!(" ({lost_found} recovered item(s) are in lost+found)") } else { String::new() }
+    );
+    set_phase("rebooting", &device, Some(message.clone()), log_file.clone()).await;
     hub.broadcast(
         "storage_repair",
         serde_json::json!({
-            "status": "reboot_required",
+            "status": "rebooting",
             "device": device,
             "cam_disk_present": cam_present,
             "lost_found_count": lost_found,
             "log_file": log_file,
+            "seconds": secs,
             "message": message,
         }),
     );
-
-    // ── 8. Auto mode finishes the job itself: notify, then reboot. ──
     if auto {
-        let mut push = if force_ran { MSG_FORCE_SUCCESS } else { MSG_AUTO_SUCCESS }.to_string();
-        if !cam_present {
-            push.push_str(" Note: cam_disk.bin is missing — re-run the Setup Wizard to recreate the backing files after the reboot.");
-        }
-        let summary = if cam_present {
-            "Drive filesystem repaired. Rebooting the Pi now."
-        } else {
-            "Drive filesystem repaired, but camera storage is missing. Rebooting now — open Setup afterward."
-        };
-        notify_storage_repair(&push, summary).await;
-        tracing::info!("[storage-boot] auto repair complete — rebooting");
-        // Same mechanism as POST /api/system/reboot. Notification dispatch
-        // above has already completed (bounded by the 30s provider timeout),
-        // so nothing is cut off by the reboot.
-        let _ = run_capture(t, "reboot", &[]).await;
+        let push = if force_ran { MSG_FORCE_SUCCESS } else { MSG_AUTO_SUCCESS };
+        notify_storage_repair(push, "Drive filesystem repaired. Rebooting the Pi now.").await;
+    }
+    // The repair slot stays held through the countdown, so the reopen
+    // probe and USB enable wait for the reboot.
+    tokio::time::sleep(REBOOT_COUNTDOWN).await;
+    tracing::info!("[storage-repair] repair complete — rebooting");
+    let r = run_capture(t, "reboot", &[]).await;
+    if !r.ok {
+        log.cmd("reboot", "reboot", &r);
+        fail_repair(&hub, &mut log, &device, true,
+            "The repair succeeded, but the Pi couldn't reboot itself. Reboot it from Settings to reconnect the drive.", None).await;
     }
 }
 
@@ -1170,8 +1664,8 @@ tmpfs /run tmpfs rw 0 0";
         assert_eq!(decide_boot_action(false, true, true, false, false), Skip("storage_auto_repair disabled"));
         // No device (SSD unplugged / setup incomplete) → skip.
         assert_eq!(decide_boot_action(true, false, false, false, false), Skip("no backingfiles device found"));
-        // Not an external drive → skip (same gate as the manual card).
-        assert_eq!(decide_boot_action(true, true, false, false, false), Skip("backingfiles not on an external drive"));
+        // Not a repairable data partition → skip (same gate as the manual card).
+        assert_eq!(decide_boot_action(true, true, false, false, false), Skip("backingfiles is not a repairable data partition"));
         // Healthy mount → clear any stale incident marker.
         assert_eq!(decide_boot_action(true, true, true, true, false), ClearMarker);
         assert_eq!(decide_boot_action(true, true, true, true, true), ClearMarker);
@@ -1202,6 +1696,79 @@ tmpfs /run tmpfs rw 0 0";
         assert_eq!(escalation_action(false, false, false, false), Fail);
     }
 
+    fn result(ok: bool, code: i32, output: &str) -> CmdResult {
+        CmdResult { ok, code, output: output.into(), stdout: String::new(), stderr: String::new() }
+    }
+
+    #[test]
+    fn auto_mode_only_clears_the_log_after_a_real_verdict() {
+        // A finished repair that reported damage: clearing the log may help.
+        assert!(force_may_help(&result(false, 1, "Phase 3 ... fatal error -- couldn't map inode")));
+        // Timeout / spawn failure / signal: no verdict.
+        assert!(!force_may_help(&result(false, -1, "(timed out after 300s)")));
+        // Device I/O trouble: clearing the log can't fix the disk.
+        assert!(!force_may_help(&result(false, 1, "pread: Input/output error")));
+        assert!(!force_may_help(&result(false, 1, "can't read superblock: No such device")));
+        assert!(!force_may_help(&result(true, 0, "done")));
+        // With the toggle on, a timeout fails instead of running -L...
+        let timed_out = result(false, -1, "(timed out after 300s)");
+        assert_eq!(decide_escalation(&timed_out, true, true, false), Escalation::Fail);
+        // ...even when the log is dirty, the veto wins in auto mode.
+        let dirty_io = result(false, 2, "metadata changes in a log ... pread: Input/output error");
+        assert_eq!(decide_escalation(&dirty_io, true, true, false), Escalation::Fail);
+        // A dirty log whose replay mount hit device errors or timed out: no -L either.
+        let dirty = result(false, 2, "ERROR: The filesystem has valuable metadata changes in a log which needs to be replayed.");
+        assert_eq!(decide_escalation(&dirty, true, true, true), Escalation::Fail);
+        // Thursday's case: dirty log, replay failed on corruption → -L when allowed.
+        assert_eq!(decide_escalation(&dirty, true, true, false), Escalation::RunForce);
+        assert_eq!(decide_escalation(&dirty, true, false, false), Escalation::StopNeedsForce);
+        // Interactive keeps asking the user for a dirty log.
+        assert_eq!(decide_escalation(&dirty, false, false, false), Escalation::StopNeedsForce);
+        assert_eq!(decide_escalation(&result(true, 0, ""), true, true, true), Escalation::Proceed);
+    }
+
+    #[test]
+    fn sd_card_data_partition_is_repairable_but_system_partitions_are_not() {
+        let mounts: std::collections::HashMap<String, String> = [
+            ("/", "179:2"), ("/boot/firmware", "179:1"), ("/mutable", "179:4"),
+        ].into_iter().map(|(a, b)| (a.to_string(), b.to_string())).collect();
+        let swaps = "Filename	Type	Size	Used	Priority
+";
+        // SD-only footage partition on the same card as root.
+        assert_eq!(eligibility_from("179:3", &mounts, swaps), Ok(()));
+        // External SSD partition.
+        assert_eq!(eligibility_from("8:2", &mounts, swaps), Ok(()));
+        for protected in ["179:2", "179:1", "179:4"] {
+            assert!(eligibility_from(protected, &mounts, swaps).is_err(), "{protected}");
+        }
+        // Unknown root → fail closed.
+        let no_root: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+        assert!(eligibility_from("179:3", &no_root, swaps).is_err());
+        // A swap entry that can't be identified → fail closed.
+        let bad_swap = "Filename	Type	Size	Used	Priority
+/nonexistent/swap partition 1 0 -2
+";
+        assert!(eligibility_from("179:3", &mounts, bad_swap).is_err());
+    }
+
+    #[test]
+    fn a_repair_saved_as_running_is_interrupted_after_a_restart() {
+        let base = RepairRecord { phase: "running".into(), device: Some("/dev/sda2".into()), started: 1, updated: 2, ..Default::default() };
+        let after = after_restart(base.clone(), Some("b1")).unwrap();
+        assert_eq!(after.phase, "interrupted");
+        assert!(after.message.unwrap().contains("Run Repair Storage again"));
+        // "Destructive step needed" survives restarts.
+        let force = RepairRecord { phase: "needs_force".into(), ..base.clone() };
+        assert_eq!(after_restart(force.clone(), Some("b1")), Some(force));
+        // A reboot after a successful repair is finished business...
+        let rebooting = RepairRecord { phase: "rebooting".into(), boot_id: Some("b1".into()), ..base };
+        assert_eq!(after_restart(rebooting.clone(), Some("b2")), None);
+        // ...unless the same boot is still running: only the service restarted.
+        let same = after_restart(rebooting, Some("b1")).unwrap();
+        assert_eq!(same.phase, "interrupted");
+        assert!(same.message.unwrap().contains("Reboot the Pi"));
+    }
+
     #[test]
     fn marker_roundtrip() {
         let path = std::env::temp_dir()
@@ -1209,7 +1776,10 @@ tmpfs /run tmpfs rw 0 0";
         let path = path.to_string_lossy().into_owned();
         clear_marker(&path); // clean slate even after a failed prior run
         assert!(!marker_exists(&path));
-        write_marker(&path);
+        // A temp dir isn't its own mount, so the guarded writer refuses it.
+        assert!(!write_marker(&path));
+        assert!(!marker_exists(&path));
+        write_atomic(&path, b"{}").unwrap();
         assert!(marker_exists(&path));
         clear_marker(&path);
         assert!(!marker_exists(&path));

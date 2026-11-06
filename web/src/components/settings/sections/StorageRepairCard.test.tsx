@@ -3,14 +3,14 @@ import test from 'node:test'
 import { act, createElement } from 'react'
 import { Window } from 'happy-dom'
 
-type Event = { status: string; line?: string; error?: string; message?: string }
+type Event = { status: string; line?: string; error?: string; message?: string; seconds?: number }
 type Card = {
   container: HTMLElement
   emit: (event: Event) => void
   requests: RequestInit[]
 }
 
-async function withCard(repair: () => Promise<Response>, check: (card: Card) => Promise<void>) {
+async function withCard(repair: () => Promise<Response>, check: (card: Card) => Promise<void>, saved: unknown = null, persisted = true) {
   const win = new Window({ url: 'http://localhost/settings' })
   const values = { window: win, document: win.document, navigator: win.navigator, IS_REACT_ACT_ENVIRONMENT: true }
   const descriptors = Object.keys(values).map(key => [key, Object.getOwnPropertyDescriptor(globalThis, key)] as const)
@@ -35,6 +35,7 @@ async function withCard(repair: () => Promise<Response>, check: (card: Card) => 
     })
     if (url.startsWith('/api/config/preference?')) return Response.json({ value: false })
     assert.equal(url, '/api/storage/repair')
+    if ((init?.method || 'GET') === 'GET') return Response.json({ active: false, record: saved, saved: persisted })
     requests.push(init || {})
     return repair()
   }
@@ -141,4 +142,41 @@ test('rejected force request preserves the log and confirmation context', async 
     assert.ok(card.container.textContent?.includes('Force repair may lose recent metadata.'))
     assert.ok(card.container.textContent?.includes('Already in progress'))
   })
+})
+
+test('a saved "destructive step needed" survives a page refresh', async () => {
+  const saved = { phase: 'needs_force', device: '/dev/fixture', message: 'Saved: the safe repair could not fix it.', log_file: null }
+  await withCard(async () => Response.json({ status: 'started' }), async card => {
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)) })
+    assert.ok(card.container.textContent?.includes('Saved: the safe repair could not fix it.'))
+    assert.ok(button(card.container, 'Force repair (destroys XFS log)'))
+    assert.equal(card.requests.length, 0)
+  }, saved)
+})
+
+test('an interrupted repair is shown as a failure, not as idle', async () => {
+  const saved = { phase: 'interrupted', device: '/dev/fixture', message: 'The repair stopped before it finished.', log_file: null }
+  await withCard(async () => Response.json({ status: 'started' }), async card => {
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)) })
+    assert.ok(card.container.textContent?.includes('The repair stopped before it finished.'))
+    assert.ok(button(card.container))
+  }, saved)
+})
+
+test('a successful repair counts down to the automatic reboot', async () => {
+  await withCard(async () => Response.json({ status: 'started' }), async card => {
+    await act(async () => card.emit({ status: 'rebooting', seconds: 15, message: 'Repair complete and the disk images check out.' } as Event))
+    assert.ok(card.container.textContent?.includes('Repair complete and the disk images check out.'))
+    assert.ok(card.container.textContent?.includes('Rebooting in 15 s'))
+    assert.ok(!card.container.textContent?.includes('Repair storage'), 'repair button offered during reboot')
+  })
+})
+
+test('an outcome the Pi could not save says so', async () => {
+  const saved = { phase: 'failed', device: '/dev/fixture', message: 'Repair failed.', log_file: null }
+  await withCard(async () => Response.json({ status: 'started' }), async card => {
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)) })
+    assert.ok(card.container.textContent?.includes('Repair failed.'))
+    assert.ok(card.container.textContent?.includes("won't be shown again after a restart"))
+  }, saved, false)
 })

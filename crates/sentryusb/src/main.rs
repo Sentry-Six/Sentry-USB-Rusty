@@ -199,6 +199,18 @@ async fn main() {
     // WebSocket hub
     let hub = sentryusb_ws::Hub::new();
 
+    // A repair this process was running when it stopped can't still be
+    // running: record it as interrupted before anyone reads the state.
+    sentryusb_api::storage_repair::recover_state_after_restart().await;
+    // Boot-time storage auto repair (opt-in via the storage_auto_repair
+    // preference). Detects a /backingfiles that failed to mount at boot
+    // and runs the guarded xfs_repair ladder; see api::storage_repair.
+    // Started before the database opens: an unmounted footage drive puts
+    // the server in degraded mode, which is exactly when repair is needed.
+    if !args.dev {
+        sentryusb_api::storage_repair::spawn_boot_check(hub.clone());
+    }
+
     // Drive store (SQLite)
     let db_path = sentryusb_drives::DEFAULT_DB_PATH;
     let store = match sentryusb_drives::DriveStore::open(db_path) {
@@ -221,11 +233,20 @@ async fn main() {
             // periodic reopen probe exits cleanly once the DB comes back
             // — a transient cause (mount ordering, a lock, fsck) heals
             // on its own via systemd's Restart=always.
-            tracing::error!(
-                "Failed to open drive DB at {}: {}. Entering degraded mode —                  common causes are a full disk, a locked DB, or a damaged file.                  Do NOT re-run setup before checking the DB file.",
-                db_path,
-                e
-            );
+            if e.downcast_ref::<sentryusb_drives::storage::FootageUnavailable>().is_some() {
+                tracing::error!(
+                    "Footage drive unavailable ({e:#}). Entering degraded mode without opening \
+                     the drive DB; the database stays on the footage drive until it mounts again."
+                );
+            } else {
+                tracing::error!(
+                    "Failed to open drive DB at {}: {}. Entering degraded mode — \
+                     common causes are a full disk, a locked DB, or a damaged file. \
+                     Do NOT re-run setup before checking the DB file.",
+                    db_path,
+                    e
+                );
+            }
             if let Some(led) = &led { led.fault(); }
             let recovery_led = led.clone();
             tokio::spawn(async move {
@@ -233,6 +254,13 @@ async fn main() {
                 tick.tick().await; // skip the immediate tick
                 loop {
                     tick.tick().await;
+                    // Hold the repair slot across the open and the exit: a
+                    // repair mounts the drive briefly to replay its log, and
+                    // a probe that succeeded then would exit this process
+                    // in the middle of the repair.
+                    let Some(_no_repair) = sentryusb_api::storage_repair::try_pause_repairs() else {
+                        continue;
+                    };
                     let ok = tokio::task::spawn_blocking(|| {
                         sentryusb_drives::DriveStore::open(sentryusb_drives::DEFAULT_DB_PATH).is_ok()
                     })
@@ -247,9 +275,11 @@ async fn main() {
                     }
                 }
             });
+            sentryusb_api::storage_repair::set_database_free();
             let degraded = sentryusb_api::degraded::DegradedState {
                 auth: auth.clone(),
                 hub: hub.clone(),
+                kind: sentryusb_api::degraded::DegradedKind::of(&e),
                 reason: std::sync::Arc::new(format!("{e:#}")),
             };
             let app = sentryusb_api::degraded::build_degraded_router(degraded);
@@ -357,10 +387,6 @@ async fn main() {
     // now always dispatches `charge-port-close` inline at the end of an
     // active tick (see "Sampler keep-awake CPC dispatch" in
     // tesla_telemetry/src/main.rs). Existing conf lines remain inert.
-    // Boot-time storage auto repair (opt-in via the storage_auto_repair
-    // preference). Detects a /backingfiles that failed to mount at boot
-    // and runs the guarded xfs_repair ladder; see api::storage_repair.
-    sentryusb_api::storage_repair::spawn_boot_check(hub.clone());
     // Boot-time sweep of TeslaCam symlinks orphaned by releases that skipped the
     // link purge. Delayed off the boot path; internally guarded and idempotent,
     // so a skipped run just retries next boot.
