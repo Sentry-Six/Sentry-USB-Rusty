@@ -2,13 +2,13 @@
 use crate::extract::{extract_archive_gears, GEAR_PARK};
 use anyhow::{Context, Result};
 use std::{
-    collections::{BTreeMap, HashSet},
+    collections::{BTreeSet, HashSet},
     path::{Component, Path},
     time::{Duration, Instant},
 };
 
-/// Keep every camera angle for a RecentClips timestamp if any available angle
-/// has non-Park gear or no gear data. Other categories pass through unchanged.
+/// Apply the front camera's gear verdict to every angle of its recording.
+/// No gear data on the front keeps the recording; other categories pass through.
 pub fn filter_driving_recent(root: &Path, candidates: &str) -> Vec<String> {
     filter_with(candidates, |relative| {
         read_evidence(&root.join(relative)).is_ok_and(|evidence| evidence.keep)
@@ -35,20 +35,20 @@ fn recording_key(relative: &str) -> Option<String> {
 fn filter_with(candidates: &str, mut driving: impl FnMut(&str) -> bool) -> Vec<String> {
     // Nearby recording timestamps usually share a snapshot. Random hash-map
     // iteration revisits automounts and scatters reads across backing images.
-    let mut groups: BTreeMap<String, Vec<&str>> = BTreeMap::new();
+    let mut groups = BTreeSet::new();
     for line in candidates
         .lines()
         .filter(|line| line.starts_with("RecentClips/"))
     {
         if let Some(key) = recording_key(line) {
-            groups.entry(key).or_default().push(line);
+            groups.insert(key);
         }
     }
     let mut keep = HashSet::new();
-    for (key, mut angles) in groups {
-        // The front camera normally carries the same telemetry as the others.
-        angles.sort_by_key(|path| !path.ends_with("-front.mp4"));
-        if angles.into_iter().any(&mut driving) {
+    for key in groups {
+        // The front is authoritative even when only associated angles remain
+        // in the candidate list. A metadata-free repeater must not override Park.
+        if driving(&format!("{key}-front.mp4")) {
             keep.insert(key);
         }
     }
@@ -186,14 +186,19 @@ fn filter_cached(
     }
     // Keep negative verdicts while candidates exist, but bound growth as the
     // archive ledger and snapshot retention remove old candidates.
-    let candidates: HashSet<&str> = candidates.lines().collect();
+    let candidates: HashSet<String> = candidates
+        .lines()
+        .filter(|line| line.starts_with("RecentClips/"))
+        .filter_map(recording_key)
+        .map(|key| format!("{key}-front.mp4"))
+        .collect();
     let paths = {
         let mut query = db.prepare("SELECT path FROM archive_driving_evidence")?;
         let rows = query.query_map([], |row| row.get::<_, String>(0))?;
         rows.collect::<rusqlite::Result<Vec<_>>>()?
     };
     for path in paths {
-        if !candidates.contains(path.as_str()) {
+        if !candidates.contains(&path) {
             db.execute("DELETE FROM archive_driving_evidence WHERE path=?1", [path])?;
         }
     }
@@ -445,13 +450,23 @@ mod tests {
     }
 
     #[test]
-    fn falls_back_to_another_angle_when_front_has_no_evidence() {
+    fn only_front_is_checked_even_if_missing_from_the_candidate_list() {
         let front = "RecentClips/2026-10-24/2026-10-24_12-00-00-front.mp4";
-        let left = "RecentClips/2026-10-24/2026-10-24_12-00-00-left-repeater.mp4";
+        let left = "RecentClips/2026-10-24/2026-10-24_12-00-00-left_repeater.mp4";
+        let mut scanned = Vec::new();
         assert_eq!(
-            filter_with(&format!("{front}\n{left}\n"), |p| p == left),
-            [front, left]
+            filter_with(left, |path| {
+                scanned.push(path.to_owned());
+                path == front
+            }),
+            [left]
         );
+        assert_eq!(scanned, [front]);
+        assert!(filter_with(&format!("{front}\n{left}\n"), |path| {
+            assert_eq!(path, front);
+            false
+        })
+        .is_empty());
     }
 
     // Synthetic length-prefixed H.264 SEI in a real MP4 mdat box, fed through
@@ -482,6 +497,55 @@ mod tests {
         result.extend((nal.len() as u32).to_be_bytes());
         result.extend(nal);
         result
+    }
+
+    #[test]
+    fn repeater_data_never_overrides_the_front_camera_verdict() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir(root.path().join("RecentClips")).unwrap();
+        let front = "RecentClips/2026-10-24_12-00-00-front.mp4";
+        let repeater = "RecentClips/2026-10-24_12-00-00-right_repeater.mp4";
+        let no_sei = b"\0\0\0\x0emdat\0\0\0\x02\x65\x80".to_vec();
+        let database = root.path().join("drives.db");
+        let candidates = format!("{front}\n{repeater}\n");
+        // Park on front wins over both a metadata-free and a non-Park repeater.
+        for rear_bytes in [no_sei.clone(), mp4(1, 0.0)] {
+            std::fs::write(root.path().join(front), mp4(0, 30.0)).unwrap();
+            std::fs::write(root.path().join(repeater), rear_bytes).unwrap();
+            assert!(
+                filter_cached(root.path(), &candidates, &database, read_evidence)
+                    .unwrap()
+                    .is_empty()
+            );
+            // The front can already have been archived; still inspect its file.
+            assert!(
+                filter_cached(root.path(), repeater, &database, read_evidence)
+                    .unwrap()
+                    .is_empty()
+            );
+        }
+        // Non-Park or genuinely absent front SEI keeps all associated cameras.
+        for front_bytes in [mp4(1, 0.0), no_sei] {
+            std::fs::write(root.path().join(front), front_bytes).unwrap();
+            assert_eq!(
+                filter_cached(root.path(), &candidates, &database, read_evidence).unwrap(),
+                [front, repeater]
+            );
+            assert_eq!(
+                filter_cached(root.path(), repeater, &database, |_| panic!(
+                    "front verdict should remain cached"
+                ))
+                .unwrap(),
+                [repeater]
+            );
+        }
+        // An unavailable front is retried, never replaced by a repeater verdict.
+        std::fs::remove_file(root.path().join(front)).unwrap();
+        assert!(
+            filter_cached(root.path(), &candidates, &database, read_evidence)
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[test]
@@ -525,12 +589,12 @@ mod tests {
     }
 
     #[test]
-    fn non_park_sample_anywhere_keeps_the_whole_recording() {
+    fn non_park_sample_anywhere_in_front_keeps_the_whole_recording() {
         let root = tempfile::tempdir().unwrap();
         std::fs::create_dir(root.path().join("RecentClips")).unwrap();
         let front = "RecentClips/2026-10-24_12-00-00-front.mp4";
         let back = "RecentClips/2026-10-24_12-00-00-back.mp4";
-        std::fs::write(root.path().join(front), mp4_with_gps(0, 0.0, None)).unwrap();
+        std::fs::write(root.path().join(back), mp4_with_gps(0, 0.0, None)).unwrap();
         // Park -> stopped in Drive -> Park, with no coordinates throughout.
         let mut body = Vec::new();
         for gear in [0, 1, 0] {
@@ -539,7 +603,7 @@ mod tests {
         let mut bytes = ((8 + body.len()) as u32).to_be_bytes().to_vec();
         bytes.extend(b"mdat");
         bytes.extend(body);
-        std::fs::write(root.path().join(back), bytes).unwrap();
+        std::fs::write(root.path().join(front), bytes).unwrap();
         assert_eq!(
             filter_cached(
                 root.path(),

@@ -336,8 +336,8 @@ export function ArchiveStep({ data, onChange }: StepProps) {
                     <span className="text-sm text-slate-300">Recent Clips: only while driving</span>
                   </label>
                   <p className="ml-6 text-xs text-slate-500">
-                    Keep all camera angles when gear is Drive, Reverse or Neutral, including stops.
-                    Clips without gear data are kept; Park-only clips are skipped.
+                    Use the front camera’s gear for all associated cameras: Drive, Reverse or Neutral
+                    keeps the recording, including stops. No front-camera gear data keeps it; Park-only skips it.
                   </p>
                 </>
               )}

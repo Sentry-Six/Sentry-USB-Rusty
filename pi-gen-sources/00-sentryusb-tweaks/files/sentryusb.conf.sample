@@ -83,7 +83,8 @@ export SHARE_PASSWORD='password'
 
 # Optional: archive RecentClips only when embedded metadata shows driving.
 # Requires ARCHIVE_RECENTCLIPS=true; qualifying clips retain all camera angles.
-# D, R and N qualify, including stops; recordings without gear data are kept.
+# Only front-camera gear is checked: D, R and N qualify, including stops.
+# No front-camera gear data keeps all angles; Park-only skips all angles.
 #export ARCHIVE_RECENTCLIPS_DRIVING_ONLY=true
 
 # SavedClips, SentryClips and track mode clips are archived by default, but
