@@ -13,6 +13,11 @@ end = source.index('  local -r sentry_count=', start)
 block = source[start:end].replace('/opt/sentryusb/sentryusb', 'filter_binary')
 Path(sys.argv[2]).write_text('filter_candidates() {\n' + block + '\n}\n')
 assert source.index('filterfile "${sentrylist}"') < start < source.index('log "Starting recording archiving"')
+# Exercise the real category selection as well as the driving-only gate.
+start = source.index('  local -a savedclipsopt', source.index('function archive_teslacam_clips'))
+end = source.index('  # Copy lists of previously-archived files', start)
+with Path(sys.argv[2]).open('a') as script:
+    script.write('enumerate_candidates() {\n' + source[start:end] + '\n}\n')
 PY
 source "$work/filter.sh"
 sentrylist="$work/candidates"
@@ -36,10 +41,62 @@ filter_binary() {
   fi
   printf '%s\n' selected > "$7"
 }
-printf '%s\n' original > "$sentrylist"
-filter_candidates
-[ "$filter_calls" = 0 ]
-[ "$(cat "$sentrylist")" = original ]
+# A mixed list must pass through byte-for-byte without consulting metadata.
+cat > "$work/all-candidates" <<'EOF'
+RecentClips/2026-11-06/2026-11-06_10-00-00-front.mp4
+RecentClips/2026-11-06/2026-11-06_10-00-00-right_repeater.mp4
+RecentClips/2026-11-06/2026-11-06_11-00-00-front.mp4
+RecentClips/2026-11-06/2026-11-06_12-00-00-front.mp4
+SavedClips/event/front.mp4
+SentryClips/event/front.mp4
+TeslaTrackMode/event/front.mp4
+EOF
+overlaylower="$work/index"
+while IFS= read -r clip; do
+  mkdir -p "$overlaylower/$(dirname "$clip")"
+  # Deliberately unavailable sources: selection must not require SEI reads.
+  ln -s "$work/missing-source" "$overlaylower/$clip"
+done < "$work/all-candidates"
+ARCHIVE_SAVEDCLIPS=true
+ARCHIVE_SENTRYCLIPS=true
+ARCHIVE_TRACKMODECLIPS=true
+ARCHIVE_RECENTCLIPS=true
+unset ARCHIVE_RECENTCLIPS_DRIVING_ONLY
+enumerate_candidates
+sort "$sentrylist" > "$work/enumerated"
+sort "$work/all-candidates" > "$work/expected"
+cmp "$work/enumerated" "$work/expected"
+
+# Missing, empty and explicitly false all mean archive without the SEI filter.
+mode=failure
+for driving_setting in unset '' false; do
+  if [ "$driving_setting" = unset ]; then
+    unset ARCHIVE_RECENTCLIPS_DRIVING_ONLY
+  else
+    ARCHIVE_RECENTCLIPS_DRIVING_ONLY="$driving_setting"
+  fi
+  cp "$work/all-candidates" "$sentrylist"
+  printf '%s\n' stale-filter-output > "${sentrylist}.driving"
+  filter_candidates
+  [ "$filter_calls" = 0 ]
+  cmp "$sentrylist" "$work/all-candidates"
+done
+
+# Disabling RecentClips excludes them regardless of the driving-only setting.
+ARCHIVE_RECENTCLIPS=false
+ARCHIVE_RECENTCLIPS_DRIVING_ONLY=true
+enumerate_candidates
+if rg -q '^RecentClips/' "$sentrylist"; then
+  echo 'RecentClips included while disabled' >&2
+  exit 1
+fi
+sed '/^RecentClips\//d' "$work/all-candidates" | sort > "$work/expected"
+sort "$sentrylist" > "$work/enumerated"
+cmp "$work/enumerated" "$work/expected"
+
+ARCHIVE_RECENTCLIPS=true
+mode=success
+cp "$work/all-candidates" "$sentrylist"
 ARCHIVE_RECENTCLIPS_DRIVING_ONLY=true
 filter_candidates
 [ "$filter_calls" = 1 ]

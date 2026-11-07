@@ -563,6 +563,72 @@ mod tests {
     }
 
     #[test]
+    fn driving_only_filters_mixed_recordings_and_preserves_other_categories() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir(root.path().join("RecentClips")).unwrap();
+        let cameras = [
+            "front",
+            "back",
+            "left_repeater",
+            "right_repeater",
+            "left_pillar",
+            "right_pillar",
+        ];
+        let no_sei = b"\0\0\0\x0emdat\0\0\0\x02\x65\x80";
+        let mut candidates = Vec::new();
+        let mut expected = Vec::new();
+        for (hour, gear) in [
+            (10, Some(0)),
+            (11, Some(1)),
+            (12, Some(2)),
+            (13, Some(3)),
+            (14, None),
+        ] {
+            for camera in cameras {
+                let path = format!("RecentClips/2026-11-06_{hour:02}-00-00-{camera}.mp4");
+                // Only front carries SEI. Park has noisy speed; D/R/N are stopped.
+                let bytes = match (camera, gear) {
+                    ("front", Some(gear)) => {
+                        mp4_with_gps(gear, if gear == 0 { 30.0 } else { 0.0 }, None)
+                    }
+                    _ => no_sei.to_vec(),
+                };
+                std::fs::write(root.path().join(&path), bytes).unwrap();
+                if matches!(gear, Some(1..=3)) {
+                    expected.push(path.clone());
+                }
+                candidates.push(path);
+            }
+        }
+        // No SEI lookup should be attempted for unrelated archive categories.
+        for path in [
+            "SavedClips/event/front.mp4",
+            "SentryClips/event/front.mp4",
+            "TeslaTrackMode/event/front.mp4",
+        ] {
+            candidates.push(path.to_owned());
+            expected.push(path.to_owned());
+        }
+        let input = root.path().join("input");
+        let output = root.path().join("output");
+        let database = root.path().join("drives.db");
+        let candidates = format!("{}\n", candidates.join("\n"));
+        std::fs::write(&input, &candidates).unwrap();
+        filter_file(root.path(), &input, &output, &database).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(output).unwrap(),
+            format!("{}\n", expected.join("\n"))
+        );
+        assert_eq!(
+            filter_cached(root.path(), &candidates, &database, |_| panic!(
+                "all front verdicts should already be cached"
+            ))
+            .unwrap(),
+            expected
+        );
+    }
+
+    #[test]
     fn gear_only_contract_keeps_all_camera_angles_with_fresh_and_cached_verdicts() {
         for gear in [Some(0), Some(1), Some(2), Some(3), None] {
             let root = tempfile::tempdir().unwrap();
