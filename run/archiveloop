@@ -2063,7 +2063,7 @@ function archive_teslacam_clips () {
   then
     log "Checking RecentClips driving metadata across $(wc -l < "${sentrylist}") archive candidates..."
     if ! /opt/sentryusb/sentryusb filter-archive-recent-driving \
-        --root "$overlaymerged" --input "$sentrylist" --output "${sentrylist}.driving"
+        --root "$overlaymerged" --input "$sentrylist" --output "${sentrylist}.driving" >> "$LOG_FILE" 2>&1
     then
       log "ERROR: driving metadata filter failed; archive deferred"
       umount "$overlaymerged"

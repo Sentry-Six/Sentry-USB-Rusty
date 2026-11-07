@@ -220,6 +220,65 @@ mod tests {
     use super::*;
 
     #[test]
+    fn incompatible_shared_cache_is_rebuilt_without_touching_drive_data() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir(root.path().join("RecentClips")).unwrap();
+        let no_sei = "RecentClips/2026-10-24_12-00-00-front.mp4";
+        let parked = "RecentClips/2026-10-24_13-00-00-front.mp4";
+        std::fs::write(root.path().join(no_sei), b"\0\0\0\x08mdat").unwrap();
+        std::fs::write(root.path().join(parked), mp4(0, 30.0)).unwrap();
+        let database = root.path().join("drives.db");
+        let db = crate::db::open_connection(&database).unwrap();
+        crate::schema::migrate(&db).unwrap();
+        db.execute_batch(
+            "DROP TABLE archive_driving_evidence;
+             CREATE TABLE archive_driving_evidence (
+                path TEXT PRIMARY KEY, identity TEXT NOT NULL,
+                gear INTEGER NOT NULL, max_speed REAL NOT NULL);
+             INSERT INTO processed_files VALUES ('existing.mp4', 123);",
+        )
+        .unwrap();
+        for (clip, speed) in [(no_sei, 0.0), (parked, 30.0)] {
+            db.execute(
+                "INSERT INTO archive_driving_evidence VALUES (?1, ?2, 0, ?3)",
+                rusqlite::params![
+                    clip,
+                    source_identity(&root.path().join(clip)).unwrap(),
+                    speed
+                ],
+            )
+            .unwrap();
+        }
+        drop(db);
+        let candidates = format!("{no_sei}\n{parked}\n");
+        let input = root.path().join("input");
+        let output = root.path().join("output");
+        std::fs::write(&input, &candidates).unwrap();
+        filter_file(root.path(), &input, &output, &database).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(output).unwrap(),
+            format!("{no_sei}\n")
+        );
+        assert_eq!(
+            filter_cached(root.path(), &candidates, &database, |_| panic!(
+                "cache should survive repeated migration"
+            ))
+            .unwrap(),
+            [no_sei]
+        );
+        let db = crate::db::open_connection(&database).unwrap();
+        assert_eq!(
+            db.query_row(
+                "SELECT added_at FROM processed_files WHERE file='existing.mp4'",
+                [],
+                |row| row.get::<_, i64>(0)
+            )
+            .unwrap(),
+            123
+        );
+    }
+
+    #[test]
     fn video_scan_does_not_hold_the_shared_database_writer_lock() {
         let root = tempfile::tempdir().unwrap();
         std::fs::create_dir(root.path().join("RecentClips")).unwrap();

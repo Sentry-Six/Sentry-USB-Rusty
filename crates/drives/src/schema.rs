@@ -808,13 +808,27 @@ pub fn migrate(conn: &Connection) -> Result<()> {
         })?;
     }
 
+    // Archive verdicts are disposable. Rebuild an incompatible cache rather
+    // than reusing speed-based verdicts under the gear-only policy.
+    let tx = conn.unchecked_transaction()?;
+    let archive_columns = {
+        let mut query = tx.prepare("PRAGMA table_info(archive_driving_evidence)")?;
+        query.query_map([], |row| row.get::<_, String>(1))?
+            .collect::<rusqlite::Result<Vec<_>>>()?
+    };
+    if !archive_columns.is_empty() && !archive_columns.iter().any(|name| name == "keep") {
+        tx.execute("DROP TABLE archive_driving_evidence", [])?;
+    }
+    tx.execute_batch(
+        "CREATE TABLE IF NOT EXISTS archive_driving_evidence (
+            path TEXT PRIMARY KEY, identity TEXT NOT NULL, keep INTEGER NOT NULL
+         );",
+    )?;
+    tx.commit()?;
+
     // Disposable projections never replace the underlying route or telemetry records.
     conn.execute_batch(
-        "CREATE TABLE IF NOT EXISTS archive_driving_evidence (
-            path TEXT PRIMARY KEY, identity TEXT NOT NULL,
-            keep INTEGER NOT NULL
-         );
-         CREATE TABLE IF NOT EXISTS drive_preview_cache (
+        "CREATE TABLE IF NOT EXISTS drive_preview_cache (
             start_time TEXT NOT NULL, max_points INTEGER NOT NULL, revision INTEGER NOT NULL,
             body TEXT NOT NULL, used_at INTEGER NOT NULL, version INTEGER NOT NULL DEFAULT 1, PRIMARY KEY(start_time, max_points));
          CREATE TABLE IF NOT EXISTS charge_projection_clock (

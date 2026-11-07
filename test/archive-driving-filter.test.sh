@@ -16,6 +16,7 @@ assert source.index('filterfile "${sentrylist}"') < start < source.index('log "S
 PY
 source "$work/filter.sh"
 sentrylist="$work/candidates"
+LOG_FILE="$work/archive.log"
 overlaymerged="$work/overlay"
 filter_calls=0
 unmount_calls=0
@@ -29,7 +30,10 @@ filter_binary() {
   [ "$4" = --input ] && [ "$5" = "$sentrylist" ]
   [ "$6" = --output ] && [ "$7" = "${sentrylist}.driving" ]
   [ "$#" = 7 ]
-  [ "$mode" != failure ] || return 1
+  if [ "$mode" = failure ]; then
+    echo 'synthetic filter error' >&2
+    return 1
+  fi
   printf '%s\n' selected > "$7"
 }
 printf '%s\n' original > "$sentrylist"
@@ -47,4 +51,5 @@ printf '%s\n' original > "$sentrylist"
 if filter_candidates; then echo 'filter failure did not abort archiving' >&2; exit 1; fi
 [ "$(cat "$sentrylist")" = original ]
 [ "$unmount_calls" = 1 ]
+rg -q 'synthetic filter error' "$LOG_FILE"
 echo 'archive driving filter runtime tests passed'
