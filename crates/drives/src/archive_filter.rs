@@ -1,5 +1,5 @@
 //! Archive selection based on the recording car's embedded SEI telemetry.
-use crate::{extract::extract_gps_from_file, grouper::telemetry_gear_driving};
+use crate::extract::{extract_archive_gears, GEAR_PARK};
 use anyhow::{Context, Result};
 use std::{
     collections::{BTreeMap, HashSet},
@@ -66,13 +66,14 @@ fn filter_with(candidates: &str, mut driving: impl FnMut(&str) -> bool) -> Vec<S
 #[derive(Clone, Copy)]
 struct DrivingEvidence {
     keep: bool,
+    no_gear: bool,
 }
 
 fn read_evidence(path: &Path) -> Result<DrivingEvidence> {
-    let data = extract_gps_from_file(&path.to_string_lossy())?;
+    let gears = extract_archive_gears(&path.to_string_lossy())?;
     Ok(DrivingEvidence {
-        keep: (data.gear_runs.is_empty() && data.gear_states.is_empty())
-            || telemetry_gear_driving(&data.gear_runs, &data.gear_states),
+        keep: gears.is_empty() || gears.iter().any(|&gear| gear != GEAR_PARK),
+        no_gear: gears.is_empty(),
     })
 }
 
@@ -106,6 +107,7 @@ fn filter_cached(
     let mut failure = None;
     let mut scanned = 0usize;
     let mut reused = 0usize;
+    let (mut non_park, mut park_only, mut no_gear) = (0usize, 0usize, 0usize);
     let mut last_report = Instant::now();
     let selected = filter_with(candidates, |relative| {
         if failure.is_some() {
@@ -125,9 +127,9 @@ fn filter_cached(
             use rusqlite::OptionalExtension;
             let cached = db
                 .query_row(
-                    "SELECT keep FROM archive_driving_evidence WHERE path=?1 AND identity=?2",
+                    "SELECT keep, no_gear FROM archive_driving_evidence WHERE path=?1 AND identity=?2",
                     rusqlite::params![relative, identity],
-                    |row| Ok(DrivingEvidence { keep: row.get(0)? }),
+                    |row| Ok(DrivingEvidence { keep: row.get(0)?, no_gear: row.get(1)? }),
                 )
                 .optional()?;
             let evidence = if let Some(evidence) = cached {
@@ -155,10 +157,20 @@ fn filter_cached(
                     return Ok(false);
                 }
                 // Autocommit each result so power loss retains completed scans.
-                db.execute("INSERT OR REPLACE INTO archive_driving_evidence (path, identity, keep) VALUES (?1, ?2, ?3)",
-                    rusqlite::params![relative, identity, evidence.keep])?;
+                db.execute("INSERT OR REPLACE INTO archive_driving_evidence (path, identity, keep, no_gear) VALUES (?1, ?2, ?3, ?4)",
+                    rusqlite::params![relative, identity, evidence.keep, evidence.no_gear])?;
                 evidence
             };
+            if evidence.no_gear {
+                if no_gear == 0 {
+                    eprintln!("archive driving filter: no SEI gear data found in {relative}; keeping this recording");
+                }
+                no_gear += 1;
+            } else if evidence.keep {
+                non_park += 1;
+            } else {
+                park_only += 1;
+            }
             Ok(evidence.keep)
         })();
         match result {
@@ -188,6 +200,7 @@ fn filter_cached(
     eprintln!(
         "archive driving filter: scanned {scanned} camera files, reused {reused} cached results"
     );
+    eprintln!("archive driving filter: camera verdicts: {non_park} non-Park (keep), {park_only} Park-only (skip), {no_gear} no SEI gear data (keep)");
     Ok(selected)
 }
 
@@ -211,7 +224,7 @@ pub fn filter_file(root: &Path, input: &Path, output: &Path, database: &Path) ->
         result.push('\n');
     }
     std::fs::write(output, result).context("Write filtered archive candidates")?;
-    tracing::info!(skipped, "Filtered RecentClips without driving metadata");
+    tracing::info!(skipped, "Filtered Park-only RecentClips");
     Ok(())
 }
 
@@ -292,7 +305,10 @@ mod tests {
                 "INSERT INTO processed_files VALUES ('concurrent.mp4', 123)",
                 [],
             )?;
-            Ok(DrivingEvidence { keep: true })
+            Ok(DrivingEvidence {
+                keep: true,
+                no_gear: false,
+            })
         })
         .unwrap();
         let db = crate::db::open_connection(&database).unwrap();
@@ -334,7 +350,10 @@ mod tests {
         let mut reads = 0;
         filter_cached(root.path(), &candidates, &cache, |_| {
             reads += 1;
-            Ok(DrivingEvidence { keep: true })
+            Ok(DrivingEvidence {
+                keep: true,
+                no_gear: false,
+            })
         })
         .unwrap();
         assert_eq!(reads, 1);
@@ -438,12 +457,23 @@ mod tests {
     // Synthetic length-prefixed H.264 SEI in a real MP4 mdat box, fed through
     // the production extractor rather than a mocked driving verdict.
     fn mp4(gear: u8, speed: f32) -> Vec<u8> {
-        let mut proto = vec![0x10, gear, 0x25];
+        mp4_with_gps(gear, speed, Some((37.5, -122.25)))
+    }
+
+    fn mp4_with_gps(gear: u8, speed: f32, gps: Option<(f64, f64)>) -> Vec<u8> {
+        // proto3 omits Park (the zero enum value), so exercise that wire form.
+        let mut proto = vec![0x08, 0x01];
+        if gear != 0 {
+            proto.extend([0x10, gear]);
+        }
+        proto.push(0x25);
         proto.extend(speed.to_le_bytes());
-        proto.push(0x59);
-        proto.extend(37.5f64.to_le_bytes());
-        proto.push(0x61);
-        proto.extend((-122.25f64).to_le_bytes());
+        if let Some((lat, lon)) = gps {
+            proto.push(0x59);
+            proto.extend(lat.to_le_bytes());
+            proto.push(0x61);
+            proto.extend(lon.to_le_bytes());
+        }
         let mut nal = vec![0x06, 0x05, 0x00, 0x42, 0x42, 0x42, 0x69];
         nal.extend(proto);
         nal.push(0x80);
@@ -452,6 +482,151 @@ mod tests {
         result.extend((nal.len() as u32).to_be_bytes());
         result.extend(nal);
         result
+    }
+
+    #[test]
+    fn gear_only_contract_keeps_all_camera_angles_with_fresh_and_cached_verdicts() {
+        for gear in [Some(0), Some(1), Some(2), Some(3), None] {
+            let root = tempfile::tempdir().unwrap();
+            std::fs::create_dir(root.path().join("RecentClips")).unwrap();
+            let clips: Vec<_> = ["front", "back", "left-repeater", "right-repeater"]
+                .iter()
+                .map(|camera| format!("RecentClips/2026-10-24_12-00-00-{camera}.mp4"))
+                .collect();
+            for clip in &clips {
+                let bytes = match gear {
+                    Some(gear) => mp4_with_gps(gear, 0.0, None),
+                    None => b"\0\0\0\x0emdat\0\0\0\x02\x65\x80".to_vec(),
+                };
+                std::fs::write(root.path().join(clip), bytes).unwrap();
+            }
+            let input = root.path().join("input");
+            let output = root.path().join("output");
+            let database = root.path().join("drives.db");
+            let candidates = format!("{}\n", clips.join("\n"));
+            std::fs::write(&input, &candidates).unwrap();
+            filter_file(root.path(), &input, &output, &database).unwrap();
+            let expected = if gear == Some(0) { "" } else { &candidates };
+            assert_eq!(
+                std::fs::read_to_string(&output).unwrap(),
+                expected,
+                "gear={gear:?}"
+            );
+            assert_eq!(
+                filter_cached(root.path(), &candidates, &database, |_| panic!(
+                    "unchanged recordings must use cached gear verdicts"
+                ))
+                .unwrap()
+                .join("\n"),
+                expected.trim_end(),
+                "cached gear={gear:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn non_park_sample_anywhere_keeps_the_whole_recording() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir(root.path().join("RecentClips")).unwrap();
+        let front = "RecentClips/2026-10-24_12-00-00-front.mp4";
+        let back = "RecentClips/2026-10-24_12-00-00-back.mp4";
+        std::fs::write(root.path().join(front), mp4_with_gps(0, 0.0, None)).unwrap();
+        // Park -> stopped in Drive -> Park, with no coordinates throughout.
+        let mut body = Vec::new();
+        for gear in [0, 1, 0] {
+            body.extend_from_slice(&mp4_with_gps(gear, 0.0, None)[8..]);
+        }
+        let mut bytes = ((8 + body.len()) as u32).to_be_bytes().to_vec();
+        bytes.extend(b"mdat");
+        bytes.extend(body);
+        std::fs::write(root.path().join(back), bytes).unwrap();
+        assert_eq!(
+            filter_cached(
+                root.path(),
+                &format!("{front}\n{back}\n"),
+                &root.path().join("drives.db"),
+                read_evidence
+            )
+            .unwrap(),
+            [front, back]
+        );
+    }
+
+    #[test]
+    fn archive_gear_is_independent_of_missing_or_invalid_gps() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir(root.path().join("RecentClips")).unwrap();
+        let clip = "RecentClips/2026-10-24_12-00-00-front.mp4";
+        for gps in [
+            None,
+            Some((0.0, 0.0)),
+            Some((f64::NAN, 0.0)),
+            Some((91.0, 0.0)),
+        ] {
+            for gear in [0, 1, 2, 3] {
+                std::fs::write(root.path().join(clip), mp4_with_gps(gear, 30.0, gps)).unwrap();
+                // Mapping still rejects coordinates which cannot be plotted.
+                assert!(crate::extract::extract_gps_from_file(
+                    &root.path().join(clip).to_string_lossy()
+                )
+                .unwrap()
+                .gear_states
+                .is_empty());
+                let evidence = read_evidence(&root.path().join(clip)).unwrap();
+                assert!(!evidence.no_gear, "decoded gear must survive GPS rejection");
+                assert_eq!(evidence.keep, gear != 0, "gear={gear}, GPS={gps:?}");
+                assert_eq!(
+                    !filter_cached(
+                        root.path(),
+                        clip,
+                        &root.path().join("drives.db"),
+                        read_evidence
+                    )
+                    .unwrap()
+                    .is_empty(),
+                    gear != 0
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn gps_gated_cache_verdicts_are_discarded_and_recomputed() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir(root.path().join("RecentClips")).unwrap();
+        let parked = "RecentClips/2026-10-24_12-00-00-front.mp4";
+        let no_sei = "RecentClips/2026-10-24_13-00-00-front.mp4";
+        std::fs::write(root.path().join(parked), mp4_with_gps(0, 0.0, None)).unwrap();
+        std::fs::write(
+            root.path().join(no_sei),
+            b"\0\0\0\x0emdat\0\0\0\x02\x65\x80",
+        )
+        .unwrap();
+        let database = root.path().join("drives.db");
+        let db = crate::db::open_connection(&database).unwrap();
+        crate::schema::migrate(&db).unwrap();
+        db.execute_batch("DROP TABLE archive_driving_evidence;
+            CREATE TABLE archive_driving_evidence (path TEXT PRIMARY KEY, identity TEXT NOT NULL, keep INTEGER NOT NULL);").unwrap();
+        for clip in [parked, no_sei] {
+            db.execute(
+                "INSERT INTO archive_driving_evidence VALUES (?1, ?2, 1)",
+                rusqlite::params![clip, source_identity(&root.path().join(clip)).unwrap()],
+            )
+            .unwrap();
+        }
+        drop(db);
+        let candidates = format!("{parked}\n{no_sei}\n");
+        assert_eq!(
+            filter_cached(root.path(), &candidates, &database, read_evidence).unwrap(),
+            [no_sei]
+        );
+        assert_eq!(
+            filter_cached(root.path(), &candidates, &database, |_| panic!(
+                "fresh verdict should be cached"
+            ))
+            .unwrap(),
+            [no_sei]
+        );
     }
 
     #[test]

@@ -155,6 +155,18 @@ pub fn scan_sei_frames(path: &str) -> Result<SeiScan> {
     extract_from_mdat(&mut f, mdat_offset, mdat_size)
 }
 
+/// Archive gear selection must not depend on a valid GPS fix. Mapping keeps
+/// its existing coordinate validation; this path retains every decoded SEI gear.
+pub(crate) fn extract_archive_gears(path: &str) -> Result<Vec<u8>> {
+    let mut f = File::open(path)
+        .with_context(|| format!("failed to open MP4 file: {}", path))?;
+    let (offset, size) = find_mdat_box(&mut f)?;
+    if size == 0 {
+        return Ok(Vec::new());
+    }
+    Ok(extract_from_mdat_with_gps_policy(&mut f, offset, size, false)?.arrays.1)
+}
+
 /// Scan MP4 top-level boxes to find the mdat box.
 /// Returns (data_offset, data_size) where data_offset is after the box header.
 fn find_mdat_box(f: &mut File) -> Result<(u64, u64)> {
@@ -245,6 +257,12 @@ pub struct SeiScan {
 }
 
 fn extract_from_mdat(f: &mut File, offset: u64, size: u64) -> Result<SeiScan> {
+    extract_from_mdat_with_gps_policy(f, offset, size, true)
+}
+
+fn extract_from_mdat_with_gps_policy(
+    f: &mut File, offset: u64, size: u64, require_valid_gps: bool,
+) -> Result<SeiScan> {
     use std::io::BufReader;
     const BUF_SIZE: u64 = 64 * 1024;
 
@@ -295,7 +313,7 @@ fn extract_from_mdat(f: &mut File, offset: u64, size: u64) -> Result<SeiScan> {
             let mut nal = vec![0u8; nal_size as usize];
             nal[0] = type_buf[0];
             if reader.read_exact(&mut nal[1..]).is_ok() {
-                if let Some(frame) = parse_tesla_sei(&nal) {
+                if let Some(frame) = parse_tesla_sei(&nal, require_valid_gps) {
                     points.push([
                         (frame.lat * 1e6).round() / 1e6,
                         (frame.lon * 1e6).round() / 1e6,
@@ -374,7 +392,7 @@ struct SeiFrame {
 }
 
 /// Finds the Tesla magic bytes (0x42...0x69) in a SEI NAL and decodes GPS + metadata.
-fn parse_tesla_sei(nal: &[u8]) -> Option<SeiFrame> {
+fn parse_tesla_sei(nal: &[u8], require_valid_gps: bool) -> Option<SeiFrame> {
     // Skip NAL header, look for 0x42 sequence followed by 0x69
     let mut i = 3;
     while i < nal.len() && nal[i] == 0x42 {
@@ -391,7 +409,7 @@ fn parse_tesla_sei(nal: &[u8]) -> Option<SeiFrame> {
     }
 
     let stripped = strip_emulation_bytes(payload);
-    decode_sei_gps(&stripped)
+    decode_sei_gps(&stripped, require_valid_gps)
 }
 
 /// Removes H.264 emulation prevention bytes (0x00 0x00 0x03 -> 0x00 0x00).
@@ -430,7 +448,7 @@ fn strip_emulation_bytes(data: &[u8]) -> Vec<u8> {
 /// proto3 omits false/zero fields from the wire, so absent simply
 /// decodes as off. Hand-parses protobuf wire format to avoid external
 /// dependencies.
-fn decode_sei_gps(data: &[u8]) -> Option<SeiFrame> {
+fn decode_sei_gps(data: &[u8], require_valid_gps: bool) -> Option<SeiFrame> {
     let mut lat: f64 = 0.0;
     let mut lon: f64 = 0.0;
     let mut gear: u8 = 0;
@@ -531,7 +549,7 @@ fn decode_sei_gps(data: &[u8]) -> Option<SeiFrame> {
         && lat.abs() <= 90.0
         && lon.abs() <= 180.0;
 
-    if ok {
+    if ok || !require_valid_gps {
         // NaN/inf IMU samples (never observed, but the field is a raw
         // double) degrade to 0.0 = "no data" rather than poisoning math.
         let clean = |v: f32| if v.is_finite() { v } else { 0.0 };
@@ -1113,7 +1131,7 @@ mod tests {
         data.push(0x61);
         data.extend_from_slice(&(-122.4194f64).to_le_bytes());
 
-        let result = decode_sei_gps(&data);
+        let result = decode_sei_gps(&data, true);
         assert!(result.is_some());
         let frame = result.unwrap();
         assert!((frame.lat - 37.7749).abs() < 1e-10);
@@ -1137,7 +1155,7 @@ mod tests {
         data.push(0x61);
         data.extend_from_slice(&(-122.4194f64).to_le_bytes());
 
-        let frame = decode_sei_gps(&data).expect("valid frame");
+        let frame = decode_sei_gps(&data, true).expect("valid frame");
         assert!(frame.blinker_left);
         assert!(frame.blinker_right);
         assert!(frame.brake);
@@ -1152,6 +1170,6 @@ mod tests {
         data.push(0x61); // field 12
         data.extend_from_slice(&0.0f64.to_le_bytes());
 
-        assert!(decode_sei_gps(&data).is_none());
+        assert!(decode_sei_gps(&data, true).is_none());
     }
 }
