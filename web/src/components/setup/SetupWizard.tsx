@@ -309,6 +309,7 @@ export function SetupWizard({ initialData, initialStepId, onClose }: SetupWizard
     ARCHIVE_SAVEDCLIPS: "true",
     ARCHIVE_SENTRYCLIPS: "true",
     ARCHIVE_RECENTCLIPS: "true",
+    ARCHIVE_RECENTCLIPS_DRIVING_ONLY: "false",
     ARCHIVE_TRACKMODECLIPS: "true",
     DRIVE_MAP_ENABLED: "true",
     DRIVE_MAP_WHILE_AWAY: "true",

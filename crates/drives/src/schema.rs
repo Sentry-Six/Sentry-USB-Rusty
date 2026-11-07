@@ -808,6 +808,24 @@ pub fn migrate(conn: &Connection) -> Result<()> {
         })?;
     }
 
+    // Archive verdicts are disposable. Rebuild an incompatible cache rather
+    // than reusing verdicts from speed-based or GPS-gated gear extraction.
+    let tx = conn.unchecked_transaction()?;
+    let archive_columns = {
+        let mut query = tx.prepare("PRAGMA table_info(archive_driving_evidence)")?;
+        query.query_map([], |row| row.get::<_, String>(1))?
+            .collect::<rusqlite::Result<Vec<_>>>()?
+    };
+    if !archive_columns.is_empty() && !archive_columns.iter().any(|name| name == "no_gear") {
+        tx.execute("DROP TABLE archive_driving_evidence", [])?;
+    }
+    tx.execute_batch(
+        "CREATE TABLE IF NOT EXISTS archive_driving_evidence (
+            path TEXT PRIMARY KEY, identity TEXT NOT NULL, keep INTEGER NOT NULL, no_gear INTEGER NOT NULL
+         );",
+    )?;
+    tx.commit()?;
+
     // Disposable projections never replace the underlying route or telemetry records.
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS drive_preview_cache (

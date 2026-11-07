@@ -46,7 +46,7 @@ test("toggling compatibility sends the setting to Test Connection and supports d
   }
   let data: Record<string, string> = {
     ARCHIVE_SYSTEM: "cifs", ARCHIVE_SERVER: "nas.local", SHARE_NAME: "TeslaCam",
-    SHARE_USER: "test", SHARE_PASSWORD: "test",
+    SHARE_USER: "test", SHARE_PASSWORD: "test", DRIVE_MAP_UNIT: "mi",
   }
   const render = () => root.render(createElement(ArchiveStep, {
     data, onBatchChange() {}, onChange(key, value) { data = { ...data, [key]: value }; render() },
@@ -57,10 +57,15 @@ test("toggling compatibility sends the setting to Test Connection and supports d
   try {
     await act(async () => render())
     assert.equal(data.CIFS_NOSERVERINO, undefined, "rendering does not opt existing users in")
+    const drivingCheckbox = [...container.querySelectorAll("label")]
+      .find(node => node.textContent.includes("Recent Clips: only while driving"))!.querySelector("input")!
+    await act(async () => drivingCheckbox.click())
+    assert.equal(data.ARCHIVE_RECENTCLIPS_DRIVING_ONLY, "true")
     await act(async () => checkbox().click())
     assert.equal(data.CIFS_NOSERVERINO, "true")
     await act(async () => testButton().click())
     assert.equal(requests[0].CIFS_NOSERVERINO, "true")
+    assert.equal(requests[0].ARCHIVE_RECENTCLIPS_DRIVING_ONLY, "true")
     assert.match(container.textContent, /Connection successful/)
     await act(async () => checkbox().click())
     assert.equal(data.CIFS_NOSERVERINO, "false")
@@ -80,4 +85,31 @@ test("toggling compatibility sends the setting to Test Connection and supports d
     }
     win.close()
   }
+})
+
+test("driving-only Recent Clips is opt-in, requires Recent Clips, and appears in review", () => {
+  const win = new Window()
+  try {
+    for (const system of ["cifs", "nfs", "rsync", "rclone", "none"]) {
+      for (const recent of ["true", "false"]) {
+        for (const driving of [undefined, "true", "false"]) {
+          const data: Record<string, string> = { ARCHIVE_SYSTEM: system, ARCHIVE_RECENTCLIPS: recent }
+          if (driving !== undefined) data.ARCHIVE_RECENTCLIPS_DRIVING_ONLY = driving
+          win.document.body.innerHTML = renderToStaticMarkup(createElement(ArchiveStep, {
+            data, onChange() {}, onBatchChange() {},
+          }))
+          const label = [...win.document.querySelectorAll("label")]
+            .find(node => node.textContent.includes("Recent Clips: only while driving"))
+          if (system === "none") { assert.equal(label, undefined); continue }
+          assert.ok(label)
+          const input = label.querySelector("input")!
+          assert.equal(input.checked, driving === "true")
+          assert.equal(input.disabled, recent === "false")
+        }
+      }
+    }
+    assert.match(renderToStaticMarkup(createElement(ReviewStep, {
+      data: { ARCHIVE_RECENTCLIPS_DRIVING_ONLY: "true" }, onChange() {}, onBatchChange() {},
+    })), /ARCHIVE_RECENTCLIPS_DRIVING_ONLY.*true/)
+  } finally { win.close() }
 })

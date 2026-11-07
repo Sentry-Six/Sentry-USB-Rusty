@@ -313,16 +313,38 @@ export function ArchiveStep({ data, onChange }: StepProps) {
             { field: "ARCHIVE_RECENTCLIPS", label: "Recent Clips", def: "true" },
             { field: "ARCHIVE_TRACKMODECLIPS", label: "Track Mode Clips", def: "true" },
           ].map(({ field, label, def }) => (
-            <label key={field} className="flex items-center gap-2">
-              <input
-                type="checkbox"
-                checked={(data[field] ?? def) === "true"}
-                onChange={(e) => onChange(field, e.target.checked ? "true" : "false")}
-                className="h-4 w-4 rounded border-white/20 bg-white/5 accent-blue-500"
-              />
-              <span className="text-sm text-slate-300">{label}</span>
-            </label>
+            <div key={field} className="space-y-2">
+              <label className="flex items-center gap-2">
+                <input
+                  type="checkbox"
+                  checked={(data[field] ?? def) === "true"}
+                  onChange={(e) => onChange(field, e.target.checked ? "true" : "false")}
+                  className="h-4 w-4 rounded border-white/20 bg-white/5 accent-blue-500"
+                />
+                <span className="text-sm text-slate-300">{label}</span>
+              </label>
+              {field === "ARCHIVE_RECENTCLIPS" && (
+                <>
+                  <label className="ml-6 flex items-center gap-2">
+                    <input
+                      type="checkbox"
+                      checked={(data.ARCHIVE_RECENTCLIPS_DRIVING_ONLY ?? "false") === "true"}
+                      disabled={(data.ARCHIVE_RECENTCLIPS ?? "true") !== "true"}
+                      onChange={(e) => onChange("ARCHIVE_RECENTCLIPS_DRIVING_ONLY", e.target.checked ? "true" : "false")}
+                      className="h-4 w-4 rounded border-white/20 bg-white/5 accent-blue-500 disabled:opacity-40"
+                    />
+                    <span className="text-sm text-slate-300">Recent Clips: only while driving</span>
+                  </label>
+                  <p className="ml-6 text-xs text-slate-500">
+                    Requires HW3+ and front-camera SEI gear data. Keeps all camera angles for
+                    Drive, Reverse or Neutral, including stops. Park-only clips and clips without SEI
+                    are skipped. Leave this option off to archive all Recent Clips.
+                  </p>
+                </>
+              )}
+            </div>
           ))}
+
         </div>
       )}
 

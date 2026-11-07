@@ -42,6 +42,18 @@ struct Args {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Select RecentClips with driving metadata, retaining all camera angles.
+    FilterArchiveRecentDriving {
+        /// Shared drive database containing archive evidence.
+        #[arg(long, default_value = sentryusb_drives::DEFAULT_DB_PATH)]
+        database: std::path::PathBuf,
+        #[arg(long)]
+        root: std::path::PathBuf,
+        #[arg(long)]
+        input: std::path::PathBuf,
+        #[arg(long)]
+        output: std::path::PathBuf,
+    },
     /// Restore LED triggers after an abnormal server exit (systemd cleanup).
     StatusLedRestore,
     /// Refresh only bundled archive scripts; does not restart services or run setup.
@@ -575,6 +587,25 @@ async fn shutdown_signal() {
 /// existing `ERROR: make_snapshot.sh failed (exit $?)` log lines stay useful.
 async fn run_subcommand(cmd: Command) -> i32 {
     match cmd {
+        Command::FilterArchiveRecentDriving {
+            root,
+            input,
+            output,
+            database,
+        } => {
+            match sentryusb_drives::archive_filter::filter_file(
+                &root,
+                &input,
+                &output,
+                &database,
+            ) {
+                Ok(()) => 0,
+                Err(error) => {
+                    eprintln!("archive driving filter: {error:#}");
+                    1
+                }
+            }
+        }
         Command::StatusLedRestore => { sentryusb_status_led::restore(); 0 }
         Command::RefreshArchiveScripts { directory } => {
             let result = sentryusb_setup::archive_runtime::refresh_configured(&directory);

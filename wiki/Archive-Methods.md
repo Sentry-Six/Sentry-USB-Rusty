@@ -2,6 +2,38 @@
 
 Pick whichever fits how you already store stuff. Sentry USB archives your dashcam clips, sentry events, and (optionally) saved clips to one of four backends.
 
+## Archive only driving Recent Clips
+
+In **Settings → Setup Wizard → Archive → What to Archive**, enable **Recent Clips**
+and **Recent Clips: only while driving**, then apply the configuration.
+
+Only the front camera's embedded Tesla gear is checked. Its verdict applies to
+all associated cameras at that timestamp: Drive, Reverse or Neutral keeps the
+recording, including when stopped at a light. Clips
+that include both driving and parking are kept in full. Park-only clips are
+skipped regardless of speed readings. Recordings without front-camera SEI gear
+data are also skipped: absent metadata is not evidence of driving. This option
+requires HW3+ with SEI gear data and is not suitable for HW2.5 cars. To archive
+all Recent Clips, including those without SEI, enable **Recent Clips** and leave
+**Recent Clips: only while driving** off. Other cameras never override the front
+verdict. The front file is checked even if only its associated cameras still need
+archiving. Missing or unreadable front files are retried on a later cycle.
+This applies to every archive backend. Saved, Sentry, and Track Mode selections
+remain independent. Existing archived files are not removed.
+
+The configuration setting is `ARCHIVE_RECENTCLIPS_DRIVING_ONLY=true` alongside
+`ARCHIVE_RECENTCLIPS=true`. It defaults to `false` for existing installations.
+
+Reading metadata adds work before transfers, especially on lower-powered Pis.
+Successful camera-file scans are cached in the `archive_driving_evidence` table
+of the shared `/backingfiles/drive-data.db`, including parked and metadata-free
+results. Subsequent cycles check file metadata
+and reuse evidence for unchanged files instead of reading their video again.
+New or changed files are scanned; read failures are retried on the next cycle.
+Results are committed as each scan finishes so reboots or interrupted archives
+retain completed work. Entries are pruned when files leave the archive candidate
+list.
+
 ## CIFS / SMB
 
 For Windows file sharing, macOS file sharing, and most consumer NAS devices (Synology, QNAP, TrueNAS).
