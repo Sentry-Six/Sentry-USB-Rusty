@@ -11,11 +11,13 @@ Only the front camera's embedded Tesla gear is checked. Its verdict applies to
 all associated cameras at that timestamp: Drive, Reverse or Neutral keeps the
 recording, including when stopped at a light. Clips
 that include both driving and parking are kept in full. Park-only clips are
-skipped regardless of speed readings. If the front camera has no gear data,
-including on older firmware and HW2.5 cars, the recording is kept. Other cameras
-never override the front verdict. The front file is checked even if only its
-associated cameras still need archiving. Missing or unreadable front files are
-retried on a later cycle.
+skipped regardless of speed readings. Recordings without front-camera SEI gear
+data are also skipped: absent metadata is not evidence of driving. This option
+requires HW3+ with SEI gear data and is not suitable for HW2.5 cars. To archive
+all Recent Clips, including those without SEI, enable **Recent Clips** and leave
+**Recent Clips: only while driving** off. Other cameras never override the front
+verdict. The front file is checked even if only its associated cameras still need
+archiving. Missing or unreadable front files are retried on a later cycle.
 This applies to every archive backend. Saved, Sentry, and Track Mode selections
 remain independent. Existing archived files are not removed.
 

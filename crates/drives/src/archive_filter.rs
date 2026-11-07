@@ -8,10 +8,11 @@ use std::{
 };
 
 /// Apply the front camera's gear verdict to every angle of its recording.
-/// No gear data on the front keeps the recording; other categories pass through.
+/// Only non-Park front gear qualifies; missing gear data does not. Other
+/// categories pass through unchanged.
 pub fn filter_driving_recent(root: &Path, candidates: &str) -> Vec<String> {
     filter_with(candidates, |relative| {
-        read_evidence(&root.join(relative)).is_ok_and(|evidence| evidence.keep)
+        read_evidence(&root.join(relative)).is_ok_and(|evidence| evidence.should_archive())
     })
 }
 
@@ -62,17 +63,25 @@ fn filter_with(candidates: &str, mut driving: impl FnMut(&str) -> bool) -> Vec<S
         .collect()
 }
 
-/// Cache the gear-only selection verdict, including the no-gear fallback.
+/// Cache the gear-only selection verdict and explicit missing-gear status.
 #[derive(Clone, Copy)]
 struct DrivingEvidence {
     keep: bool,
     no_gear: bool,
 }
 
+impl DrivingEvidence {
+    fn should_archive(self) -> bool {
+        // Older prereleases cached keep=true for metadata-free clips. Apply
+        // the current policy to that evidence without rescanning the MP4.
+        self.keep && !self.no_gear
+    }
+}
+
 fn read_evidence(path: &Path) -> Result<DrivingEvidence> {
     let gears = extract_archive_gears(&path.to_string_lossy())?;
     Ok(DrivingEvidence {
-        keep: gears.is_empty() || gears.iter().any(|&gear| gear != GEAR_PARK),
+        keep: gears.iter().any(|&gear| gear != GEAR_PARK),
         no_gear: gears.is_empty(),
     })
 }
@@ -163,7 +172,7 @@ fn filter_cached(
             };
             if evidence.no_gear {
                 if no_gear == 0 {
-                    eprintln!("archive driving filter: no SEI gear data found in {relative}; keeping this recording");
+                    eprintln!("archive driving filter: no SEI gear data found in {relative}; skipping this recording");
                 }
                 no_gear += 1;
             } else if evidence.keep {
@@ -171,7 +180,7 @@ fn filter_cached(
             } else {
                 park_only += 1;
             }
-            Ok(evidence.keep)
+            Ok(evidence.should_archive())
         })();
         match result {
             Ok(driving) => driving,
@@ -205,7 +214,7 @@ fn filter_cached(
     eprintln!(
         "archive driving filter: scanned {scanned} camera files, reused {reused} cached results"
     );
-    eprintln!("archive driving filter: camera verdicts: {non_park} non-Park (keep), {park_only} Park-only (skip), {no_gear} no SEI gear data (keep)");
+    eprintln!("archive driving filter: camera verdicts: {non_park} non-Park (keep), {park_only} Park-only (skip), {no_gear} no SEI gear data (skip)");
     Ok(selected)
 }
 
@@ -229,7 +238,10 @@ pub fn filter_file(root: &Path, input: &Path, output: &Path, database: &Path) ->
         result.push('\n');
     }
     std::fs::write(output, result).context("Write filtered archive candidates")?;
-    tracing::info!(skipped, "Filtered Park-only RecentClips");
+    tracing::info!(
+        skipped,
+        "Filtered RecentClips without non-Park front-camera gear"
+    );
     Ok(())
 }
 
@@ -273,16 +285,13 @@ mod tests {
         let output = root.path().join("output");
         std::fs::write(&input, &candidates).unwrap();
         filter_file(root.path(), &input, &output, &database).unwrap();
-        assert_eq!(
-            std::fs::read_to_string(output).unwrap(),
-            format!("{no_sei}\n")
-        );
+        assert_eq!(std::fs::read_to_string(output).unwrap(), "");
         assert_eq!(
             filter_cached(root.path(), &candidates, &database, |_| panic!(
                 "cache should survive repeated migration"
             ))
             .unwrap(),
-            [no_sei]
+            Vec::<String>::new()
         );
         let db = crate::db::open_connection(&database).unwrap();
         assert_eq!(
@@ -524,21 +533,26 @@ mod tests {
                     .is_empty()
             );
         }
-        // Non-Park or genuinely absent front SEI keeps all associated cameras.
-        for front_bytes in [mp4(1, 0.0), no_sei] {
-            std::fs::write(root.path().join(front), front_bytes).unwrap();
-            assert_eq!(
-                filter_cached(root.path(), &candidates, &database, read_evidence).unwrap(),
-                [front, repeater]
-            );
-            assert_eq!(
-                filter_cached(root.path(), repeater, &database, |_| panic!(
-                    "front verdict should remain cached"
-                ))
-                .unwrap(),
-                [repeater]
-            );
-        }
+        // Non-Park front SEI keeps all associated cameras.
+        std::fs::write(root.path().join(front), mp4(1, 0.0)).unwrap();
+        assert_eq!(
+            filter_cached(root.path(), &candidates, &database, read_evidence).unwrap(),
+            [front, repeater]
+        );
+        assert_eq!(
+            filter_cached(root.path(), repeater, &database, |_| panic!(
+                "front verdict should remain cached"
+            ))
+            .unwrap(),
+            [repeater]
+        );
+        // No front SEI must skip even when the repeater reports Drive.
+        std::fs::write(root.path().join(front), no_sei).unwrap();
+        assert!(
+            filter_cached(root.path(), &candidates, &database, read_evidence)
+                .unwrap()
+                .is_empty()
+        );
         // An unavailable front is retried, never replaced by a repeater verdict.
         std::fs::remove_file(root.path().join(front)).unwrap();
         assert!(
@@ -570,7 +584,11 @@ mod tests {
             let candidates = format!("{}\n", clips.join("\n"));
             std::fs::write(&input, &candidates).unwrap();
             filter_file(root.path(), &input, &output, &database).unwrap();
-            let expected = if gear == Some(0) { "" } else { &candidates };
+            let expected = if gear.is_none() || gear == Some(0) {
+                ""
+            } else {
+                &candidates
+            };
             assert_eq!(
                 std::fs::read_to_string(&output).unwrap(),
                 expected,
@@ -682,14 +700,14 @@ mod tests {
         let candidates = format!("{parked}\n{no_sei}\n");
         assert_eq!(
             filter_cached(root.path(), &candidates, &database, read_evidence).unwrap(),
-            [no_sei]
+            Vec::<String>::new()
         );
         assert_eq!(
             filter_cached(root.path(), &candidates, &database, |_| panic!(
                 "fresh verdict should be cached"
             ))
             .unwrap(),
-            [no_sei]
+            Vec::<String>::new()
         );
     }
 
@@ -717,24 +735,45 @@ mod tests {
     }
 
     #[test]
-    fn missing_clips_are_retried_and_metadata_free_clips_are_kept() {
+    fn old_cached_no_sei_keep_verdict_is_skipped_without_rescanning() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir(root.path().join("RecentClips")).unwrap();
+        let clip = "RecentClips/2026-10-24_12-00-00-front.mp4";
+        std::fs::write(root.path().join(clip), b"\0\0\0\x08mdat").unwrap();
+        let database = root.path().join("drives.db");
+        let db = crate::db::open_connection(&database).unwrap();
+        crate::schema::migrate(&db).unwrap();
+        db.execute(
+            "INSERT INTO archive_driving_evidence (path, identity, keep, no_gear) VALUES (?1, ?2, 1, 1)",
+            rusqlite::params![clip, source_identity(&root.path().join(clip)).unwrap()],
+        ).unwrap();
+        drop(db);
+        assert!(filter_cached(root.path(), clip, &database, |_| panic!(
+            "policy change must reuse cached no-SEI evidence"
+        ))
+        .unwrap()
+        .is_empty());
+    }
+
+    #[test]
+    fn missing_clips_are_retried_and_metadata_free_clips_are_skipped() {
         let root = tempfile::tempdir().unwrap();
         let clip = "RecentClips/2026-10-24_12-00-00-front.mp4";
         assert!(filter_driving_recent(root.path(), clip).is_empty());
         std::fs::create_dir(root.path().join("RecentClips")).unwrap();
         std::fs::write(root.path().join(clip), b"\0\0\0\x08mdat").unwrap();
-        assert_eq!(filter_driving_recent(root.path(), clip), [clip]);
+        assert!(filter_driving_recent(root.path(), clip).is_empty());
         let database = root.path().join("drives.db");
         assert_eq!(
             filter_cached(root.path(), clip, &database, read_evidence).unwrap(),
-            [clip]
+            Vec::<String>::new()
         );
         assert_eq!(
             filter_cached(root.path(), clip, &database, |_| panic!(
                 "no-SEI verdict should be cached"
             ))
             .unwrap(),
-            [clip]
+            Vec::<String>::new()
         );
     }
 }
