@@ -139,23 +139,35 @@ async fn main() {
     // greppable: `journalctl -b -u sentryusb.service | grep boot_phase`.
     let t0 = std::time::Instant::now();
 
-    // Initialize tracing
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "sentryusb=info,sentryusb_api=info,sentryusb_drives=info,tower_http=info".into()),
-        )
-        .init();
+    let args = Args::parse();
+    let archive_filter = matches!(&args.command, Some(Command::FilterArchiveRecentDriving { .. }));
+
+    // Archive messages are timestamped by archiveloop's log() function.
+    // Keep this subcommand's tracing output plain when it crosses that pipe.
+    let subscriber = tracing_subscriber::fmt().with_env_filter(
+        tracing_subscriber::EnvFilter::try_from_default_env()
+            .unwrap_or_else(|_| "sentryusb=info,sentryusb_api=info,sentryusb_drives=info,tower_http=info".into()),
+    );
+    if archive_filter {
+        subscriber
+            .with_ansi(false)
+            .without_time()
+            .with_target(false)
+            .with_writer(std::io::stderr)
+            .init();
+    } else {
+        subscriber.init();
+    }
 
     macro_rules! phase {
         ($name:expr) => {
             info!(boot_phase = $name, elapsed_ms = t0.elapsed().as_millis() as u64);
         };
     }
-    phase!("tracing_initialized");
-
-    let args = Args::parse();
-    phase!("args_parsed");
+    if !archive_filter {
+        phase!("tracing_initialized");
+        phase!("args_parsed");
+    }
 
     // Subcommand dispatch — the wrappers in /root/bin/ expect these to
     // run to completion synchronously and exit with a status code.
@@ -601,7 +613,7 @@ async fn run_subcommand(cmd: Command) -> i32 {
             ) {
                 Ok(()) => 0,
                 Err(error) => {
-                    eprintln!("archive driving filter: {error:#}");
+                    tracing::error!("RecentClips filter: {error:#}");
                     1
                 }
             }

@@ -126,8 +126,8 @@ fn filter_cached(
         let identity = match source_identity(&path) {
             Ok(identity) => identity,
             Err(error) => {
-                eprintln!(
-                    "archive driving filter: cannot stat {relative}: {error:#}; will retry next cycle"
+                tracing::warn!(
+                    "RecentClips filter: cannot stat {relative}: {error:#}; will retry next cycle"
                 );
                 return false;
             }
@@ -146,8 +146,8 @@ fn filter_cached(
                 evidence
             } else {
                 if scanned == 0 || last_report.elapsed() >= Duration::from_secs(15) {
-                    eprintln!(
-                        "archive driving filter: scanned {scanned}, reused {reused}; reading {relative}"
+                    tracing::info!(
+                        "RecentClips filter: scanned {scanned}, reused {reused}; reading {relative}"
                     );
                     last_report = Instant::now();
                 }
@@ -155,8 +155,8 @@ fn filter_cached(
                 let evidence = match extract(&path) {
                     Ok(evidence) => evidence,
                     Err(error) => {
-                        eprintln!(
-                            "archive driving filter: cannot read {relative}: {error:#}; will retry next cycle"
+                        tracing::warn!(
+                            "RecentClips filter: cannot read {relative}: {error:#}; will retry next cycle"
                         );
                         return Ok(false);
                     }
@@ -172,7 +172,7 @@ fn filter_cached(
             };
             if evidence.no_gear {
                 if no_gear == 0 {
-                    eprintln!("archive driving filter: no SEI gear data found in {relative}; skipping this recording");
+                    tracing::debug!("RecentClips filter: no SEI gear data found in {relative}; skipping this recording");
                 }
                 no_gear += 1;
             } else if evidence.keep {
@@ -211,10 +211,10 @@ fn filter_cached(
             db.execute("DELETE FROM archive_driving_evidence WHERE path=?1", [path])?;
         }
     }
-    eprintln!(
-        "archive driving filter: scanned {scanned} camera files, reused {reused} cached results"
+    tracing::info!(
+        "RecentClips filter: scanned {scanned} camera files, reused {reused} cached results"
     );
-    eprintln!("archive driving filter: camera verdicts: {non_park} non-Park (keep), {park_only} Park-only (skip), {no_gear} no SEI gear data (skip)");
+    tracing::info!("RecentClips filter: camera verdicts: {non_park} non-Park (keep), {park_only} Park-only (skip), {no_gear} no SEI gear data (skip)");
     Ok(selected)
 }
 
@@ -229,18 +229,14 @@ pub fn filter_file(root: &Path, input: &Path, output: &Path, database: &Path) ->
     let candidates = std::fs::read_to_string(input).context("Read archive candidates")?;
     let selected = filter_cached(root, &candidates, database, read_evidence)?;
     let skipped = candidates.lines().count() - selected.len();
-    eprintln!(
-        "archive driving filter: scan complete; keeping {} candidates, skipping {skipped}",
-        selected.len()
-    );
     let mut result = selected.join("\n");
     if !result.is_empty() {
         result.push('\n');
     }
     std::fs::write(output, result).context("Write filtered archive candidates")?;
     tracing::info!(
-        skipped,
-        "Filtered RecentClips without non-Park front-camera gear"
+        "RecentClips filter complete: keeping {} candidates, skipping {skipped}",
+        selected.len()
     );
     Ok(())
 }

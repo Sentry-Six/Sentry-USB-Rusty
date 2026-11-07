@@ -8,10 +8,13 @@ python3 - "$root/run/archiveloop" "$work/filter.sh" <<'PY'
 from pathlib import Path
 import sys
 source = Path(sys.argv[1]).read_text()
+log_start = source.index('function log () {')
+log_end = source.index('\nfunction log_errors_on_exit', log_start)
+
 start = source.index('  # Apply after custom additions')
 end = source.index('  local -r sentry_count=', start)
 block = source[start:end].replace('/opt/sentryusb/sentryusb', 'filter_binary')
-Path(sys.argv[2]).write_text('filter_candidates() {\n' + block + '\n}\n')
+Path(sys.argv[2]).write_text(source[log_start:log_end] + '\nfilter_candidates() {\n' + block + '\n}\n')
 assert source.index('filterfile "${sentrylist}"') < start < source.index('log "Starting recording archiving"')
 # Exercise the real category selection as well as the driving-only gate.
 start = source.index('  local -a savedclipsopt', source.index('function archive_teslacam_clips'))
@@ -23,22 +26,26 @@ source "$work/filter.sh"
 sentrylist="$work/candidates"
 LOG_FILE="$work/archive.log"
 overlaymerged="$work/overlay"
-filter_calls=0
+printf '0\n' > "$work/filter-calls"
 unmount_calls=0
 mode=success
-log() { :; }
+date() { printf 'test-time\n'; }
 umount() { unmount_calls=$((unmount_calls + 1)); }
 filter_binary() {
-  filter_calls=$((filter_calls + 1))
+  local filter_calls
+  filter_calls=$(cat "$work/filter-calls")
+  printf '%s\n' "$((filter_calls + 1))" > "$work/filter-calls"
   [ "$1" = filter-archive-recent-driving ]
   [ "$2" = --root ] && [ "$3" = "$overlaymerged" ]
   [ "$4" = --input ] && [ "$5" = "$sentrylist" ]
   [ "$6" = --output ] && [ "$7" = "${sentrylist}.driving" ]
   [ "$#" = 7 ]
   if [ "$mode" = failure ]; then
-    echo 'synthetic filter error' >&2
+    # Even an error without a trailing newline must be logged.
+    printf 'ERROR synthetic filter error' >&2
     return 1
   fi
+  echo 'INFO RecentClips filter: fixture progress' >&2
   printf '%s\n' selected > "$7"
 }
 # A mixed list must pass through byte-for-byte without consulting metadata.
@@ -78,7 +85,7 @@ for driving_setting in unset '' false; do
   cp "$work/all-candidates" "$sentrylist"
   printf '%s\n' stale-filter-output > "${sentrylist}.driving"
   filter_candidates
-  [ "$filter_calls" = 0 ]
+  [ "$(cat "$work/filter-calls")" = 0 ]
   cmp "$sentrylist" "$work/all-candidates"
 done
 
@@ -99,14 +106,15 @@ mode=success
 cp "$work/all-candidates" "$sentrylist"
 ARCHIVE_RECENTCLIPS_DRIVING_ONLY=true
 filter_candidates
-[ "$filter_calls" = 1 ]
+[ "$(cat "$work/filter-calls")" = 1 ]
 [ "$(cat "$sentrylist")" = selected ]
 filter_candidates
-[ "$filter_calls" = 2 ]
+[ "$(cat "$work/filter-calls")" = 2 ]
+rg -q '^test-time: INFO RecentClips filter: fixture progress$' "$LOG_FILE"
 mode=failure
 printf '%s\n' original > "$sentrylist"
 if filter_candidates; then echo 'filter failure did not abort archiving' >&2; exit 1; fi
 [ "$(cat "$sentrylist")" = original ]
 [ "$unmount_calls" = 1 ]
-rg -q 'synthetic filter error' "$LOG_FILE"
+rg -q '^test-time: ERROR synthetic filter error$' "$LOG_FILE"
 echo 'archive driving filter runtime tests passed'
