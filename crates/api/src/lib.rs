@@ -27,6 +27,7 @@ pub mod setup;
 pub use sentryusb_drives::archive_mount_lock;
 pub mod backup;
 pub mod update;
+pub mod release_download;
 pub mod device_reporting;
 pub mod support;
 pub mod community;

@@ -291,32 +291,22 @@ pub(crate) async fn detect_release_suffix() -> anyhow::Result<String> {
     Ok("linux-arm64-a53".to_string())
 }
 
-/// Streams a release to staging and broadcasts advisory download progress.
+/// Streams a release file to staging and broadcasts advisory download progress.
 async fn download_with_progress(
     hub: &sentryusb_ws::Hub,
-    url: &str,
+    source: &crate::release_download::Source,
     dest: &str,
-) -> anyhow::Result<()> {
-    use futures_util::StreamExt;
-    use tokio::io::AsyncWriteExt;
-
-    let resp = crate::http_client()
-        .get(url)
-        .header("User-Agent", "sentryusb-updater")
-        .send()
-        .await?
-        .error_for_status()?;
-    // CDN responses may omit Content-Length; the UI then uses indeterminate progress.
-    let total = resp.content_length().filter(|t| *t > 0);
-    let mut file = tokio::fs::File::create(dest).await?;
-    let mut stream = resp.bytes_stream();
-    let mut done: u64 = 0;
+) -> Result<(), crate::release_download::FetchError> {
+    let notify = |message: &str| {
+        hub.broadcast(
+            "update_status",
+            serde_json::json!({"status": "downloading", "message": message, "percent": null}),
+        );
+    };
     let mut last_percent: i64 = -1;
     let mut last_emit = std::time::Instant::now();
-    while let Some(chunk) = stream.next().await {
-        let chunk = chunk?;
-        file.write_all(&chunk).await?;
-        done += chunk.len() as u64;
+    // CDN responses may omit Content-Length; the UI then uses indeterminate progress.
+    let mut progress = |done: u64, total: Option<u64>| {
         let percent = total.map(|t| ((done as f64 / t as f64) * 100.0) as i64);
         let emit = match percent {
             Some(p) => p != last_percent,
@@ -338,9 +328,29 @@ async fn download_with_progress(
                 }),
             );
         }
+    };
+    crate::release_download::download(source, std::path::Path::new(dest), &notify, &mut progress).await
+}
+
+/// Downloads an optional companion binary. `Ok(false)` means the release
+/// doesn't include it; `Err` is a warning for the update summary, because a
+/// failed download leaves the old companion beside the new main binary.
+async fn fetch_optional(
+    source: Option<crate::release_download::Source>,
+    name: &str,
+    dest: &str,
+    notify: &(dyn Fn(&str) + Sync),
+) -> Result<bool, String> {
+    use crate::release_download::FetchError;
+    let Some(source) = source else { return Ok(false) };
+    match crate::release_download::download(&source, std::path::Path::new(dest), notify, &mut |_, _| {}).await {
+        Ok(()) => Ok(true),
+        Err(FetchError::NotFound) => Ok(false),
+        Err(e) => Err(format!(
+            "{name} wasn't updated and still runs the previous version: {}",
+            e.sentence()
+        )),
     }
-    file.flush().await?;
-    Ok(())
 }
 
 async fn self_update(
@@ -351,35 +361,52 @@ async fn self_update(
         "update_status",
         serde_json::json!({"status": "checking", "message": "Checking release…"}),
     );
+    use crate::release_download::{self as rd, FetchError};
+
     let suffix = detect_release_suffix().await?;
     let repo = update_repo();
-
-    // A requested version supports both prerelease installs and stable reverts.
-    let url = if let Some(v) = &target_version {
-        format!(
-            "https://github.com/{}/releases/download/{}/sentryusb-{}",
-            repo, v, suffix
-        )
-    } else {
-        format!(
-            "https://github.com/{}/releases/latest/download/sentryusb-{}",
-            repo, suffix
-        )
+    let checking = |message: &str| {
+        hub.broadcast("update_status", serde_json::json!({"status": "checking", "message": message}));
     };
 
-    // Fail clearly if the selected release has no matching binary.
-    sentryusb_shell::run_with_timeout(
-        std::time::Duration::from_secs(15),
-        "curl",
-        &["-sfI", "--max-time", "10", &url],
-    )
-    .await
-    .map_err(|_| {
-        anyhow::anyhow!(
-            "No release binary found at {}. Publish a release with the binary first.",
-            url
-        )
-    })?;
+    // The release listing pins every file to one tag (even for "latest"),
+    // says which files the release has, and supplies the API download links
+    // tried when GitHub's release links fail. A requested version supports
+    // both prerelease installs and stable reverts.
+    let release = match rd::lookup_release(&repo, target_version.as_deref(), &checking).await {
+        Ok(r) => Some(r),
+        Err(FetchError::NotFound) => anyhow::bail!(match &target_version {
+            Some(v) => format!("GitHub has no release {v}. Check for updates again to see the current releases."),
+            None => "GitHub has no published release to update to.".to_string(),
+        }),
+        Err(e) => {
+            // The plain release links may still work.
+            tracing::warn!("update: release listing unavailable ({}); using release links", e.reason());
+            None
+        }
+    };
+    let file_tag = release.as_ref().map(|r| r.tag.clone()).or_else(|| target_version.clone());
+    let source_for = |name: &str| match &release {
+        Some(r) => r.source(&repo, name),
+        None => Some(rd::Source::release_link(&repo, file_tag.as_deref(), name)),
+    };
+
+    const UNCHANGED: &str = "Your installed version wasn't changed.";
+    let main_name = format!("sentryusb-{suffix}");
+    let missing_build = || {
+        let release = match &file_tag {
+            Some(t) => format!("Release {t}"),
+            None => "The latest release".to_string(),
+        };
+        anyhow::anyhow!("{release} doesn't include a build for this board ({main_name}). {UNCHANGED}")
+    };
+    let main = source_for(&main_name).ok_or_else(missing_build)?;
+    // Fail before remounting anything if GitHub can't serve the binary.
+    match rd::probe(&main, &checking).await {
+        Ok(()) => {}
+        Err(FetchError::NotFound) => return Err(missing_build()),
+        Err(e) => anyhow::bail!("Couldn't reach the update on GitHub. {} {UNCHANGED}", e.sentence()),
+    }
 
     // Try overlay-aware, standard, and legacy remount forms for supported images.
     hub.broadcast(
@@ -393,7 +420,9 @@ async fn self_update(
     // Same-filesystem staging makes the final rename atomic across power loss.
     sentryusb_shell::run("mkdir", &["-p", "/opt/sentryusb"]).await?;
     let tmp = "/opt/sentryusb/.sentryusb-update.new";
-    download_with_progress(hub, &url, tmp).await?;
+    download_with_progress(hub, &main, tmp)
+        .await
+        .map_err(|e| anyhow::anyhow!("Couldn't download the update. {} {UNCHANGED}", e.sentence()))?;
 
     hub.broadcast(
         "update_status",
@@ -435,223 +464,158 @@ async fn self_update(
     }
 
     // Keep the optional telemetry sampler on the main binary's release and ABI.
-    let telemetry_url = if let Some(v) = &target_version {
-        format!(
-            "https://github.com/{}/releases/download/{}/sentryusb-tesla-telemetry-{}",
-            repo, v, suffix
-        )
-    } else {
-        format!(
-            "https://github.com/{}/releases/latest/download/sentryusb-tesla-telemetry-{}",
-            repo, suffix
-        )
-    };
     hub.broadcast(
         "update_status",
         serde_json::json!({"status": "installing", "message": "Installing components…"}),
     );
-    let head_ok = sentryusb_shell::run_with_timeout(
-        std::time::Duration::from_secs(15),
-        "curl",
-        &["-sfI", "--max-time", "10", &telemetry_url],
-    )
-    .await
-    .is_ok();
-    if head_ok {
-        // Stage beside the destination for an atomic rename.
-        let telemetry_tmp = "/opt/sentryusb/.sentryusb-tesla-telemetry-update.new";
-        match sentryusb_shell::run_with_timeout(
-            std::time::Duration::from_secs(120),
-            "curl",
-            &["-fsSL", &telemetry_url, "-o", telemetry_tmp],
-        )
-        .await
-        {
-            Ok(_) => {
-                // The picker repairs this per-CPU symlink when an SD card moves hosts.
-                if let Err(e) =
-                    sentryusb_shell::run("mkdir", &["-p", "/root/bin"]).await
-                {
-                    install_warnings.push(format!(
-                        "telemetry: mkdir /root/bin failed: {e}"
-                    ));
-                }
-                if let Err(e) =
-                    sentryusb_shell::run("mkdir", &["-p", "/opt/sentryusb"]).await
-                {
-                    install_warnings.push(format!(
-                        "telemetry: mkdir /opt/sentryusb failed: {e}"
-                    ));
-                }
-                if let Err(e) =
-                    sentryusb_shell::run("chmod", &["+x", telemetry_tmp]).await
-                {
-                    install_warnings.push(format!(
-                        "telemetry: chmod +x failed: {e}"
-                    ));
-                }
-                let telemetry_dest =
-                    format!("/opt/sentryusb/sentryusb-tesla-telemetry-{}", suffix);
-                // Move first so a failed install cannot leave a dangling symlink.
-                let install_result =
-                    match sentryusb_shell::run("mv", &[telemetry_tmp, &telemetry_dest])
-                        .await
-                    {
-                        Ok(_) => {
-                            sentryusb_shell::run(
-                                "ln",
-                                &[
-                                    "-sfn",
-                                    &telemetry_dest,
-                                    "/root/bin/sentryusb-tesla-telemetry",
-                                ],
-                            )
-                            .await
-                            .map(|_| ())
-                        }
-                        Err(e) => Err(e),
-                    };
-                match install_result {
-                    Ok(_) => {
-                        // Activate the new sampler without waiting for reboot.
-                        let _ = sentryusb_shell::run(
-                            "systemctl",
-                            &["daemon-reload"],
-                        )
-                        .await;
-                        let _ = sentryusb_shell::run(
-                            "systemctl",
-                            &["restart", "sentryusb-telemetry"],
-                        )
-                        .await;
-                    }
-                    Err(e) => {
-                        install_warnings.push(format!(
-                            "telemetry binary install FAILED \
-                             (install to {telemetry_dest} + symlink from \
-                             /root/bin/sentryusb-tesla-telemetry): \
-                             {e} — likely read-only rootfs; if your image \
-                             uses an overlay you may need to remount manually \
-                             or wait for the next reboot"
-                        ));
-                        // Remove the failed staging file.
-                        let _ = sentryusb_shell::run("rm", &["-f", telemetry_tmp]).await;
-                    }
-                }
-            }
-            Err(e) => {
+    let installing = |message: &str| {
+        hub.broadcast("update_status", serde_json::json!({"status": "installing", "message": message}));
+    };
+    let telemetry_name = format!("sentryusb-tesla-telemetry-{suffix}");
+    // Stage beside the destination for an atomic rename.
+    let telemetry_tmp = "/opt/sentryusb/.sentryusb-tesla-telemetry-update.new";
+    match fetch_optional(source_for(&telemetry_name), &telemetry_name, telemetry_tmp, &installing).await {
+        Ok(true) => {
+            // The picker repairs this per-CPU symlink when an SD card moves hosts.
+            if let Err(e) =
+                sentryusb_shell::run("mkdir", &["-p", "/root/bin"]).await
+            {
                 install_warnings.push(format!(
-                    "telemetry binary download FAILED ({}): {e}",
-                    telemetry_url
+                    "telemetry: mkdir /root/bin failed: {e}"
                 ));
             }
+            if let Err(e) =
+                sentryusb_shell::run("mkdir", &["-p", "/opt/sentryusb"]).await
+            {
+                install_warnings.push(format!(
+                    "telemetry: mkdir /opt/sentryusb failed: {e}"
+                ));
+            }
+            if let Err(e) =
+                sentryusb_shell::run("chmod", &["+x", telemetry_tmp]).await
+            {
+                install_warnings.push(format!(
+                    "telemetry: chmod +x failed: {e}"
+                ));
+            }
+            let telemetry_dest =
+                format!("/opt/sentryusb/sentryusb-tesla-telemetry-{}", suffix);
+            // Move first so a failed install cannot leave a dangling symlink.
+            let install_result =
+                match sentryusb_shell::run("mv", &[telemetry_tmp, &telemetry_dest])
+                    .await
+                {
+                    Ok(_) => {
+                        sentryusb_shell::run(
+                            "ln",
+                            &[
+                                "-sfn",
+                                &telemetry_dest,
+                                "/root/bin/sentryusb-tesla-telemetry",
+                            ],
+                        )
+                        .await
+                        .map(|_| ())
+                    }
+                    Err(e) => Err(e),
+                };
+            match install_result {
+                Ok(_) => {
+                    // Activate the new sampler without waiting for reboot.
+                    let _ = sentryusb_shell::run(
+                        "systemctl",
+                        &["daemon-reload"],
+                    )
+                    .await;
+                    let _ = sentryusb_shell::run(
+                        "systemctl",
+                        &["restart", "sentryusb-telemetry"],
+                    )
+                    .await;
+                }
+                Err(e) => {
+                    install_warnings.push(format!(
+                        "telemetry binary install FAILED \
+                         (install to {telemetry_dest} + symlink from \
+                         /root/bin/sentryusb-tesla-telemetry): \
+                         {e} — likely read-only rootfs; if your image \
+                         uses an overlay you may need to remount manually \
+                         or wait for the next reboot"
+                    ));
+                    // Remove the failed staging file.
+                    let _ = sentryusb_shell::run("rm", &["-f", telemetry_tmp]).await;
+                }
+            }
         }
-    } else {
+        Err(warning) => install_warnings.push(warning),
         // Older releases may not include the optional sampler.
-        tracing::info!(
-            "release does not include a telemetry binary at {} — skipping",
-            telemetry_url
-        );
+        Ok(false) => tracing::info!("release does not include {telemetry_name}; skipping"),
     }
 
     // Keep the optional BLE-action CLI on the main binary's protocol version.
-    let action_url = if let Some(v) = &target_version {
-        format!(
-            "https://github.com/{}/releases/download/{}/sentryusb-ble-action-{}",
-            repo, v, suffix
-        )
-    } else {
-        format!(
-            "https://github.com/{}/releases/latest/download/sentryusb-ble-action-{}",
-            repo, suffix
-        )
-    };
-    let head_ok_action = sentryusb_shell::run_with_timeout(
-        std::time::Duration::from_secs(15),
-        "curl",
-        &["-sfI", "--max-time", "10", &action_url],
-    )
-    .await
-    .is_ok();
-    if head_ok_action {
-        // Stage beside the destination for an atomic rename.
-        let action_tmp = "/opt/sentryusb/.sentryusb-ble-action-update.new";
-        match sentryusb_shell::run_with_timeout(
-            std::time::Duration::from_secs(120),
-            "curl",
-            &["-fsSL", &action_url, "-o", action_tmp],
-        )
-        .await
-        {
-            Ok(_) => {
-                if let Err(e) =
-                    sentryusb_shell::run("mkdir", &["-p", "/root/bin"]).await
-                {
-                    install_warnings.push(format!(
-                        "ble-action: mkdir /root/bin failed: {e}"
-                    ));
-                }
-                if let Err(e) =
-                    sentryusb_shell::run("mkdir", &["-p", "/opt/sentryusb"]).await
-                {
-                    install_warnings.push(format!(
-                        "ble-action: mkdir /opt/sentryusb failed: {e}"
-                    ));
-                }
-                if let Err(e) =
-                    sentryusb_shell::run("chmod", &["+x", action_tmp]).await
-                {
-                    install_warnings.push(format!(
-                        "ble-action: chmod +x failed: {e}"
-                    ));
-                }
-                // Move first so a failed install cannot leave a dangling symlink.
-                let action_dest =
-                    format!("/opt/sentryusb/sentryusb-ble-action-{}", suffix);
-                let install_result =
-                    match sentryusb_shell::run("mv", &[action_tmp, &action_dest])
-                        .await
-                    {
-                        Ok(_) => {
-                            sentryusb_shell::run(
-                                "ln",
-                                &[
-                                    "-sfn",
-                                    &action_dest,
-                                    "/root/bin/sentryusb-ble-action",
-                                ],
-                            )
-                            .await
-                            .map(|_| ())
-                        }
-                        Err(e) => Err(e),
-                    };
-                if let Err(e) = install_result {
-                    install_warnings.push(format!(
-                        "ble-action binary install FAILED \
-                         (install to {action_dest} + symlink from \
-                         /root/bin/sentryusb-ble-action): {e} — \
-                         likely read-only rootfs"
-                    ));
-                    let _ = sentryusb_shell::run("rm", &["-f", action_tmp]).await;
-                }
-            }
-            Err(e) => {
+    let action_name = format!("sentryusb-ble-action-{suffix}");
+    // Stage beside the destination for an atomic rename.
+    let action_tmp = "/opt/sentryusb/.sentryusb-ble-action-update.new";
+    match fetch_optional(source_for(&action_name), &action_name, action_tmp, &installing).await {
+        Ok(true) => {
+            if let Err(e) =
+                sentryusb_shell::run("mkdir", &["-p", "/root/bin"]).await
+            {
                 install_warnings.push(format!(
-                    "ble-action binary download FAILED ({}): {e}",
-                    action_url
+                    "ble-action: mkdir /root/bin failed: {e}"
                 ));
             }
+            if let Err(e) =
+                sentryusb_shell::run("mkdir", &["-p", "/opt/sentryusb"]).await
+            {
+                install_warnings.push(format!(
+                    "ble-action: mkdir /opt/sentryusb failed: {e}"
+                ));
+            }
+            if let Err(e) =
+                sentryusb_shell::run("chmod", &["+x", action_tmp]).await
+            {
+                install_warnings.push(format!(
+                    "ble-action: chmod +x failed: {e}"
+                ));
+            }
+            // Move first so a failed install cannot leave a dangling symlink.
+            let action_dest =
+                format!("/opt/sentryusb/sentryusb-ble-action-{}", suffix);
+            let install_result =
+                match sentryusb_shell::run("mv", &[action_tmp, &action_dest])
+                    .await
+                {
+                    Ok(_) => {
+                        sentryusb_shell::run(
+                            "ln",
+                            &[
+                                "-sfn",
+                                &action_dest,
+                                "/root/bin/sentryusb-ble-action",
+                            ],
+                        )
+                        .await
+                        .map(|_| ())
+                    }
+                    Err(e) => Err(e),
+                };
+            if let Err(e) = install_result {
+                install_warnings.push(format!(
+                    "ble-action binary install FAILED \
+                     (install to {action_dest} + symlink from \
+                     /root/bin/sentryusb-ble-action): {e} — \
+                     likely read-only rootfs"
+                ));
+                let _ = sentryusb_shell::run("rm", &["-f", action_tmp]).await;
+            }
         }
-    } else {
-        tracing::info!(
-            "release does not include a ble-action binary at {} — skipping",
-            action_url
-        );
+        Err(warning) => install_warnings.push(warning),
+        Ok(false) => tracing::info!("release does not include {action_name}; skipping"),
     }
 
-    // Record the requested tag, or resolve the tag backing `/latest`.
-    let tag = match target_version {
+    // Record the listed tag, the requested one, or resolve the tag backing `/latest`.
+    let tag = match file_tag {
         Some(v) => v,
         None => {
             let api_url = format!(
@@ -1047,40 +1011,13 @@ struct ReleaseInfo {
 /// Fetches recent stable and prerelease records from GitHub.
 async fn fetch_releases() -> Result<Vec<ReleaseInfo>, String> {
     let url = format!("https://api.github.com/repos/{}/releases?per_page=20", update_repo());
-
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(10))
-        .user_agent(concat!("sentryusb-updater/", env!("CARGO_PKG_VERSION")))
-        .build()
-        .map_err(|e| format!("http client init failed: {}", e))?;
-
-    let resp = client.get(&url).send().await.map_err(|e| {
-        if e.is_timeout() {
-            "GitHub API request timed out".to_string()
-        } else if e.is_connect() {
-            format!("could not reach GitHub: {}", e)
-        } else {
-            format!("GitHub API request failed: {}", e)
-        }
-    })?;
-
-    let status = resp.status();
-    if !status.is_success() {
-        return Err(if status.as_u16() == 403 || status.as_u16() == 429 {
-            "GitHub API rate limit hit — wait about an hour and try again".to_string()
-        } else {
-            format!("GitHub API returned HTTP {}", status)
-        });
-    }
-
-    let body: serde_json::Value = resp
-        .json()
+    let body = crate::release_download::get_json(&url, &|_| {})
         .await
-        .map_err(|e| format!("GitHub API returned unparseable JSON: {}", e))?;
+        .map_err(|e| format!("Couldn't check GitHub for updates. {}", e.sentence()))?;
 
     let arr = body
         .as_array()
-        .ok_or_else(|| "GitHub API response was not an array".to_string())?;
+        .ok_or_else(|| "Couldn't check GitHub for updates. GitHub sent an unexpected reply; try again in a few minutes.".to_string())?;
 
     Ok(arr
         .iter()
