@@ -58,19 +58,11 @@ pub(super) fn sha256(path: &Path) -> Result<String> {
     Ok(hex::encode(hash.finish().as_ref()))
 }
 
-async fn download(url: &str, dest: &Path) -> Result<()> {
-    let mut response = crate::http_client().get(url).timeout(Duration::from_secs(300))
-        .header("User-Agent", "sentryusb-auto-update").send().await?.error_for_status()?;
-    let mut file = std::fs::OpenOptions::new().write(true).create_new(true).open(dest)?;
-    let mut total = 0usize;
-    while let Some(chunk) = response.chunk().await? {
-        total += chunk.len();
-        ensure!(total <= 512 * 1024 * 1024, "Update asset exceeds size limit");
-        file.write_all(&chunk)?;
-    }
-    ensure!(total > 0, "Empty update asset");
-    file.sync_all()?;
-    Ok(())
+/// Retries GitHub blips; size and published checksums are verified.
+async fn download(source: &crate::release_download::Source, what: &str, dest: &Path) -> Result<()> {
+    crate::release_download::download(source, dest, &|_| {}, &mut |_, _| {})
+        .await
+        .map_err(|e| anyhow::anyhow!("Couldn't download {what}: {}", e.sentence()))
 }
 
 pub(super) fn cleanup_uninstalled(root: &Path, id: &str) -> Result<()> {
@@ -105,11 +97,10 @@ fn validate_elf(path: &Path, suffix: &str) -> Result<()> {
 pub(super) async fn stage(hub: &sentryusb_ws::Hub, a: &Attempt) -> Result<Staged> {
     let suffix = crate::update::detect_release_suffix().await?;
     let repo = crate::update::update_repo();
-    let release: serde_json::Value = crate::http_client()
-        .get(format!("https://api.github.com/repos/{repo}/releases/tags/{}", a.target))
-        .header("User-Agent", "sentryusb-auto-update").timeout(Duration::from_secs(15))
-        .send().await?.error_for_status()?.json().await?;
-    ensure!(release["draft"] == false && release["prerelease"] == false && release["tag_name"] == a.target,
+    let release = crate::release_download::lookup_release(&repo, Some(&a.target), &|_| {})
+        .await
+        .map_err(|e| anyhow::anyhow!("Couldn't read release {} from GitHub: {}", a.target, e.sentence()))?;
+    ensure!(!release.draft && !release.prerelease && release.tag == a.target,
         "Selected release is no longer a published stable release");
     sentryusb_shell::run("/root/bin/remountfs_rw", &[]).await?;
     let free = sentryusb_shell::run("df", &["-Pk", "/opt/sentryusb"]).await?;
@@ -123,13 +114,8 @@ pub(super) async fn stage(hub: &sentryusb_ws::Hub, a: &Attempt) -> Result<Staged
     for component in ["sentryusb", "sentryusb-tesla-telemetry", "sentryusb-ble-action"] {
         let name = format!("{component}-{suffix}");
         let staged = dir.join(&name);
-        download(&format!("https://github.com/{repo}/releases/download/{}/{name}", a.target), &staged).await?;
-        let asset = release["assets"].as_array().and_then(|assets| assets.iter().find(|asset| asset["name"] == name))
-            .context("Required release asset is not published")?;
-        if let Some(digest) = asset["digest"].as_str() {
-            let expected = digest.strip_prefix("sha256:").context("Unsupported release digest")?;
-            ensure!(sha256(&staged)? == expected, "Release asset checksum mismatch");
-        }
+        let source = release.source(&repo, &name).context("Required release asset is not published")?;
+        download(&source, &name, &staged).await?;
         validate_elf(&staged, &suffix)?;
         let dest = if component == "sentryusb" && !Path::new("/opt/sentryusb/sentryusb-current").exists() {
             PathBuf::from("/opt/sentryusb/sentryusb")
@@ -148,7 +134,8 @@ pub(super) async fn stage(hub: &sentryusb_ws::Hub, a: &Attempt) -> Result<Staged
         files.push((link, dest));
     }
     let source = dir.join("source.tar.gz");
-    download(&format!("https://github.com/{repo}/archive/refs/tags/{}.tar.gz", a.target), &source).await?;
+    let archive = crate::release_download::Source::url(format!("https://github.com/{repo}/archive/refs/tags/{}.tar.gz", a.target));
+    download(&archive, "the release scripts", &source).await?;
     // Validate the pinned payload before committing, including shell syntax.
     // Extract only regular runtime scripts; never honor archive links/paths.
 

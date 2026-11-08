@@ -61,6 +61,14 @@ pub async fn toggle_drives(State(_s): State<AppState>, _body: String) -> (Status
 
 /// Idempotently enables the gadget without reacquiring archiveloop's cycle lock.
 pub async fn gadget_enable() -> (StatusCode, Json<serde_json::Value>) {
+    // A repair mounts the drive briefly to replay its log; presenting it to
+    // the car then would put the car on a filesystem under repair.
+    let Some(_no_repair) = crate::storage_repair::try_pause_repairs() else {
+        return crate::json_error(
+            StatusCode::CONFLICT,
+            "A storage repair is running. The USB drive reconnects when it finishes.",
+        );
+    };
     match tokio::task::spawn_blocking(|| {
         sentryusb_gadget::validate_storage()?;
         if sentryusb_gadget::is_active() { Ok(()) } else { sentryusb_gadget::enable() }

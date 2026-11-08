@@ -10,7 +10,32 @@ export function ConnectionBanner() {
   const [hasDisconnected, setHasDisconnected] = useState(state !== "connected")
   if (state !== "connected" && !hasDisconnected) setHasDisconnected(true)
 
-  // Database degradation outranks connectivity and cannot be dismissed.
+  // Degradation outranks connectivity and cannot be dismissed.
+  if (degraded === "footage_unavailable") {
+    return (
+      <div className="mb-4 flex items-start gap-3 rounded-lg border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-300">
+        <WifiOffIcon className="h-4 w-4 shrink-0 mt-0.5" />
+        <div className="flex-1 space-y-1">
+          <p className="font-medium">Footage drive not found</p>
+          <p className="text-xs text-red-400/70">
+            Sentry USB can&apos;t find or mount the drive that holds your
+            footage, so the car has no USB drive to record to. Your drive
+            history is stored on that drive and comes back with it. Check
+            the drive&apos;s cable and power, or run Repair Storage in
+            Settings.
+          </p>
+          <div className="flex gap-3">
+            <Link to="/settings?tab=System" className="inline-block text-xs underline">
+              Open Repair Storage
+            </Link>
+            <Link to="/logs?tab=diagnostics" className="inline-block text-xs underline">
+              Open Diagnostics
+            </Link>
+          </div>
+        </div>
+      </div>
+    )
+  }
   if (degraded) {
     return (
       <div className="mb-4 flex items-start gap-3 rounded-lg border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-300">

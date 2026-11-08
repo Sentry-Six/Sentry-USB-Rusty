@@ -412,6 +412,7 @@ impl DriveStore {
         } else {
             path.to_string()
         };
+        guard_canonical(&path)?;
 
         if let Some(parent) = Path::new(&path).parent() {
             if !parent.as_os_str().is_empty() && parent != Path::new("/") {
@@ -571,6 +572,7 @@ impl DriveStore {
             })
             .map_err(Into::into);
         }
+        guard_canonical(&self.path)?;
         let conn = Connection::open(&self.path)?;
         conn.execute_batch("PRAGMA busy_timeout = 5000;")?;
         conn.execute("VACUUM INTO ?1", params![dest])?;
@@ -3577,7 +3579,20 @@ fn log_slow_conn(
     }
 }
 
+/// The canonical database lives on the footage drive; never open (or
+/// create) it on the SD card underneath an unmounted `/backingfiles`.
+/// Other paths (tests, exports) are not checked.
+fn guard_canonical(path: &str) -> Result<()> {
+    if path == DEFAULT_DATA_PATH {
+        crate::storage::check_footage()?;
+    }
+    Ok(())
+}
+
 pub(crate) fn open_connection(path: impl AsRef<std::path::Path>) -> Result<Connection> {
+    // The archive filter opens a worker connection without going through
+    // DriveStore::open; it needs the same footage-mount safeguard.
+    guard_canonical(&path.as_ref().to_string_lossy())?;
     let conn = Connection::open(path)?;
     apply_pragmas(&conn)?;
     Ok(conn)

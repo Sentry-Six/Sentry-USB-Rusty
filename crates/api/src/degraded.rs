@@ -10,10 +10,38 @@ use axum::{Json, Router};
 
 use crate::auth::AuthState;
 
+/// Why the server is degraded. The footage case is reported separately so
+/// the UI can say the drive is missing instead of blaming the database.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DegradedKind {
+    /// The footage partition isn't mounted (or is read-only / unknown).
+    FootageUnavailable,
+    /// The footage drive is fine but the database wouldn't open.
+    DatabaseUnavailable,
+}
+
+impl DegradedKind {
+    pub fn of(error: &anyhow::Error) -> Self {
+        if error.downcast_ref::<sentryusb_drives::storage::FootageUnavailable>().is_some() {
+            Self::FootageUnavailable
+        } else {
+            Self::DatabaseUnavailable
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::FootageUnavailable => "footage_unavailable",
+            Self::DatabaseUnavailable => "database_unavailable",
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct DegradedState {
     pub auth: AuthState,
     pub hub: sentryusb_ws::Hub,
+    pub kind: DegradedKind,
     /// Database-open failure for the banner and journal.
     pub reason: std::sync::Arc<String>,
 }
@@ -34,7 +62,7 @@ impl FromRef<DegradedState> for sentryusb_ws::Hub {
 /// distinguish database failure from disconnection.
 async fn degraded_status(State(s): State<DegradedState>) -> Json<serde_json::Value> {
     Json(serde_json::json!({
-        "degraded": "database_unavailable",
+        "degraded": s.kind.as_str(),
         "degraded_reason": *s.reason,
     }))
 }
@@ -44,7 +72,7 @@ async fn unavailable(State(s): State<DegradedState>) -> (StatusCode, Json<serde_
     (
         StatusCode::SERVICE_UNAVAILABLE,
         Json(serde_json::json!({
-            "error": "database_unavailable",
+            "error": s.kind.as_str(),
             "reason": *s.reason,
         })),
     )
@@ -73,7 +101,7 @@ pub fn build_degraded_router(state: DegradedState) -> Router {
         .route("/api/logs/{name}/page", get(crate::logs::get_log_page))
         .route("/api/logs/{name}/tail", get(crate::logs::get_log_delta))
         .route("/api/storage/health", get(crate::storage_repair::storage_health))
-        .route("/api/storage/repair", post(crate::storage_repair::storage_repair))
+        .route("/api/storage/repair", get(crate::storage_repair::repair_status).post(crate::storage_repair::storage_repair))
         .route("/api/ws", get(crate::router::ws_handler))
         .route("/api/{*rest}", axum::routing::any(unavailable))
         .with_state(state)
@@ -90,6 +118,7 @@ mod tests {
         build_degraded_router(DegradedState {
             auth: AuthState::disabled(),
             hub: sentryusb_ws::Hub::new(),
+            kind: DegradedKind::DatabaseUnavailable,
             reason: std::sync::Arc::new("load: migrate: recording mount unavailable".into()),
         })
     }
@@ -109,6 +138,14 @@ mod tests {
         assert!(text.contains("recording mount startup"));
         assert!(text.contains("load: migrate: recording mount unavailable"));
         assert!(text.contains("database_unavailable"));
+    }
+
+    #[test]
+    fn an_unmounted_footage_drive_is_not_reported_as_a_database_problem() {
+        let e = anyhow::Error::from(sentryusb_drives::storage::FootageUnavailable::NotMounted)
+            .context("open drive DB");
+        assert_eq!(DegradedKind::of(&e), DegradedKind::FootageUnavailable);
+        assert_eq!(DegradedKind::of(&anyhow::anyhow!("database disk image is malformed")), DegradedKind::DatabaseUnavailable);
     }
 
     #[tokio::test]

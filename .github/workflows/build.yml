@@ -356,6 +356,7 @@ jobs:
         run: |
           bash -n run/archiveloop setup/pi/apply-runtime-patches.sh
           bash test/archive-runtime-update.test.sh
+          bash test/archive-driving-filter.test.sh
           bash test/archive-eta.test.sh
           bash test/notification-messages.test.sh
           bash test/notification-dispatch.test.sh

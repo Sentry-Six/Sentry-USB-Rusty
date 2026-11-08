@@ -33,6 +33,7 @@ pub mod processor;
 pub mod safety;
 pub mod schema;
 pub mod scoped_tags;
+pub mod storage;
 pub mod syncguard;
 pub mod types;
 

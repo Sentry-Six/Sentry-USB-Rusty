@@ -150,7 +150,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/system/wifi-firmware/rollback", post(crate::wifi_firmware::rollback))
         // Storage repair
         .route("/api/storage/health", get(crate::storage_repair::storage_health))
-        .route("/api/storage/repair", post(crate::storage_repair::storage_repair))
+        .route("/api/storage/repair", get(crate::storage_repair::repair_status).post(crate::storage_repair::storage_repair))
         // Preferences
         .route("/api/config/preference", get(crate::preferences::get_preference).put(crate::preferences::set_preference))
         // Notifications

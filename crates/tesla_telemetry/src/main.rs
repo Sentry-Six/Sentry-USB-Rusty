@@ -341,7 +341,7 @@ async fn main() -> Result<()> {
     // takes over once the first state response lands.
     wait_for_clock_sync(Duration::from_secs(30)).await;
 
-    let conn = db::open()?;
+    let conn = db::open_when_footage_ready().await?;
 
     // Background diagnostic logger — one line/min to
     // /mutable/sentryusb-ble.log for the Logs → Bluetooth UI tab.

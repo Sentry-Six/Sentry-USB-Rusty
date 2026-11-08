@@ -5,9 +5,30 @@ use rusqlite::{params, Connection};
 
 use crate::sample::Sample;
 
+/// [`open`], waiting while the footage drive isn't mounted (a failed mount,
+/// or a storage repair in progress) instead of exiting and restarting.
+pub async fn open_when_footage_ready() -> Result<Connection> {
+    let mut warned = false;
+    loop {
+        match sentryusb_drives::storage::check_footage() {
+            Ok(()) => return open(),
+            Err(e) => {
+                if !warned {
+                    tracing::warn!("waiting for the footage drive before opening the database: {e}");
+                    warned = true;
+                }
+                tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+            }
+        }
+    }
+}
+
 /// Opens the canonical database and applies idempotent drives migrations.
+/// Refuses when the footage drive isn't mounted, so it can never create a
+/// database on the SD card underneath `/backingfiles`.
 pub fn open() -> Result<Connection> {
     let path = sentryusb_drives::DEFAULT_DB_PATH;
+    sentryusb_drives::storage::check_footage()?;
     // SQLite cannot create a missing parent directory.
     if let Some(parent) = std::path::Path::new(path).parent() {
         let _ = std::fs::create_dir_all(parent);
