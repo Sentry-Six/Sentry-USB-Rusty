@@ -143,3 +143,51 @@ test('StrictMode reads legacy logs when an unknown tail route returns HTML with 
     win.close()
   }
 })
+
+test('RecentClips levels control colors and dropdown filtering without changing other logs', async () => {
+  const win = new Window({ url: 'http://localhost/logs' })
+  const values = { window: win, document: win.document, navigator: win.navigator, IS_REACT_ACT_ENVIRONMENT: true }
+  const descriptors = Object.keys(values).map(key => [key, Object.getOwnPropertyDescriptor(globalThis, key)] as const)
+  for (const [key, value] of Object.entries(values)) Object.defineProperty(globalThis, key, { configurable: true, value })
+  const oldFetch = globalThis.fetch
+  const messages = [
+    ' INFO RecentClips filter: scanned 8, reused 283; reading front.mp4',
+    'INFO RecentClips filter complete: keeping 243 candidates, skipping 2046',
+    'WARN RecentClips filter: cannot read front.mp4; retrying later',
+    'ERROR RecentClips filter: database unavailable',
+    'DEBUG RecentClips filter: no SEI gear data; skipping this recording',
+    'Finished checking RecentClips driving metadata.',
+    'INFO Other subsystem: skipping work',
+  ]
+  const content = messages.map(message => `Sun  8 Nov 12:10:53 MST 2026: ${message}\n`).join('')
+  globalThis.fetch = async () => Response.json({ content, cursor: 'identity', before: 0, reset: true, has_more: false })
+  const { createRoot } = await import('react-dom/client')
+  const container = win.document.createElement('div'); win.document.body.append(container)
+  const root = createRoot(container)
+  try {
+    await act(async () => root.render(createElement(MemoryRouter, {}, createElement(Logs))))
+    const hasColor = (text: string, color: string) => {
+      const span = [...container.querySelectorAll('span')].find(span => span.textContent === text)
+      assert.ok(span?.classList.contains(color), `${text} should be ${color}`)
+    }
+    hasColor(messages[0].trim().replace(/^INFO /, ''), 'text-blue-400')
+    hasColor(messages[1].replace(/^INFO /, ''), 'text-blue-400')
+    hasColor(messages[2].replace(/^WARN /, ''), 'text-amber-400')
+    hasColor(messages[3].replace(/^ERROR /, ''), 'text-red-400')
+    hasColor(messages[4].replace(/^DEBUG /, ''), 'text-slate-500')
+    hasColor(messages[5], 'text-emerald-400')
+    hasColor(messages[6], 'text-amber-400')
+    await act(async () => [...container.querySelectorAll('button')].find(button => button.textContent === 'All levels')!.click())
+    await act(async () => [...win.document.querySelectorAll('[role="option"]')].find(option => option.textContent === 'Info')!.dispatchEvent(new win.MouseEvent('click', { bubbles: true })))
+    assert.ok(container.textContent.includes('RecentClips filter: scanned 8'))
+    assert.ok(container.textContent.includes('RecentClips filter complete: keeping 243'))
+    assert.ok(!container.textContent.includes('cannot read front.mp4'))
+    assert.ok(!container.textContent.includes('database unavailable'))
+    assert.ok(!container.textContent.includes('no SEI gear data'))
+    assert.ok(!container.textContent.includes('Other subsystem'))
+  } finally {
+    await act(async () => root.unmount()); globalThis.fetch = oldFetch
+    for (const [key, descriptor] of descriptors) { if (descriptor) Object.defineProperty(globalThis, key, descriptor); else Reflect.deleteProperty(globalThis, key) }
+    win.close()
+  }
+})
