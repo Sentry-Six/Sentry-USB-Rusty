@@ -127,42 +127,29 @@ reset_tree; tee_result=124
 if wifi_watchdog_recover; then echo 'failed reset request was reported as success'; exit 1; fi
 [[ $calls != *rmmod* && $messages == *'outcome unknown'* ]]
 
-# 4. No reset control: unload the vendor module first, then brcmfmac, then load.
-reset_tree; rm "$tree/debug/ieee80211/phy0/reset"
+# 4. No reset control and nothing else holds brcmfmac: unload, then load.
+no_vendor() { rm -rf "$tree/sys/module/brcmfmac_cyw"; rm -f "$tree/sys/module/brcmfmac/holders/brcmfmac_cyw"; }
+reset_tree; rm "$tree/debug/ieee80211/phy0/reset"; no_vendor
 wifi_watchdog_recover
-[[ $calls == '|rmmod brcmfmac_cyw|rmmod brcmfmac|modprobe brcmfmac' ]]
-[[ -d $tree/sys/module/brcmfmac && -d $tree/sys/module/brcmfmac_cyw && $messages == *'Wi-Fi driver reloaded'* ]]
-# The vendor module is loaded again if brcmfmac didn't pull it in.
-reset_tree; rm "$tree/debug/ieee80211/phy0/reset"
-timeout_real=$(declare -f timeout)
-timeout() {
-  while [[ $1 == -k ]]; do shift 2; done; shift; calls="$calls|$*"
-  case $1 in
-    rmmod) rm -rf "$tree/sys/module/$2"; rm -f "$tree/sys/module/brcmfmac/holders/$2" ;;
-    modprobe) mkdir -p "$tree/sys/module/$2/holders" ;;
-  esac
-}
-wifi_watchdog_recover
-[[ $calls == '|rmmod brcmfmac_cyw|rmmod brcmfmac|modprobe brcmfmac|modprobe brcmfmac_cyw' ]]
-eval "$timeout_real"
+[[ $calls == '|rmmod brcmfmac|modprobe brcmfmac' ]]
+[[ -d $tree/sys/module/brcmfmac && $messages == *'Wi-Fi driver reloaded'* ]]
 
-# 5. An unknown holder stops the fallback before anything is unloaded.
+# 5. Any module holding brcmfmac (the 6.18 vendor module or an unknown one)
+#    stops the fallback before anything is unloaded.
 reset_tree; rm "$tree/debug/ieee80211/phy0/reset"
+if wifi_watchdog_recover; then echo 'vendor module was unloaded'; exit 1; fi
+[[ $calls == '' && $messages == *'brcmfmac_cyw uses brcmfmac'* && -d $tree/sys/module/brcmfmac_cyw ]]
+reset_tree; rm "$tree/debug/ieee80211/phy0/reset"; no_vendor
 mkdir -p "$tree/sys/module/other_mod/holders"; : > "$tree/sys/module/brcmfmac/holders/other_mod"
 if wifi_watchdog_recover; then echo 'unknown holder was unloaded'; exit 1; fi
-[[ $calls == '' && $messages == *'other_mod also uses brcmfmac'* ]]
-# A vendor module that is itself in use also stops it.
-reset_tree; rm "$tree/debug/ieee80211/phy0/reset"; : > "$tree/sys/module/brcmfmac_cyw/holders/x"
-if wifi_watchdog_recover; then echo 'busy vendor module was unloaded'; exit 1; fi
-[[ $calls == '' && $messages == *'brcmfmac_cyw is in use'* ]]
+[[ $calls == '' && $messages == *'other_mod uses brcmfmac'* ]]
 
-# 6. brcmfmac won't unload: the vendor module is put back.
-reset_tree; rm "$tree/debug/ieee80211/phy0/reset"; rmmod_fail=brcmfmac
+# 6. brcmfmac won't unload, or won't load again.
+reset_tree; rm "$tree/debug/ieee80211/phy0/reset"; no_vendor; rmmod_fail=brcmfmac
 if wifi_watchdog_recover; then echo 'failed unload was reported as success'; exit 1; fi
-[[ $calls == '|rmmod brcmfmac_cyw|rmmod brcmfmac|modprobe brcmfmac_cyw' && -d $tree/sys/module/brcmfmac_cyw ]]
+[[ $calls == '|rmmod brcmfmac' ]]
 [[ $messages == *'could not unload brcmfmac'* && $messages == *'no further attempt for this storm'* ]]
-# brcmfmac won't load again.
-reset_tree; rm "$tree/debug/ieee80211/phy0/reset"; modprobe_fail=brcmfmac
+reset_tree; rm "$tree/debug/ieee80211/phy0/reset"; no_vendor; modprobe_fail=brcmfmac
 if wifi_watchdog_recover; then echo 'failed load was reported as success'; exit 1; fi
 [[ $messages == *'did not load again'* ]]
 
@@ -207,7 +194,7 @@ if wifi_watchdog_recover commit_failed; then echo 'reset ran without a cooldown 
 [[ $calls == '' ]]
 
 # 10. Recovery never touches the USB drive the car is using.
-recovery_code=$(declare -f wifi_watchdog_recover wifi_watchdog_chip_reset wifi_watchdog_module_reload wifi_watchdog_restore_modules wifi_watchdog_blocked)
+recovery_code=$(declare -f wifi_watchdog_recover wifi_watchdog_chip_reset wifi_watchdog_module_reload wifi_watchdog_blocked)
 [[ $recovery_code != *UDC* && $recovery_code != *lun.* && $recovery_code != *gadget* ]]
 rm -rf "$tree"
 unset WIFI_SYSFS WIFI_DEBUGFS

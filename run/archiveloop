@@ -3249,61 +3249,30 @@ function wifi_watchdog_chip_reset {
 }
 
 # Fallback for kernels without the reset control: unload and reload the
-# driver. brcmfmac's vendor modules (brcmfmac_cyw on Pi OS 6.18) hold it, so
-# they go first. The whole holder list is checked before anything is
-# removed; an unknown holder stops it. cfg80211 and brcmutil stay loaded.
+# driver, but only when no other module holds it. A vendor module
+# (brcmfmac_cyw on Pi OS 6.18) is left alone: once it is unloaded, loading
+# it again doesn't rebind the chip, so a failed brcmfmac unload after that
+# would take Wi-Fi down until the next reboot. Those kernels have the reset
+# control anyway. cfg80211 and brcmutil stay loaded.
 function wifi_watchdog_module_reload {
-  local modules=${WIFI_SYSFS:-/sys}/module holder name vendor=() removed=()
+  local modules=${WIFI_SYSFS:-/sys}/module holder
   if [ ! -d "$modules/brcmfmac" ]; then
     log 'Wi-Fi watchdog: brcmfmac is not a loaded module here; cannot reload it'
     return 1
   fi
   for holder in "$modules/brcmfmac/holders/"*; do
     [ -e "$holder" ] || continue
-    name=${holder##*/}
-    case $name in
-      brcmfmac_cyw|brcmfmac_wcc|brcmfmac_bca) ;;
-      *)
-        log "Wi-Fi watchdog: module $name also uses brcmfmac; not unloading the Wi-Fi driver"
-        return 1
-        ;;
-    esac
-    if [ -n "$(ls -A "$modules/$name/holders" 2>/dev/null)" ]; then
-      log "Wi-Fi watchdog: module $name is in use; not unloading the Wi-Fi driver"
-      return 1
-    fi
-    vendor+=("$name")
-  done
-  for name in "${vendor[@]}"; do
-    if ! timeout -k 2 8 rmmod "$name" >/dev/null 2>&1; then
-      log "Wi-Fi watchdog: could not unload $name; Wi-Fi driver left as it was"
-      wifi_watchdog_restore_modules "${removed[@]}"
-      return 1
-    fi
-    removed+=("$name")
+    log "Wi-Fi watchdog: module ${holder##*/} uses brcmfmac and this kernel has no chip reset control; not unloading the Wi-Fi driver"
+    return 1
   done
   if ! timeout -k 2 8 rmmod brcmfmac >/dev/null 2>&1 || [ -d "$modules/brcmfmac" ]; then
-    # Loading the vendor module again doesn't rebind the chip, so Wi-Fi may
-    # stay down until the next reboot.
-    log 'Wi-Fi watchdog: could not unload brcmfmac after its vendor module; Wi-Fi may stay down until the next reboot'
-    wifi_watchdog_restore_modules "${removed[@]}"
+    log 'Wi-Fi watchdog: could not unload brcmfmac; Wi-Fi driver left loaded'
     return 1
   fi
   if ! timeout -k 2 8 modprobe brcmfmac >/dev/null 2>&1 || [ ! -d "$modules/brcmfmac" ]; then
     log 'Wi-Fi watchdog: brcmfmac did not load again; Wi-Fi is down until the next reboot'
     return 1
   fi
-  # brcmfmac normally loads its vendor module itself; make sure.
-  wifi_watchdog_restore_modules "${vendor[@]}"
-}
-
-function wifi_watchdog_restore_modules {
-  local name
-  for name in "$@"; do
-    [ -d "${WIFI_SYSFS:-/sys}/module/$name" ] && continue
-    timeout -k 2 8 modprobe "$name" >/dev/null 2>&1 ||
-      log "Wi-Fi watchdog: could not load $name again"
-  done
 }
 
 function wifi_watchdog_verify_link {
