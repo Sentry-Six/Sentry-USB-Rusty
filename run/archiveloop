@@ -3121,7 +3121,7 @@ function logrotator {
 # Six transport messages in ten seconds identify a burst, not a slow transfer.
 function wifi_watchdog_init {
   WIFI_TRANSPORT_TIMES= WIFI_SUPPLICANT_TIMES=
-  WIFI_LAST_FAULT=-1 WIFI_STORM_LATCHED=false WIFI_LAST_ATTEMPT=-600
+  WIFI_LAST_FAULT=-1 WIFI_STORM_LATCHED=false
   WIFI_WATCHDOG_REASON=
 }
 
@@ -3154,8 +3154,9 @@ function wifi_watchdog_observe {
   if [ "$kind" = transport ]; then WIFI_TRANSPORT_TIMES=$recent; else WIFI_SUPPLICANT_TIMES=$recent; fi
   [ "$count" -ge "$threshold" ] || return 1
   WIFI_STORM_LATCHED=true
-  [ $((now - WIFI_LAST_ATTEMPT)) -ge 600 ] || return 1
-  WIFI_LAST_ATTEMPT=$now
+  # The 10-minute cooldown lives in wifi_recovery_guarded and starts only
+  # when a reset really runs, so a storm skipped for Away Mode doesn't
+  # suppress the next one.
   WIFI_WATCHDOG_REASON=$kind
   return 0
 }
@@ -3194,15 +3195,115 @@ function wifi_watchdog_capture {
   ) || log 'Wi-Fi watchdog: could not save pre-recovery diagnostics'
 }
 
-function wifi_watchdog_reload {
-  local unload_result=0 load_result=0
-  # Leave shared cfg80211/brcmutil dependencies and other adapters alone.
-  timeout -k 2 8 modprobe -r brcmfmac >/dev/null 2>&1 || unload_result=$?
-  timeout -k 2 8 modprobe brcmfmac >/dev/null 2>&1 || load_result=$?
-  if [ "$unload_result" -ne 0 ] || [ "$load_result" -ne 0 ]; then
-    log "Wi-Fi watchdog: recovery failed (unload=$unload_result, load=$load_result); no further attempt for this storm"
+# Away Mode's hotspot (ap0) runs on the same chip, and nothing here brings
+# it back after a reset. A supplicant-only error doesn't prove the chip's bus
+# failed, so it doesn't reset the chip in Travel Mode either. Checked before
+# the cooldown starts and again right before the reset.
+function wifi_watchdog_blocked {
+  if [ -e "${WIFI_SYSFS:-/sys}/class/net/ap0" ] || away_mode_active; then
+    log 'Wi-Fi watchdog: Away Mode hotspot is active; not resetting the Wi-Fi chip'
+    return 0
+  fi
+  if [ "$WIFI_WATCHDOG_REASON" = supplicant ] && travel_mode_active; then
+    log 'Wi-Fi watchdog: Travel Mode is on; not resetting the Wi-Fi chip for a supplicant error'
+    return 0
+  fi
+  return 1
+}
+
+# wlan0's wiphy index. A chip reset frees the wiphy and the re-probe gets a
+# new, higher one; a missing or unreadable value never counts as a change.
+function wifi_watchdog_phy_index {
+  local index
+  index=$(cat "${WIFI_SYSFS:-/sys}/class/net/wlan0/phy80211/index" 2>/dev/null) || return 1
+  [[ $index =~ ^[0-9]+$ ]] || return 1
+  printf '%s\n' "$index"
+}
+
+# Ask brcmfmac to reset the chip through debugfs: its bus reset tears the
+# device down and runs an MMC hardware reset, then the chip is probed again.
+# No module is unloaded. Returns:
+#   0  the chip came back as a new wiphy
+#   1  wlan0 is there but this kernel has no reset control (nothing requested)
+#   2  the reset was requested but no new wiphy appeared within 20 s
+#   3  the request itself failed or timed out (its outcome is unknown)
+#   4  wlan0's wiphy can't be identified (it may be mid-reset already)
+# After 2, 3 or 4 a kernel reset may still be running, and unloading the
+# driver under it can crash the kernel, so the caller must stop there.
+function wifi_watchdog_chip_reset {
+  local phy before after deadline node
+  phy=$(cat "${WIFI_SYSFS:-/sys}/class/net/wlan0/phy80211/name" 2>/dev/null) || return 4
+  [[ $phy =~ ^phy[0-9]+$ ]] || return 4
+  before=$(wifi_watchdog_phy_index) || return 4
+  node="${WIFI_DEBUGFS:-/sys/kernel/debug}/ieee80211/$phy/reset"
+  [ -e "$node" ] || return 1
+  timeout -k 1 5 tee "$node" <<< 1 >/dev/null 2>&1 || return 3
+  deadline=$(( $(wifi_watchdog_uptime) + 20 ))
+  while [ "$(wifi_watchdog_uptime)" -lt "$deadline" ]; do
+    if after=$(wifi_watchdog_phy_index) && [ "$after" != "$before" ]; then
+      return 0
+    fi
+    sleep 1
+  done
+  return 2
+}
+
+# Fallback for kernels without the reset control: unload and reload the
+# driver. brcmfmac's vendor modules (brcmfmac_cyw on Pi OS 6.18) hold it, so
+# they go first. The whole holder list is checked before anything is
+# removed; an unknown holder stops it. cfg80211 and brcmutil stay loaded.
+function wifi_watchdog_module_reload {
+  local modules=${WIFI_SYSFS:-/sys}/module holder name vendor=() removed=()
+  if [ ! -d "$modules/brcmfmac" ]; then
+    log 'Wi-Fi watchdog: brcmfmac is not a loaded module here; cannot reload it'
     return 1
   fi
+  for holder in "$modules/brcmfmac/holders/"*; do
+    [ -e "$holder" ] || continue
+    name=${holder##*/}
+    case $name in
+      brcmfmac_cyw|brcmfmac_wcc|brcmfmac_bca) ;;
+      *)
+        log "Wi-Fi watchdog: module $name also uses brcmfmac; not unloading the Wi-Fi driver"
+        return 1
+        ;;
+    esac
+    if [ -n "$(ls -A "$modules/$name/holders" 2>/dev/null)" ]; then
+      log "Wi-Fi watchdog: module $name is in use; not unloading the Wi-Fi driver"
+      return 1
+    fi
+    vendor+=("$name")
+  done
+  for name in "${vendor[@]}"; do
+    if ! timeout -k 2 8 rmmod "$name" >/dev/null 2>&1; then
+      log "Wi-Fi watchdog: could not unload $name; Wi-Fi driver left as it was"
+      wifi_watchdog_restore_modules "${removed[@]}"
+      return 1
+    fi
+    removed+=("$name")
+  done
+  if ! timeout -k 2 8 rmmod brcmfmac >/dev/null 2>&1 || [ -d "$modules/brcmfmac" ]; then
+    # Loading the vendor module again doesn't rebind the chip, so Wi-Fi may
+    # stay down until the next reboot.
+    log 'Wi-Fi watchdog: could not unload brcmfmac after its vendor module; Wi-Fi may stay down until the next reboot'
+    wifi_watchdog_restore_modules "${removed[@]}"
+    return 1
+  fi
+  if ! timeout -k 2 8 modprobe brcmfmac >/dev/null 2>&1 || [ ! -d "$modules/brcmfmac" ]; then
+    log 'Wi-Fi watchdog: brcmfmac did not load again; Wi-Fi is down until the next reboot'
+    return 1
+  fi
+  # brcmfmac normally loads its vendor module itself; make sure.
+  wifi_watchdog_restore_modules "${vendor[@]}"
+}
+
+function wifi_watchdog_restore_modules {
+  local name
+  for name in "$@"; do
+    [ -d "${WIFI_SYSFS:-/sys}/module/$name" ] && continue
+    timeout -k 2 8 modprobe "$name" >/dev/null 2>&1 ||
+      log "Wi-Fi watchdog: could not load $name again"
+  done
 }
 
 function wifi_watchdog_verify_link {
@@ -3221,10 +3322,38 @@ function wifi_watchdog_verify_link {
   done
 }
 
+# $1, when given, runs after the last mode check and right before the reset
+# (it starts the cooldown); if it fails, nothing is reset.
 function wifi_watchdog_recover {
+  local reset_result=0 commit=${1:-}
   wifi_watchdog_capture
-  log "Wi-Fi watchdog: attempting driver reload after $WIFI_WATCHDOG_REASON error burst"
-  if ! wifi_watchdog_reload; then return 1; fi
+  if wifi_watchdog_blocked; then return 1; fi
+  if [ -n "$commit" ] && ! "$commit"; then return 1; fi
+  log "Wi-Fi watchdog: resetting the Wi-Fi chip after $WIFI_WATCHDOG_REASON error burst"
+  wifi_watchdog_chip_reset || reset_result=$?
+  case $reset_result in
+    0) log 'Wi-Fi watchdog: the Wi-Fi chip reset and came back' ;;
+    1)
+      log 'Wi-Fi watchdog: no chip reset control on this kernel; reloading the Wi-Fi driver instead'
+      if ! wifi_watchdog_module_reload; then
+        log 'Wi-Fi watchdog: driver reload failed; no further attempt for this storm'
+        return 1
+      fi
+      log 'Wi-Fi watchdog: Wi-Fi driver reloaded'
+      ;;
+    2)
+      log 'Wi-Fi watchdog: chip reset requested, but the chip had not come back after 20 s; not unloading the driver while the reset may still be running; no further attempt for this storm'
+      return 1
+      ;;
+    4)
+      log 'Wi-Fi watchdog: wlan0 has no identifiable Wi-Fi device (it may be resetting); not touching the driver; no further attempt for this storm'
+      return 1
+      ;;
+    *)
+      log 'Wi-Fi watchdog: could not request a chip reset (outcome unknown); not unloading the driver; no further attempt for this storm'
+      return 1
+      ;;
+  esac
   if wifi_watchdog_verify_link; then
     log 'Wi-Fi watchdog: reload completed, associated and gateway reachable; throughput and archive recovery unverified'
   else
@@ -3238,8 +3367,10 @@ function wifi_watchdog_attempt {
 }
 
 function wifi_watchdog_recover_recorded {
-  wifi_recovery_record || return 1
-  wifi_watchdog_recover
+  # A skipped reset doesn't start the cooldown: it is recorded only after
+  # the last mode check, right before the reset.
+  if wifi_watchdog_blocked; then return 1; fi
+  wifi_watchdog_recover wifi_recovery_record
 }
 
 # Start the shared cooldown. Called by a recovery action right before its
