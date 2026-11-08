@@ -54,8 +54,15 @@ fn clip_stamp(name: &str) -> Option<&str> {
 /// Create a cam snapshot and its TOC/link bookkeeping. `skip_fsck` avoids a
 /// redundant post-reboot check. Returns None for a duplicate snapshot.
 pub async fn make_snapshot(skip_fsck: bool) -> Result<Option<String>> {
+    make_snapshot_with(skip_fsck, false).await
+}
+
+/// [`make_snapshot`] for a caller that may already hold the snapshots-dir
+/// lock. The flock is not reentrant across open files, so taking it again
+/// under such a caller would wait 30 s and fail.
+pub async fn make_snapshot_with(skip_fsck: bool, caller_holds_lock: bool) -> Result<Option<String>> {
     // Serialize all snapshot producers and sweeps.
-    let _lock = lock_snapshots_dir()?;
+    let _lock = if caller_holds_lock { None } else { Some(lock_snapshots_dir()?) };
 
     if !Path::new(CAM_DISK).exists() {
         bail!("cam disk image not found at {}", CAM_DISK);

@@ -640,6 +640,15 @@ async fn run_gadget(action: GadgetAction) -> i32 {
     }
 }
 
+/// Whether `FLOCKED` names make_snapshot.sh, the way the bash script marks
+/// a run whose caller already holds the snapshots-dir lock.
+fn flocked_names_make_snapshot(flocked: Option<&str>) -> bool {
+    flocked
+        .map(std::path::Path::new)
+        .and_then(|p| p.file_name())
+        .is_some_and(|name| name == "make_snapshot.sh")
+}
+
 async fn run_snapshot(action: SnapshotAction) -> i32 {
     match action {
         SnapshotAction::Make { args } => {
@@ -648,7 +657,14 @@ async fn run_snapshot(action: SnapshotAction) -> i32 {
             // (including bare "fsck" or no arg) as fsck-on. The bash
             // wrapper forwards `"$@"` so the first arg is what landed.
             let skip_fsck = args.iter().any(|a| a.eq_ignore_ascii_case("nofsck"));
-            match sentryusb_gadget::snapshot::make_snapshot(skip_fsck).await {
+            // Same contract as the bash make_snapshot.sh: FLOCKED naming
+            // this script means the caller (Clips refresh) already holds
+            // the snapshots-dir lock. Trust it only while someone holds the
+            // lock. That shows the lock is taken, not who took it; nothing
+            // here sets FLOCKED to this name except Clips refresh.
+            let caller_holds_lock = flocked_names_make_snapshot(std::env::var("FLOCKED").ok().as_deref())
+                && sentryusb_gadget::snapshot::snapshots_dir_busy();
+            match sentryusb_gadget::snapshot::make_snapshot_with(skip_fsck, caller_holds_lock).await {
                 Ok(Some(name)) => {
                     println!("{}", name);
                     0
@@ -712,5 +728,20 @@ async fn run_space(action: SpaceAction) -> i32 {
                 1
             }
         },
+    }
+}
+
+#[cfg(test)]
+mod snapshot_lock_tests {
+    use super::flocked_names_make_snapshot;
+
+    #[test]
+    fn only_a_make_snapshot_flocked_counts() {
+        assert!(flocked_names_make_snapshot(Some("/root/bin/make_snapshot.sh")));
+        assert!(flocked_names_make_snapshot(Some("make_snapshot.sh")));
+        assert!(!flocked_names_make_snapshot(None));
+        assert!(!flocked_names_make_snapshot(Some("")));
+        assert!(!flocked_names_make_snapshot(Some("/root/bin/manage_free_space.sh")));
+        assert!(!flocked_names_make_snapshot(Some("/root/bin/make_snapshot.sh.bak")));
     }
 }
