@@ -177,7 +177,7 @@ full license text sits next to it and is served with the web UI.
 7. Raspberry Pi OS in the SD card images  --  GPL and other licenses
 ================================================================================
 
-The Sentry USB SD card images (Sentry-USB-*.img.xz, attached to stable
+The Sentry USB SD card images (sentryusb-raspberry-pi-image.img.xz, on stable
 releases and listed in Raspberry Pi Imager) are built on Raspberry Pi OS Lite
 (64-bit), plus the Debian packages that install-pi.sh adds. Those programs
 keep their own licenses, many of them the GNU General Public License. Each
