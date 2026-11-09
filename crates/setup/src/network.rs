@@ -261,9 +261,32 @@ async fn nm_write_ap_file(
 
     std::fs::create_dir_all("/etc/NetworkManager/system-connections")?;
     let file = "/etc/NetworkManager/system-connections/SENTRYUSB_AP.nmconnection";
-    let contents = format!(
+    let uuid = std::fs::read_to_string("/proc/sys/kernel/random/uuid")
+        .context("could not generate a connection ID for the AP profile")?;
+    let contents = ap_keyfile_contents(ssid, pass, ip, uuid.trim());
+    // Created 0600 from the start (no world-readable window for the
+    // PSK). NM's keyfile plugin REFUSES to load connection files with
+    // looser perms, so getting this wrong doesn't just leak — it
+    // silently breaks the AP profile.
+    write_secret_file(file, &contents)?;
+
+    ap_profile::load_nm_ap_profile(ssid, ip).await?;
+
+    let _ = std::fs::remove_file("/etc/network/if-up.d/sentryusb-ap");
+    install_ap_dispatcher(&wlan).await?;
+    Ok(())
+}
+
+/// The fallback's keyfile. It carries its own random `uuid`: without one,
+/// NetworkManager derives the ID from the file path, which gives the ID of
+/// the SENTRYUSB_AP profile deleted just before. NM keeps a deletion marker
+/// for that ID until reboot and silently ignores the new file, so the load
+/// "succeeds" but no profile appears.
+fn ap_keyfile_contents(ssid: &str, pass: &str, ip: &str, uuid: &str) -> String {
+    format!(
         "[connection]\n\
          id=SENTRYUSB_AP\n\
+         uuid={uuid}\n\
          type=wifi\n\
          interface-name=ap0\n\
          autoconnect=false\n\
@@ -282,18 +305,7 @@ async fn nm_write_ap_file(
          \n\
          [ipv6]\n\
          method=disabled\n"
-    );
-    // Created 0600 from the start (no world-readable window for the
-    // PSK). NM's keyfile plugin REFUSES to load connection files with
-    // looser perms, so getting this wrong doesn't just leak — it
-    // silently breaks the AP profile.
-    write_secret_file(file, &contents)?;
-
-    ap_profile::load_nm_ap_profile(ssid, ip).await?;
-
-    let _ = std::fs::remove_file("/etc/network/if-up.d/sentryusb-ap");
-    install_ap_dispatcher(&wlan).await?;
-    Ok(())
+    )
 }
 
 /// Line in the hostapd path's `/etc/dnsmasq.conf` that stops dnsmasq
@@ -681,5 +693,18 @@ mod tests {
                     }\n";
         let tagged = tag_network_blocks_with_id_str(conf, "AP1");
         assert_eq!(tagged.matches("id_str").count(), 1, "idempotent");
+    }
+
+    #[test]
+    fn ap_keyfile_carries_its_own_uuid() {
+        // Without a uuid line NM derives the ID from the path, which is the
+        // ID of the profile the fallback just deleted, and ignores the file.
+        let uuid = "0b7d4c1e-6a2f-4e8b-9c3d-5f1a2b3c4d5e";
+        let keyfile = ap_keyfile_contents("SentryUSB-AP", "secret123", "192.168.66.1", uuid);
+        let connection = keyfile.split("\n\n").next().unwrap();
+        assert!(connection.lines().any(|l| l == format!("uuid={uuid}")));
+        assert!(connection.lines().any(|l| l == "id=SENTRYUSB_AP"));
+        assert!(keyfile.contains("\nssid=SentryUSB-AP\n"));
+        assert!(keyfile.contains("\naddress1=192.168.66.1/24\n"));
     }
 }
