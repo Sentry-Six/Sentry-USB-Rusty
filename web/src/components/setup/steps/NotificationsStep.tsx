@@ -143,7 +143,7 @@ function ProviderCard({ provider, data, onChange, errorFields, readOnly }: { pro
             <span className="text-sm text-slate-300">Enable mobile push notifications</span>
           </label>
           <p className="mt-2 text-xs text-slate-400">
-            Pair your phone in Notifications → Delivery, then enter the code in the mobile app.
+            Then pair your phone in the Sentry Connect app: connect to this Pi and open its Notifications settings. The app pairs itself; there's no code to type.
           </p>
         </div>
       )}

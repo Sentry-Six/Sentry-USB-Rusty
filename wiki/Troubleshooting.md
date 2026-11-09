@@ -2,51 +2,6 @@
 
 Most install problems fall into a few buckets. If your issue isn't here, ping **[Discord](https://discord.gg/9QZEzVwdnt)** — answers come fast and we'll add common ones to this page over time.
 
-## Storage repair on 32-bit and 64-bit installations
-
-Repair Storage selects its executable from the kernel architecture and the
-executable's ELF header, not the filesystem or the web server's architecture.
-A Pi running a 64-bit ARM kernel with 32-bit userspace uses a private ARM64 XFS
-tool and libraries. The read-only check, normal repair, log-replay retry, and
-confirmed force repair all use the same selected tool, recorded in the repair log.
-
-Setup, the installer, and the first startup migration after an update prepare a
-checksum-verified tool cache on the root card for offline recovery. Existing
-installations do not need to rerun setup or toggle Auto Repair to receive it.
-Compatible native tools and already-verified caches are reused without downloading.
-Update preparation runs in the background and only prepares the tool; it never
-starts a repair. A failed download is logged without failing the update. Setup or
-an actual repair can retry, but offline recovery is not ready until the tool is
-available. If repair must prepare it while the root card is read-only, the temporary
-cache lives in `/run` and disappears on reboot. Repair preparation failure stops
-before storage is disconnected; it does not fall back to a 32-bit tool.
-
-If a writable cache is damaged, preparation moves it to a `.bad-*` directory
-for inspection and rebuilds from checksum-verified packages. Writable preparation
-keeps only the newest quarantined copy and removes older copies under the lock.
-If cleanup fails, it logs a warning without blocking an otherwise valid tool.
-Interrupted downloads can be retried; abandoned `.prepare-*` trees are removed during the
-next locked preparation. Cache reuse checks the full file inventory, hashes,
-and that library symlinks stay inside the private tree. This detects accidental
-damage; it is not protection against someone with root access rewriting both
-the files and their local verification record.
-
-Only one manual or boot-time repair can run in the server at a time. A second
-request returns an already-in-progress message. When automatic repair cannot
-prepare its tool, it still retries on later boots; the matching push notification
-is limited to once per 24 hours while `/mutable` can retain the notice marker.
-A successful repair preflight or a healthy boot clears that notice limit.
-
-The uncommon reported architecture `armv8l` is currently unsupported by the
-selector. It stops before repair rather than assuming ARM64 execution support.
-The normal `armv6l`/`armv7l` paths retain native 32-bit tool selection.
-
-Force repair still requires its existing destructive confirmation or automatic
-force-repair preference. Selecting a compatible executable does not make force
-repair lossless, and a repair-tool failure alone does not prove SSD hardware failure.
-Legacy setup now attempts a normal mount for journal replay and stops with a
-Repair Storage message if mounting fails; it no longer clears the journal itself.
-
 ## Raspberry Pi Imager doesn't ask for Wi-Fi
 
 Imager only shows its customisation steps (Wi-Fi, user, hostname) when Sentry USB is opened through the **.rpi-imager-manifest** file. Picking the `.img.xz` with **Use custom** skips them, and the Pi then can't join your network.
@@ -77,13 +32,15 @@ Setup reboots the Pi several times, and each reboot drops the `sentryusb.local` 
 
 ## Setup loops forever on "Shrinking root partition table"
 
-Older versions could get stuck endlessly re-shrinking the root partition when Raspberry Pi OS's own first-boot auto-expand was still active (it re-grew the filesystem after every shrink). This is fixed — re-run the installer to get the latest version:
+Older versions could get stuck re-shrinking the root partition again and again. Current versions fix this, so reinstall to get the latest version. SSH into the Pi and run:
 
 ```bash
+sudo apt update && sudo apt upgrade -y
+sudo -i
 curl -fsSL https://usb.sentry-six.com | bash
 ```
 
-If setup now stops with "Root partition could not be shrunk after 3 attempts", re-flash the SD card/SSD with Raspberry Pi Imager (with OS customization disabled) or Balena Etcher and reinstall.
+If setup then stops with "Root partition could not be shrunk after 3 attempts", start fresh: write the card again by following [Getting Started](Getting-Started), including the Wi-Fi and user steps in Raspberry Pi Imager, and run the setup again.
 
 ## Tesla dashcam icon never appears
 
@@ -132,6 +89,14 @@ The Bluetooth keep-awake holds your Tesla awake by talking to the car over BLE. 
     sudo mount -t cifs //<server>/<share> /mnt -o username=<user>
     ```
     If that errors, the error message tells you exactly what's wrong.
+
+## "Footage drive not found" or storage needs repair
+
+If the web UI says it can't find the footage drive, or a notification says storage repair needs attention:
+
+1.  Check the drive's cable and power (for an external SSD), then restart the Pi.
+2.  Open **Settings → System → Repair Storage** and run a repair.
+3.  If it says a **destructive repair is required**, ask on [Discord](https://discord.gg/9QZEzVwdnt) before using **Force repair**. A force repair can lose recently recorded clips.
 
 ## Still stuck?
 

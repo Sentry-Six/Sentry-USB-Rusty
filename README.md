@@ -31,9 +31,9 @@ The Rust rewrite of the original Go version. Same `sentryusb.conf`, faster serve
 Sentry USB is one of the free tools for Tesla owners from the [Sentry Six](https://sentry-six.com) project, alongside [Sentry Studio](https://github.com/Sentry-Six/Sentry-Six) (desktop TeslaCam viewer), [Sentry Drive](https://github.com/Sentry-Six/Sentry-Drive) (drive history and FSD analytics), and [Sentry Connect](https://sentry-six.com/sentry-connect/) (the iPhone companion app for this Pi). Not affiliated with Tesla, Inc. Unrelated to the Sentry (sentry.io) error-monitoring service.
 
 > [!IMPORTANT]
-> Beginning with update 2026.20, Tesla has begun offering the ability to encrypt Tesla cam footage, which is enabled by default. Encrypted files cannot be read by Sentry USB. To continue using Sentry USB, please disable the encryption.
-> 
-> You can find the relevant settings in your vehicle's menu under Safety, beneath the dashcam USB storage options.
+> Tesla update 2026.20 added dashcam encryption on AMD-equipped cars. Sentry USB can't read encrypted recordings, so turn it off before you use Sentry USB:
+>
+> Settings → Safety → Dashcam → "Encrypt Dashcam Recordings"
 
 ---
 
@@ -113,7 +113,7 @@ Plus a **high-quality MicroSD card sized for the storage layout you choose** and
 | **Multi-camera viewer** | Synchronized 6-camera playback with HW3-aware adaptive grid and drift correction |
 | **Auto-archive** | CIFS / SMB, rsync, rclone (cloud), NFS. Kicks off whenever the Pi sees known WiFi |
 | **Keep awake** | BLE (free, same link as telemetry), TeslaFi, Tessie, or generic webhook |
-| **Sentry Cloud (beta)** | Encrypted cloud sync: drives are encrypted on the Pi before they leave your network |
+| **Sentry Cloud** | Free drive and charging history at [sentryusb.com](https://sentryusb.com), encrypted on the Pi before upload. Video stays on your Pi |
 | **Notifications** | Pushover, ntfy, Gotify, Discord, Telegram, Slack, Signal, Matrix, AWS SNS, IFTTT, Webhook, Sentry Connect app |
 | **AI Support & Help** | In-app support chat; a diagnostics report is uploaded only after you approve it |
 | **Privacy controls** | Minimal device statistics, a visible setup choice, and full per-flow disclosure |
@@ -164,7 +164,7 @@ See [BUILD.md](BUILD.md) for details.
 ### Build the SD card image (advanced)
 
 ```bash
-sudo image/build-image.sh --tag v3.29.0   # Linux, arm64 host
+sudo image/build-image.sh --tag <tag>   # a release tag, e.g. v3.28.9; Linux, arm64 host
 ```
 
 CI builds and attaches the image to each stable release; see [BUILD.md](BUILD.md#sd-card-image).

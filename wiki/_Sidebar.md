@@ -8,6 +8,7 @@
 - [Tesla BLE Telemetry](Tesla-BLE-Telemetry)
 - [Archive Methods](Archive-Methods)
 - [Notifications](Notifications)
+- [Updates](Updates)
 - [Privacy](Privacy)
 - [Sentry Cloud](Sentry-Cloud)
 - [Troubleshooting](Troubleshooting)

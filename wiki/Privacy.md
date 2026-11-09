@@ -53,11 +53,11 @@ installations without a recorded choice remain off. The reporting setting in
 - **How to disable:** `Settings → System → Device counting`. To request
   deletion of stored analytics, contact `privacy@sentry-six.com`.
 
-### 2. Update checks and retired install reporting
+### 2. Update checks
 
-Update checks go to GitHub Releases and work with reporting off. The legacy
-`/sentryusb/telemetry` and `/sentryusb/install-beacon` endpoints discard
-reports from old clients.
+Update checks go to GitHub Releases and work whether device counting is on or
+off. When older Sentry USB versions send reports to `/sentryusb/telemetry` or
+`/sentryusb/install-beacon`, the server discards them on arrival.
 
 ### 3. Time zone detection
 
@@ -258,18 +258,23 @@ Opening the Discord link does not automatically send the AI transcript or
 uploaded diagnostics to Discord. Anything you choose to post there is a
 separate disclosure to Discord and is governed by Discord's policies.
 
-## Things Sentry USB does **not** do
+## Consent and uploads
 
-- Enable reporting on an existing installation merely because it updates.
-- Send a device report before you choose Yes and continue past Privacy.
-- Send device analytics at startup or in the background when opted out.
-- Send "diagnostics" or "crash reports" in the background. If a crash
-  reporter is ever added, it will be its own opt-in.
-- Let AI Support browse files or treat one approval as permission for a
-  later upload.
-- Let the Rusty UI choose another product's AI prompt or knowledge base.
-- Treat the device-statistics setting as permission to upload diagnostics or
-  files. Each such upload still requires its own affirmative approval.
+- Updating keeps your saved reporting choice. An existing installation that
+  never made a choice stays off.
+- A device report is sent only after you choose Yes and continue past the
+  Privacy step.
+- With device counting off, the Pi sends no device analytics, at startup or
+  in the background.
+- A diagnostics report is uploaded only when you approve it in AI Support.
+  Any future crash reporter will be a separate opt-in.
+- AI Support works from your messages and the reports you approve, and each
+  upload needs its own approval.
+- The Sentry USB web UI always uses Sentry USB's own AI Support prompt and
+  knowledge base.
+- The device-counting setting covers device counting only. Diagnostics and
+  file uploads, such as wrap or lock chime submissions, each need their own
+  approval.
 
 ## Source code references
 

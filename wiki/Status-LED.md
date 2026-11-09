@@ -14,10 +14,10 @@ patterns on the green activity light. Any separate power light stays unchanged.
 | **One short flash**, then a pause | **Waiting for USB**, or the USB connection is suspended | If the car is awake, check its USB connection. |
 | **Slow, even blinking** | **Starting** Sentry USB | Wait for startup to finish. |
 | **Fast, even blinking** | **Preparing** storage or doing USB maintenance | Wait for the operation to finish. |
-| **Mostly lit**, with one brief dark dip every three seconds | **Needs attention** | Open the Sentry USB web UI and check its status and logs. |
+| **Mostly lit**, with one brief dark dip every three seconds | **Not set up yet / storage not ready**, or **needs attention** | Before setup, this is normal: open `http://sentryusb.local` and run the [Setup Wizard](Setup-Wizard-Guide). After setup, open the web UI and check its status and logs. |
 
 On **Pi 5**: starting/preparing is **amber**, connected/waiting/writing is
-**green**, and needs attention is **red**. Amber means both colours lit together.
+**green**, and not set up yet / needs attention is **red**. Amber means both colours lit together.
 
 **Writing is not proof of saved video.** The light detects changes to camera
 storage; formatting and other disk writes can trigger it too. Check the car's

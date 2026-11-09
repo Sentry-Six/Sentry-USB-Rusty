@@ -29,7 +29,7 @@ The optional [Sentry Cloud](Sentry-Cloud) service is free and includes 3 GB of s
 Yes. Sentry USB only needs internet for:
 
 *   **First-time setup** (downloads the binary, installs system packages).
-*   **Updates** (auto-update checks).
+*   **[Updates](Updates)** (update checks and installs).
 *   **Cloud sync** (if you use Sentry Cloud).
 *   **Maps** in the web UI (tiles load from `tiles.sentryusb.com`).
 *   **AI Support & Help** (if you use it).

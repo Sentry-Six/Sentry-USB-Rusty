@@ -6,7 +6,7 @@ them up — no SSH, no config files.
 
 ## Install
 
-**On a Raspberry Pi:** download **[Sentry-USB-for-Raspberry-Pi-Imager.rpi-imager-manifest](https://github.com/Sentry-Six/Sentry-USB-Rusty/releases/latest/download/Sentry-USB-for-Raspberry-Pi-Imager.rpi-imager-manifest)**, double-click it to open [Raspberry Pi Imager](https://www.raspberrypi.com/software/), add your Wi-Fi when Imager asks, and write the card. Boot the Pi, wait a few minutes, then open `http://sentryusb.local`. Full step-by-step in [Getting Started](Getting-Started).
+**On a Raspberry Pi:** download **[Sentry-USB-for-Raspberry-Pi-Imager.rpi-imager-manifest](https://github.com/Sentry-Six/Sentry-USB-Rusty/releases/latest/download/Sentry-USB-for-Raspberry-Pi-Imager.rpi-imager-manifest)**, double-click it to open [Raspberry Pi Imager](https://www.raspberrypi.com/software/), add your Wi-Fi when Imager asks, and write the card. Boot the Pi, wait about a minute, then open `http://sentryusb.local`. Full step-by-step in [Getting Started](Getting-Started).
 
 **On other boards, or a Pi already running Pi OS**, use the one-liner:
 
@@ -41,14 +41,17 @@ Plus:
 | Page | What's on it |
 |------|--------------|
 | [Getting Started](Getting-Started) | Install in 10 minutes |
+| [Rock 4C+ Setup](Rock-4C-Plus-Setup) | Install on a Radxa Rock 4C+ |
 | [Setup Wizard Guide](Setup-Wizard-Guide) | Every wizard step explained |
 | [Drives](Drives) | Trip tracking — route, distance, FSD usage, per-drive telemetry |
 | [Tesla BLE Telemetry](Tesla-BLE-Telemetry) | What BLE pulls from the car and how it enriches drives |
 | [Archive Methods](Archive-Methods) | CIFS, rsync, rclone, NFS |
 | [Notifications](Notifications) | Push notifications to your phone |
 | [Privacy](Privacy) | What we send, when, and why — and how to opt out |
-| [Sentry Cloud](Sentry-Cloud) | Encrypted cloud backup (in beta) |
+| [Sentry Cloud](Sentry-Cloud) | Free drive and charging history, encrypted on your Pi |
+| [Updates](Updates) | Manual and automatic updates |
 | [Troubleshooting](Troubleshooting) | Things that go wrong |
+| [Status Light](Status-LED) | What the Pi's blinking light means |
 | [FAQ](FAQ) | Common questions |
 
 ## Links

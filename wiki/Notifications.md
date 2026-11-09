@@ -14,27 +14,9 @@ You can enable as many providers as you want at once.
 
 ## Messages and history
 
-All supported providers receive the same short event summary, including generic
-webhooks and Sentry Connect. Open **Notifications → History → Details** in the
-web interface for the full message, exact timestamp and provider error details.
-Archive logs retain the operational diagnostics. Credentials are removed from
-provider errors; very large provider responses may be truncated with an explicit
-marker.
+Every provider gets the same short summary of each event. For the full message, the exact time and any delivery error, open **Notifications → History** and tap **Details**.
 
-Existing history and notification settings are retained. Older app versions can
-still read the full message; expanding details requires an app version with the
-updated history view. No simultaneous Pi/app upgrade is required.
-
-The archive count refers to the current batch of pending files. Previous progress
-checkpoints are not subtracted again. Drive mapping summaries distinguish drives
-mapped earlier from those mapped in the current pass; an unavailable archive does
-not necessarily mean the car was away from home.
-
-Webhook and IFTTT payload fields are unchanged, but their human-readable message
-text is shorter. Avoid using exact message wording as an automation protocol.
-Custom local start/finish notification commands keep their existing arguments and
-environment. A provider accepting a notification does not establish that a device
-received it or a person read it.
+Message wording can change between versions. If you automate with a webhook or IFTTT, use the payload fields rather than matching the message text.
 
 ## Providers
 
@@ -131,52 +113,14 @@ Generic — POSTs a JSON payload to any URL. Useful for Home Assistant, n8n, Nod
 | Webhook URL | `http://homeassistant.local:8123/api/webhook/sentryusb` |
 
 ### Mobile App
-Push notifications to the Sentry Connect app. Turn on **Enable mobile push notifications** in the wizard, then pair your phone under **Notifications → Delivery** and enter the code in the app.
+Push notifications to the [Sentry Connect](https://sentry-six.com/sentry-connect/) app. Turn on **Enable mobile push notifications** in the wizard. Then, in Sentry Connect, connect to your Pi, open its **Notifications** settings and pair your phone. The app pairs itself, so there's no code to type. The Pi needs internet while pairing.
+
+Paired phones appear in the web UI under **Notifications → Delivery → Mobile Notifications**, where you can remove one or send a test.
 
 ---
 
 ## Testing notifications
 
-The **Send Test** action for the paired mobile app sends a Sentry Connect test
-notification. It does not test the other configured providers. Their delivery
-results appear in notification history when an enabled event is sent.
+**Send Test Notification** under **Notifications → Delivery → Mobile Notifications** sends a test to your paired phones only. Other providers show their results in **Notifications → History** the next time an enabled event is sent.
 
-## Automatic stable updates
-
-Settings → Device → Update Preferences includes **Install stable updates automatically**.
-It is off by default. When enabled, installation is considered only after an archive
-cycle transfers new footage and all configured follow-up work finishes successfully.
-Zero-file, cancelled, interrupted, failed and Travel Mode cycles skip installation.
-Failed attempts can retry after the next qualifying archive; there is no hourly cooldown.
-
-After downloading, the archive must still be reachable. If Tesla BLE is paired,
-the updater also queries the car directly and requires Park and Sentry Mode off
-before installation. The Sentry Mode check is omitted when a configured
-keep-awake provider uses Sentry Mode (`SENTRY_CASE=1` or `2`); Park and archive
-reachability are still required. Normal archive keep-awake cleanup runs before
-these final checks. Drive, Reverse, Neutral, an unknown state or a failed BLE query
-skips the update until the next qualifying archive. Unpaired installs do not
-query BLE. These checks cannot prevent movement after the final check or cancel
-an installation once component replacement has started.
-
-Automatic installation ignores the prerelease visibility setting. The target must be
-a non-draft, non-prerelease GitHub release with a higher numeric version. For example,
-an installed GitHub prerelease `v3.10.22` can update to stable `v4.0.0`, but will not
-downgrade to stable `v3.9.9` or reinstall `v3.10.22`.
-
-Archive completion keeps its normal notification timing. Installation uses the update
-notification category: “Update v4.0.0 available. Installing now.” After a verified reboot,
-the outcome is “Updated to v4.0.0 successfully.” Errors and interrupted attempts produce
-a short update error notification, with detailed diagnostics retained locally.
-Undelivered terminal outcomes are retained for retry, per provider, when connectivity returns.
-Installation notices are also retried while the attempt is active; stale installation notices
-expire when that attempt finishes or is replaced.
-All update messages respect notification settings. Provider acceptance cannot guarantee
-delivery to a phone, and a lost provider response can lead to a duplicate retry.
-
-Installation restarts the device and briefly disconnects its USB drive. It needs free
-space for staged files and recovery copies. A failed or interrupted installation is not
-automatically resumed at boot. Existing manual update controls remain available after
-startup recovery completes.
-
-If an automatic-update recovery record is damaged, automatic installation stays blocked. An explicitly requested manual update preserves that record for diagnosis and can repair the installation.
+For update notifications and the automatic-update option, see [Updates](Updates).
