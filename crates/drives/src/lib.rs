@@ -28,6 +28,7 @@ pub mod mp4_samples;
 pub mod mutable_intent;
 pub mod rate_intent;
 pub mod rate_confirmation;
+pub mod recent_driving;
 pub mod processor;
 pub mod safety;
 pub mod schema;

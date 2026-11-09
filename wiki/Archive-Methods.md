@@ -2,6 +2,23 @@
 
 Pick whichever fits how you already store stuff. Sentry USB archives your dashcam clips, sentry events, and (optionally) saved clips to one of four backends.
 
+
+## Only Recent Clips from driving
+
+Recent Clips are the car's rolling recording of everything, including while it
+sits parked. To archive only the parts recorded while driving, open
+**Settings → Setup Wizard → Archive**, keep **Recent Clips** on and turn on
+**Only Recent Clips from driving**.
+
+Each recording counts as driving if the car was in Drive, Reverse or Neutral at
+any point, including stopped at a light, and then all of its cameras are
+archived. Recordings made entirely in Park are skipped. Saved Clips, Sentry
+Clips and Track Mode clips are never affected.
+
+The check reads the driving data Tesla records in each clip. Cars that don't
+record it (older hardware or software) keep all of their Recent Clips. If a
+clip can't be read, or the check fails, the clips are archived anyway.
+
 ## CIFS / SMB
 
 For Windows file sharing, macOS file sharing, and most consumer NAS devices (Synology, QNAP, TrueNAS).

@@ -2053,6 +2053,22 @@ function archive_teslacam_clips () {
   # apply custom removals/additions
   filterfile "${sentrylist}"
 
+  # "Recent Clips: only while driving": drop RecentClips recordings the car
+  # spent entirely in Park. Any failure keeps the full list.
+  if [ "${ARCHIVE_RECENTCLIPS_DRIVING_ONLY:-false}" = "true" ] && grep -q '^RecentClips/' "${sentrylist}"
+  then
+    local driving_summary
+    if driving_summary=$(/opt/sentryusb/sentryusb filter-recent-driving --root "$overlaymerged" \
+          --input "${sentrylist}" --output "${sentrylist}.driving" 2>&1 >/dev/null) \
+       && mv "${sentrylist}.driving" "${sentrylist}"
+    then
+      log "${driving_summary}"
+    else
+      log "Couldn't check which Recent Clips were recorded while driving, so all of them are archived this time. ${driving_summary}"
+      rm -f "${sentrylist}.driving"
+    fi
+  fi
+
   local -r sentry_count=$(grep -c -v TeslaTrackMode "$sentrylist")
   local -r trackmode_count=$(grep -c TeslaTrackMode "$sentrylist")
   local -r ignore_count=$(wc -l < "$ignorelist")

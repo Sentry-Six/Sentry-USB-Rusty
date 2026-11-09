@@ -81,6 +81,11 @@ export SHARE_PASSWORD='password'
 # and track mode clips.
 #export ARCHIVE_RECENTCLIPS=true
 
+# With ARCHIVE_RECENTCLIPS on: only archive Recent Clips recorded while driving
+# (out of Park at any point). Clips from while parked are skipped. Cars that
+# don't record driving data keep all their Recent Clips.
+#export ARCHIVE_RECENTCLIPS_DRIVING_ONLY=true
+
 # SavedClips, SentryClips and track mode clips are archived by default, but
 # you can turn that off by uncommenting the settings below
 #export ARCHIVE_SAVEDCLIPS=false

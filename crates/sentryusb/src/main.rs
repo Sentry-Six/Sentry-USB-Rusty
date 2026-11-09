@@ -42,6 +42,20 @@ struct Args {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Archive: drop parked RecentClips recordings from a list of files to
+    /// archive ("Recent Clips: only while driving"). Prints a summary to stderr.
+    FilterRecentDriving {
+        /// Where the archive's file list is rooted (the merged snapshot view).
+        #[arg(long)]
+        root: std::path::PathBuf,
+        #[arg(long)]
+        input: std::path::PathBuf,
+        #[arg(long)]
+        output: std::path::PathBuf,
+        /// Verdicts remembered between runs.
+        #[arg(long, default_value = "/mutable/archive-recentclips-checked")]
+        remember: std::path::PathBuf,
+    },
     /// Restore LED triggers after an abnormal server exit (systemd cleanup).
     StatusLedRestore,
     /// Refresh only bundled archive scripts; does not restart services or run setup.
@@ -601,6 +615,12 @@ async fn shutdown_signal() {
 /// existing `ERROR: make_snapshot.sh failed (exit $?)` log lines stay useful.
 async fn run_subcommand(cmd: Command) -> i32 {
     match cmd {
+        Command::FilterRecentDriving { root, input, output, remember } => {
+            match sentryusb_drives::recent_driving::filter_file(&root, &input, &output, &remember) {
+                Ok(summary) => { eprintln!("{summary}"); 0 }
+                Err(error) => { eprintln!("Recent Clips check failed: {error:#}"); 1 }
+            }
+        }
         Command::StatusLedRestore => { sentryusb_status_led::restore(); 0 }
         Command::RefreshArchiveScripts { directory } => {
             let result = sentryusb_setup::archive_runtime::refresh_configured(&directory);

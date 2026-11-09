@@ -242,6 +242,11 @@ pub struct SeiScan {
     pub steering_deg: Vec<f32>,
     /// Video frames in the mdat (slices starting at macroblock 0).
     pub frame_count: u32,
+    /// Every Tesla SEI frame, including ones without a valid GPS fix (which
+    /// the arrays above leave out), and how many of those were out of Park.
+    /// Lets the archive tell a parked clip from a drive in a garage.
+    pub gear_frames: u32,
+    pub out_of_park_frames: u32,
 }
 
 fn extract_from_mdat(f: &mut File, offset: u64, size: u64) -> Result<SeiScan> {
@@ -260,6 +265,7 @@ fn extract_from_mdat(f: &mut File, offset: u64, size: u64) -> Result<SeiScan> {
     let mut frame_indexes = Vec::new();
     let mut steering_deg = Vec::new();
     let mut frame_count: u32 = 0;
+    let (mut gear_frames, mut out_of_park_frames) = (0u32, 0u32);
 
     let end = offset + size;
     let mut cursor = offset;
@@ -295,7 +301,12 @@ fn extract_from_mdat(f: &mut File, offset: u64, size: u64) -> Result<SeiScan> {
             let mut nal = vec![0u8; nal_size as usize];
             nal[0] = type_buf[0];
             if reader.read_exact(&mut nal[1..]).is_ok() {
-                if let Some(frame) = parse_tesla_sei(&nal) {
+                let frame = parse_tesla_sei(&nal);
+                if let Some(frame) = &frame {
+                    gear_frames += 1;
+                    if frame.gear != GEAR_PARK { out_of_park_frames += 1 }
+                }
+                if let Some(frame) = frame.filter(|frame| frame.gps_ok) {
                     points.push([
                         (frame.lat * 1e6).round() / 1e6,
                         (frame.lon * 1e6).round() / 1e6,
@@ -349,6 +360,8 @@ fn extract_from_mdat(f: &mut File, offset: u64, size: u64) -> Result<SeiScan> {
         frame_indexes,
         steering_deg,
         frame_count,
+        gear_frames,
+        out_of_park_frames,
     })
 }
 
@@ -371,6 +384,8 @@ struct SeiFrame {
     accel_y: f32,
     /// Steering wheel angle, degrees (proto field 6).
     steering_deg: f32,
+    /// Coordinates are present and plausible.
+    gps_ok: bool,
 }
 
 /// Finds the Tesla magic bytes (0x42...0x69) in a SEI NAL and decodes GPS + metadata.
@@ -391,7 +406,7 @@ fn parse_tesla_sei(nal: &[u8]) -> Option<SeiFrame> {
     }
 
     let stripped = strip_emulation_bytes(payload);
-    decode_sei_gps(&stripped)
+    decode_sei_frame(&stripped)
 }
 
 /// Removes H.264 emulation prevention bytes (0x00 0x00 0x03 -> 0x00 0x00).
@@ -430,7 +445,15 @@ fn strip_emulation_bytes(data: &[u8]) -> Vec<u8> {
 /// proto3 omits false/zero fields from the wire, so absent simply
 /// decodes as off. Hand-parses protobuf wire format to avoid external
 /// dependencies.
+/// Like [`decode_sei_frame`], but only frames with a valid GPS fix.
+#[cfg(test)]
 fn decode_sei_gps(data: &[u8]) -> Option<SeiFrame> {
+    decode_sei_frame(data).filter(|frame| frame.gps_ok)
+}
+
+/// Every decodable Tesla SEI frame; `gps_ok` says whether its coordinates
+/// can be mapped.
+fn decode_sei_frame(data: &[u8]) -> Option<SeiFrame> {
     let mut lat: f64 = 0.0;
     let mut lon: f64 = 0.0;
     let mut gear: u8 = 0;
@@ -531,27 +554,24 @@ fn decode_sei_gps(data: &[u8]) -> Option<SeiFrame> {
         && lat.abs() <= 90.0
         && lon.abs() <= 180.0;
 
-    if ok {
-        // NaN/inf IMU samples (never observed, but the field is a raw
-        // double) degrade to 0.0 = "no data" rather than poisoning math.
-        let clean = |v: f32| if v.is_finite() { v } else { 0.0 };
-        Some(SeiFrame {
-            lat,
-            lon,
-            gear,
-            ap_state,
-            speed,
-            accel_pos,
-            blinker_left,
-            blinker_right,
-            brake,
-            accel_x: clean(accel_x),
-            accel_y: clean(accel_y),
-            steering_deg: clean(steering_deg),
-        })
-    } else {
-        None
-    }
+    // NaN/inf IMU samples (never observed, but the field is a raw
+    // double) degrade to 0.0 = "no data" rather than poisoning math.
+    let clean = |v: f32| if v.is_finite() { v } else { 0.0 };
+    Some(SeiFrame {
+        lat,
+        lon,
+        gear,
+        ap_state,
+        speed,
+        accel_pos,
+        blinker_left,
+        blinker_right,
+        brake,
+        accel_x: clean(accel_x),
+        accel_y: clean(accel_y),
+        steering_deg: clean(steering_deg),
+        gps_ok: ok,
+    })
 }
 
 /// Reads a protobuf varint. Returns (value, bytes_consumed).
@@ -1152,6 +1172,21 @@ mod tests {
         data.push(0x61); // field 12
         data.extend_from_slice(&0.0f64.to_le_bytes());
 
+        assert!(decode_sei_gps(&data).is_none());
+    }
+
+    #[test]
+    fn test_gear_is_kept_without_a_gps_fix() {
+        // Driving in a garage: gear D (1) at null island. The map drops the
+        // frame; the archive's driving check still sees the gear.
+        let mut data = vec![0x10, 0x01]; // field 2 (gear) = 1
+        data.push(0x59);
+        data.extend_from_slice(&0.0f64.to_le_bytes());
+        data.push(0x61);
+        data.extend_from_slice(&0.0f64.to_le_bytes());
+        let frame = decode_sei_frame(&data).expect("frame without GPS");
+        assert!(!frame.gps_ok);
+        assert_eq!(frame.gear, 1);
         assert!(decode_sei_gps(&data).is_none());
     }
 }
