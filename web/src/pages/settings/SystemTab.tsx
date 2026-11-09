@@ -148,6 +148,15 @@ export function SystemTab({ onOpenRawConfig, onOpenWizard, version, hostname }: 
           >
             Discord community ↗
           </a>
+          {/* Served from web/public; tools/third-party-notices.py writes it. */}
+          <a
+            href="/THIRD-PARTY-NOTICES.txt"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="t-sm text-slate-400 hover:text-slate-300"
+          >
+            Open-source licenses ↗
+          </a>
         </div>
       </PrefCard>
 

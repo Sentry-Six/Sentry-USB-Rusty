@@ -77,13 +77,19 @@ remain under MIT alongside their sibling archive scripts:
   run/rsync_archive/copy-music.sh
 
 ================================================================================
-2. Vendored npm dependencies  --  see web/node_modules
+2. Bundled npm packages and Rust crates  --  their own licenses
 ================================================================================
 
-Files under web/node_modules/ are third-party packages installed by npm and
-are not part of this project's source. Each carries its own license (e.g.
-web/node_modules/flatted is ISC). node_modules should be excluded from
-distribution; build from package.json / package-lock.json instead.
+The web UI bundles npm packages (React, MapLibre GL, Leaflet, xterm.js,
+Recharts and their dependencies), and the Pi binaries link Rust crates. Each
+keeps its own license. web/public/THIRD-PARTY-NOTICES.txt lists every one with
+its license text, after this NOTICE. tools/third-party-notices.py generates it
+from web/package-lock.json and Cargo.lock, and CI fails when it is out of
+date. The web UI serves it at /THIRD-PARTY-NOTICES.txt, linked from Settings >
+System > Resources.
+
+Files under web/node_modules/ are installed by npm and are not part of this
+project's source; build from package.json / package-lock.json instead.
 
 ================================================================================
 MIT License  (applies to the TeslaUSB-derived files in section 1)

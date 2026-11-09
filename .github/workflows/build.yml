@@ -406,6 +406,17 @@ jobs:
         run: |
           cd web
           npm ci
+      - name: Install Rust
+        # Pinned like the test job; the notices check reads Cargo.lock and the crates' sources.
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: 1.99.0
+      # The licences served with the web UI must match its dependencies: after
+      # a dependency change, run python3 -I tools/third-party-notices.py.
+      - name: Check THIRD-PARTY-NOTICES.txt
+        run: |
+          cargo fetch --locked
+          python3 -I tools/third-party-notices.py --check
       - name: Test web
         run: |
           cd web
