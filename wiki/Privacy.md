@@ -147,7 +147,8 @@ off. When older Sentry USB versions send reports to `/sentryusb/telemetry` or
 - **Endpoint:** `POST https://notifications.sentry-six.com/register-code`,
   then `https://notifications.sentry-six.com/send` for each notification.
 - **Sent:** A `device_id` (64 random hex characters generated on this Pi),
-  `device_secret`, your chosen pairing code, and your Pi's hostname. When a
+  `device_secret`, a one-time pairing code the Pi creates when Sentry Connect
+  asks to pair, and your Pi's hostname. When a
   phone pairs, the Sentry Connect app registers its push token (Apple APNs
   on iPhone, Google Firebase Cloud Messaging on Android), a device name (such
   as "iPhone" or the phone model) and platform. Each notification's title and

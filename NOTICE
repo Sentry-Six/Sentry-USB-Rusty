@@ -166,3 +166,30 @@ full license text sits next to it and is served with the web UI.
     JetBrains Mono (https://github.com/JetBrains/JetBrainsMono)
     Copyright 2020 The JetBrains Mono Project Authors
     SIL Open Font License 1.1, see web/public/fonts/JetBrainsMono-OFL.txt
+
+================================================================================
+7. Raspberry Pi OS in the SD card images  --  GPL and other licenses
+================================================================================
+
+The Sentry USB SD card images (Sentry-USB-*.img.xz, attached to stable
+releases and listed in Raspberry Pi Imager) are built on Raspberry Pi OS Lite
+(64-bit), plus the Debian packages that install-pi.sh adds. Those programs
+keep their own licenses, many of them the GNU General Public License. Each
+image is built from the Raspberry Pi OS release named in Raspberry Pi's Imager
+OS list on the day it was built.
+
+Source code for these programs:
+
+  Linux kernel and Raspberry Pi firmware
+    https://github.com/raspberrypi/linux
+    https://github.com/raspberrypi/firmware
+  Raspberry Pi OS packages
+    https://archive.raspberrypi.com/debian/  (source packages)
+  Debian packages
+    https://deb.debian.org/debian/  (source packages)
+    https://sources.debian.org/
+
+Written offer: for at least three years after we last distribute an image,
+anyone may email info@sentry-six.com to get the complete corresponding source
+code for the GPL-licensed programs in that image, on a physical medium or as
+a download, for no more than the cost of providing it.

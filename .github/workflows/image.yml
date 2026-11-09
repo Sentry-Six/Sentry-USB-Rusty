@@ -165,7 +165,8 @@ jobs:
             echo "Release notes already have the install line"
             exit 0
           fi
-          { echo "$line"; echo; cat "$RUNNER_TEMP/notes.md"; } > "$RUNNER_TEMP/notes-new.md"
+          source_line="The image includes Raspberry Pi OS. Its open-source parts keep their own licenses, including the GPL; see section 7 of NOTICE for where to get their source code."
+          { echo "$line"; echo; cat "$RUNNER_TEMP/notes.md"; echo; echo "$source_line"; } > "$RUNNER_TEMP/notes-new.md"
           gh release edit "$TAG" --notes-file "$RUNNER_TEMP/notes-new.md"
 
       - name: Keep as workflow artifact

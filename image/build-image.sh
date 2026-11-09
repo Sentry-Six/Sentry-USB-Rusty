@@ -22,7 +22,7 @@
 # a one-line install.
 #
 # Usage (Linux, as root, on an arm64 host or one with qemu-aarch64 binfmt):
-#   image/build-image.sh --tag v3.29.0 [--out DIR] [--installer FILE]
+#   image/build-image.sh --tag <tag> [--out DIR] [--installer FILE]
 
 set -Eeuo pipefail
 
