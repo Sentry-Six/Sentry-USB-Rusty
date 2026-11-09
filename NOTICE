@@ -3,9 +3,9 @@ Copyright 2025-2026 Jhoan Romero, Scott Vandereems, and Jason Perez
 
 This product is licensed under the PolyForm Noncommercial License 1.0.0 (see
 LICENSE), EXCEPT for the third-party and derived files listed below, which
-remain under their original licenses (MIT, BSD 2-Clause, or Apache 2.0 as
-noted per section). The PolyForm Noncommercial terms do NOT apply to those
-files; the terms named in each section below do.
+remain under their original licenses (MIT, BSD 2-Clause, Apache 2.0, or SIL
+Open Font License 1.1 as noted per section). The PolyForm Noncommercial terms
+do NOT apply to those files; the terms named in each section below do.
 
 If a file is not listed below, it is original work of the Sentry-USB-Rusty
 authors and is covered by the PolyForm Noncommercial License 1.0.0.
@@ -112,7 +112,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 ================================================================================
-2. Vendored xfuse XFS parser  --  BSD 2-Clause License
+3. Vendored xfuse XFS parser  --  BSD 2-Clause License
 ================================================================================
 
 The files under crates/disk_reader/src/xfs/ (except fs.rs, reader.rs,
@@ -125,7 +125,7 @@ shim (see shim.rs) and the FUSE server replaced with a path-based read-only
 API (fs.rs).
 
 ================================================================================
-3. Vendored exfat crate  --  MIT License
+4. Vendored exfat crate  --  MIT License
 ================================================================================
 
 The files under crates/disk_reader/vendor/exfat/ are vendored from the
@@ -137,7 +137,7 @@ primary entries (e.g. Volume GUID) are ignored instead of failing — both
 required to read Tesla-written filesystems.
 
 ================================================================================
-4. Vendored Material Symbols icons  --  Apache License 2.0
+5. Vendored Material Symbols icons  --  Apache License 2.0
 ================================================================================
 
 The SVG path data in web/src/components/icons.tsx and the preserved glyphs in
@@ -149,3 +149,20 @@ Copyright Google LLC, licensed under the Apache License, Version 2.0
 SVG so the UI ships no icon font and makes no external request. Local
 modifications: `battery_full_alt` is mirrored horizontally so the battery
 terminal faces right.
+
+================================================================================
+6. Bundled web fonts  --  SIL Open Font License 1.1
+================================================================================
+
+The web UI ships two font files, served from web/public/fonts/. Each font's
+full license text sits next to it and is served with the web UI.
+
+  web/public/fonts/inter-latin.woff2
+    Inter (https://github.com/rsms/inter)
+    Copyright (c) 2016 The Inter Project Authors
+    SIL Open Font License 1.1, see web/public/fonts/Inter-OFL.txt
+
+  web/public/fonts/jetbrains-mono-latin.woff2
+    JetBrains Mono (https://github.com/JetBrains/JetBrainsMono)
+    Copyright 2020 The JetBrains Mono Project Authors
+    SIL Open Font License 1.1, see web/public/fonts/JetBrainsMono-OFL.txt
