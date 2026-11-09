@@ -93,7 +93,7 @@ done
 ARCHIVE_RECENTCLIPS=false
 ARCHIVE_RECENTCLIPS_DRIVING_ONLY=true
 enumerate_candidates
-if rg -q '^RecentClips/' "$sentrylist"; then
+if grep -q '^RecentClips/' "$sentrylist"; then
   echo 'RecentClips included while disabled' >&2
   exit 1
 fi
@@ -110,11 +110,11 @@ filter_candidates
 [ "$(cat "$sentrylist")" = selected ]
 filter_candidates
 [ "$(cat "$work/filter-calls")" = 2 ]
-rg -q '^test-time: INFO RecentClips filter: fixture progress$' "$LOG_FILE"
+grep -q '^test-time: INFO RecentClips filter: fixture progress$' "$LOG_FILE"
 mode=failure
 printf '%s\n' original > "$sentrylist"
 if filter_candidates; then echo 'filter failure did not abort archiving' >&2; exit 1; fi
 [ "$(cat "$sentrylist")" = original ]
 [ "$unmount_calls" = 1 ]
-rg -q '^test-time: ERROR synthetic filter error$' "$LOG_FILE"
+grep -q '^test-time: ERROR synthetic filter error$' "$LOG_FILE"
 echo 'archive driving filter runtime tests passed'
