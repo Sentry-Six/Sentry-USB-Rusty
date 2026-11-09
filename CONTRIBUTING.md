@@ -70,5 +70,6 @@ The web UI lives in `web/` and uses its own toolchain (see `web/package.json`):
 ## Reporting bugs and requesting features
 
 Open a GitHub issue with clear steps to reproduce (for bugs) or a description of
-the use case (for features). For security-sensitive reports, contact the
-Maintainers directly rather than opening a public issue.
+the use case (for features). Report security problems privately through
+GitHub's **Report a vulnerability** form, as described in
+[SECURITY.md](SECURITY.md), rather than in a public issue.
