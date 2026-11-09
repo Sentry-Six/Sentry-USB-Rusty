@@ -24,7 +24,7 @@ jobs:
     steps:
       - name: CLA Assistant
         # Let the action handle whitespace-tolerant sign/recheck matching.
-        uses: contributor-assistant/github-action@v2.6.1
+        uses: contributor-assistant/github-action@ca4a40a7d1004f18d9960b404b97e5f30a505a08 # v2.6.1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # PAT with repo scope for writes to the signatures branch.

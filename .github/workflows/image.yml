@@ -27,7 +27,7 @@ on:
         default: false
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: sd-card-image-${{ github.event.workflow_run.head_branch || github.event.release.tag_name || inputs.tag }}
@@ -103,6 +103,9 @@ jobs:
     name: Build image for ${{ needs.plan.outputs.tag }}
     needs: plan
     if: needs.plan.outputs.build == 'true'
+    # Attaches the image and edits the release notes.
+    permissions:
+      contents: write
     # arm64 so the Pi OS chroot runs natively; 24.04's e2fsprogs understands
     # the ext4 features Trixie's root filesystem uses.
     runs-on: ubuntu-24.04-arm
@@ -110,7 +113,7 @@ jobs:
     env:
       TAG: ${{ needs.plan.outputs.tag }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0
 
@@ -171,7 +174,7 @@ jobs:
 
       - name: Keep as workflow artifact
         if: needs.plan.outputs.publish != 'true'
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: sd-card-image-${{ needs.plan.outputs.tag }}
           path: ${{ runner.temp }}/image/
