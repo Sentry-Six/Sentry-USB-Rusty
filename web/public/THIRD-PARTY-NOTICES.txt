@@ -1951,9 +1951,9 @@ https://github.com/mafintosh/resolve-protobuf-schema
 Copyright (c) 2014 Mathias Buus
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-rolldown 1.2.15 (MIT)
+rolldown 1.2.16 (MIT)
 https://github.com/rolldown/rolldown
---- rolldown 1.2.15: LICENSE ---
+--- rolldown 1.2.16: LICENSE ---
 MIT License
 
 Copyright (c) 2024-present VoidZero Inc. & Contributors
@@ -1995,7 +1995,7 @@ https://github.com/dcastil/tailwind-merge
 Copyright (c) 2021 Dany Castillo
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-tailwindcss 4.3.3 (MIT)
+tailwindcss 4.3.4 (MIT)
 https://github.com/tailwindlabs/tailwindcss
 Copyright (c) Tailwind Labs, Inc.
 MIT: the standard text in "Standard licence texts: MIT", above.
@@ -2099,9 +2099,9 @@ MIT: the standard text in "Standard licence texts: MIT", above.
 
 victory-vendor 37.3.6: lib-vendor/internmap/LICENSE: the same text as internmap 2.0.3: LICENSE, above.
 
-vite 8.3.5 (MIT)
+vite 8.3.6 (MIT)
 https://github.com/vitejs/vite
-vite 8.3.5: its licence file without the part from "# Licenses of bundled dependencies" on, which covers code inside the tool, not in the web UI.
+vite 8.3.6: its licence file without the part from "# Licenses of bundled dependencies" on, which covers code inside the tool, not in the web UI.
 # Vite core license
 Vite is released under the MIT license:
 Copyright (c) 2019-present, VoidZero Inc. and Vite contributors
@@ -2896,7 +2896,7 @@ https://github.com/RustCrypto/utils
 Copyright (c) 2020-2025 The RustCrypto Project Developers
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-crc32fast 1.5.3 (MIT OR Apache-2.0)
+crc32fast 1.5.4 (MIT OR Apache-2.0)
 https://github.com/srijs/rust-crc32fast
 Copyright (c) 2018 Sam Rijs, Alex Crichton and contributors
 MIT: the standard text in "Standard licence texts: MIT", above.
@@ -3278,7 +3278,7 @@ https://github.com/RustCrypto/MACs
 Copyright (c) 2017 Artyom Pavlov
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-http 1.4.0 (MIT OR Apache-2.0)
+http 1.5.0 (MIT OR Apache-2.0)
 https://github.com/hyperium/http
 Copyright (c) 2017 http-rs authors
 MIT: the standard text in "Standard licence texts: MIT", above.
