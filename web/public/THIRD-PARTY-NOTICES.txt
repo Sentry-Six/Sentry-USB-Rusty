@@ -810,14 +810,14 @@ Apache-2.0: the standard text in "Standard licence texts: Apache-2.0", above.
 Web UI: npm packages
 ==============================================================================
 
-@mapbox/jsonlint-lines-primitives 2.0.3 (MIT)
+@mapbox/jsonlint-lines-primitives (MIT)
 https://github.com/mapbox/jsonlint
 Copyright (c) 2012 Zachary Carter
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-@mapbox/point-geometry 1.1.0 (ISC)
+@mapbox/point-geometry (ISC)
 https://github.com/mapbox/point-geometry
---- @mapbox/point-geometry 1.1.0: LICENSE ---
+--- @mapbox/point-geometry: LICENSE ---
 Copyright (c) 2024, Mapbox
 
 Permission to use, copy, modify, and/or distribute this software for any
@@ -832,9 +832,9 @@ WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
 ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
 OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 
-@mapbox/tiny-sdf 2.3.0 (BSD-2-Clause)
+@mapbox/tiny-sdf (BSD-2-Clause)
 https://github.com/mapbox/tiny-sdf
---- @mapbox/tiny-sdf 2.3.0: LICENSE.txt ---
+--- @mapbox/tiny-sdf: LICENSE.txt ---
 BSD-2-Clause
 Copyright (c) 2016-2024 Mapbox, Inc.
 
@@ -845,9 +845,9 @@ Redistribution and use in source and binary forms, with or without modification,
 
 THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS “AS IS” AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-@mapbox/unitbezier 1.0.0 (BSD-2-Clause)
+@mapbox/unitbezier (BSD-2-Clause)
 https://github.com/mapbox/unitbezier
---- @mapbox/unitbezier 1.0.0: LICENSE ---
+--- @mapbox/unitbezier: LICENSE ---
 BSD-2-Clause
 
 Copyright (C) 2008 Apple Inc. All Rights Reserved.
@@ -877,9 +877,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 Ported from Webkit
 http://svn.webkit.org/repository/webkit/trunk/Source/WebCore/platform/graphics/UnitBezier.h
 
-@mapbox/vector-tile 3.0.0 (BSD-3-Clause)
+@mapbox/vector-tile (BSD-3-Clause)
 https://github.com/mapbox/vector-tile-js
---- @mapbox/vector-tile 3.0.0: LICENSE.txt ---
+--- @mapbox/vector-tile: LICENSE.txt ---
 Copyright (c) 2024, Mapbox
 
 All rights reserved.
@@ -908,9 +908,9 @@ LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING
 NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
 SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-@maplibre/geojson-vt 6.3.0 (ISC)
+@maplibre/geojson-vt (ISC)
 https://github.com/maplibre/geojson-vt
---- @maplibre/geojson-vt 6.3.0: LICENSE ---
+--- @maplibre/geojson-vt: LICENSE ---
 The MIT License (MIT)
 
 Copyright (c) 2025 MapLibre contributors
@@ -951,9 +951,9 @@ OF USE, DATA OR PROFITS, WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER
 TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF
 THIS SOFTWARE.
 
-@maplibre/maplibre-gl-leaflet 0.1.4 (ISC)
+@maplibre/maplibre-gl-leaflet (ISC)
 https://github.com/maplibre/maplibre-gl-leaflet
---- @maplibre/maplibre-gl-leaflet 0.1.4: LICENSE ---
+--- @maplibre/maplibre-gl-leaflet: LICENSE ---
 Copyright (c) 2021 MapLibre contributors
 
 Copyright (c) 2014, Mapbox
@@ -970,9 +970,9 @@ WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
 ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
 OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 
-@maplibre/maplibre-gl-style-spec 26.5.0 (ISC)
+@maplibre/maplibre-gl-style-spec (ISC)
 https://github.com/maplibre/maplibre-style-spec
---- @maplibre/maplibre-gl-style-spec 26.5.0: LICENSE.txt ---
+--- @maplibre/maplibre-gl-style-spec: LICENSE.txt ---
 Copyright (c) 2020, MapLibre contributors
 
 All rights reserved.
@@ -1090,9 +1090,9 @@ ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
 SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-@maplibre/mlt 1.3.0 ((MIT OR Apache-2.0))
+@maplibre/mlt ((MIT OR Apache-2.0))
 https://github.com/maplibre/maplibre-tile-spec
---- @maplibre/mlt 1.3.0: LICENSE.txt ---
+--- @maplibre/mlt: LICENSE.txt ---
 ===== MIT License =====
 MIT License
 
@@ -1325,9 +1325,9 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 
-@maplibre/vt-pbf 4.3.3 (MIT)
+@maplibre/vt-pbf (MIT)
 https://github.com/maplibre/vt-pbf
---- @maplibre/vt-pbf 4.3.3: LICENSE ---
+--- @maplibre/vt-pbf: LICENSE ---
 The MIT License (MIT)
 
 Copyright (c) 2025 MapLibre contributors
@@ -1384,53 +1384,53 @@ LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING
 NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
 SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-@reduxjs/toolkit 2.12.0 (MIT)
+@reduxjs/toolkit (MIT)
 https://github.com/reduxjs/redux-toolkit
 Copyright (c) 2018 Mark Erikson
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-@standard-schema/spec 1.1.0 (MIT)
+@standard-schema/spec (MIT)
 https://github.com/standard-schema/standard-schema
 Copyright (c) 2024 Colin McDonnell
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-@standard-schema/utils 0.3.0 (MIT)
+@standard-schema/utils (MIT)
 https://github.com/standard-schema/standard-schema
 Copyright (c) 2024 Fabian Hiller
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-@xterm/addon-fit 0.11.0 (MIT)
+@xterm/addon-fit (MIT)
 https://github.com/xtermjs/xterm.js/tree/master/addons/addon-fit
 Copyright (c) 2019, The xterm.js authors (https://github.com/xtermjs/xterm.js)
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-@xterm/xterm 6.0.0 (MIT)
+@xterm/xterm (MIT)
 https://github.com/xtermjs/xterm.js
 Copyright (c) 2017-2019, The xterm.js authors (https://github.com/xtermjs/xterm.js)
 Copyright (c) 2014-2016, SourceLair Private Company (https://www.sourcelair.com)
 Copyright (c) 2012-2013, Christopher Jeffrey (https://github.com/chjj/)
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-bidi-js 1.1.0 (MIT)
+bidi-js (MIT)
 https://github.com/lojjic/bidi-js
 Copyright (c) 2021 Jason Johnston
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-clsx 2.1.1 (MIT)
+clsx (MIT)
 https://github.com/lukeed/clsx
 Copyright (c) Luke Edwards <luke.edwards05@gmail.com> (lukeed.com)
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-cookie 1.1.1 (MIT)
+cookie (MIT)
 https://github.com/jshttp/cookie
 (The MIT License)
 Copyright (c) 2012-2014 Roman Shtylman <shtylman@gmail.com>
 Copyright (c) 2015 Douglas Christopher Wilson <doug@somethingdoug.com>
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-d3-array 3.2.4 (ISC)
+d3-array (ISC)
 https://github.com/d3/d3-array
---- d3-array 3.2.4: LICENSE ---
+--- d3-array: LICENSE ---
 Copyright 2010-2023 Mike Bostock
 
 Permission to use, copy, modify, and/or distribute this software for any purpose
@@ -1445,9 +1445,9 @@ OF USE, DATA OR PROFITS, WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER
 TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF
 THIS SOFTWARE.
 
-d3-color 3.1.0 (ISC)
+d3-color (ISC)
 https://github.com/d3/d3-color
---- d3-color 3.1.0: LICENSE ---
+--- d3-color: LICENSE ---
 Copyright 2010-2022 Mike Bostock
 
 Permission to use, copy, modify, and/or distribute this software for any purpose
@@ -1462,9 +1462,9 @@ OF USE, DATA OR PROFITS, WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER
 TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF
 THIS SOFTWARE.
 
-d3-ease 3.0.1 (BSD-3-Clause)
+d3-ease (BSD-3-Clause)
 https://github.com/d3/d3-ease
---- d3-ease 3.0.1: LICENSE ---
+--- d3-ease: LICENSE ---
 Copyright 2010-2021 Mike Bostock
 Copyright 2001 Robert Penner
 All rights reserved.
@@ -1494,9 +1494,9 @@ ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
 SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-d3-format 3.1.2 (ISC)
+d3-format (ISC)
 https://github.com/d3/d3-format
---- d3-format 3.1.2: LICENSE ---
+--- d3-format: LICENSE ---
 Copyright 2010-2026 Mike Bostock
 
 Permission to use, copy, modify, and/or distribute this software for any purpose
@@ -1511,9 +1511,9 @@ OF USE, DATA OR PROFITS, WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER
 TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF
 THIS SOFTWARE.
 
-d3-interpolate 3.0.1 (ISC)
+d3-interpolate (ISC)
 https://github.com/d3/d3-interpolate
---- d3-interpolate 3.0.1: LICENSE ---
+--- d3-interpolate: LICENSE ---
 Copyright 2010-2021 Mike Bostock
 
 Permission to use, copy, modify, and/or distribute this software for any purpose
@@ -1528,9 +1528,9 @@ OF USE, DATA OR PROFITS, WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER
 TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF
 THIS SOFTWARE.
 
-d3-path 3.1.0 (ISC)
+d3-path (ISC)
 https://github.com/d3/d3-path
---- d3-path 3.1.0: LICENSE ---
+--- d3-path: LICENSE ---
 Copyright 2015-2022 Mike Bostock
 
 Permission to use, copy, modify, and/or distribute this software for any purpose
@@ -1545,35 +1545,35 @@ OF USE, DATA OR PROFITS, WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER
 TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF
 THIS SOFTWARE.
 
-d3-scale 4.0.2 (ISC)
+d3-scale (ISC)
 https://github.com/d3/d3-scale
-d3-scale 4.0.2: LICENSE: the same text as d3-interpolate 3.0.1: LICENSE, above.
+d3-scale: LICENSE: the same text as d3-interpolate: LICENSE, above.
 
-d3-shape 3.2.0 (ISC)
+d3-shape (ISC)
 https://github.com/d3/d3-shape
-d3-shape 3.2.0: LICENSE: the same text as d3-color 3.1.0: LICENSE, above.
+d3-shape: LICENSE: the same text as d3-color: LICENSE, above.
 
-d3-time 3.1.0 (ISC)
+d3-time (ISC)
 https://github.com/d3/d3-time
-d3-time 3.1.0: LICENSE: the same text as d3-color 3.1.0: LICENSE, above.
+d3-time: LICENSE: the same text as d3-color: LICENSE, above.
 
-d3-time-format 4.1.0 (ISC)
+d3-time-format (ISC)
 https://github.com/d3/d3-time-format
-d3-time-format 4.1.0: LICENSE: the same text as d3-interpolate 3.0.1: LICENSE, above.
+d3-time-format: LICENSE: the same text as d3-interpolate: LICENSE, above.
 
-d3-timer 3.0.1 (ISC)
+d3-timer (ISC)
 https://github.com/d3/d3-timer
-d3-timer 3.0.1: LICENSE: the same text as d3-interpolate 3.0.1: LICENSE, above.
+d3-timer: LICENSE: the same text as d3-interpolate: LICENSE, above.
 
-decimal.js-light 2.5.1 (MIT)
+decimal.js-light (MIT)
 https://github.com/MikeMcl/decimal.js-light
 The MIT Expat Licence.
 Copyright (c) 2020 Michael Mclaughlin
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-earcut 3.2.4 (ISC)
+earcut (ISC)
 https://github.com/mapbox/earcut
---- earcut 3.2.4: LICENSE ---
+--- earcut: LICENSE ---
 ISC License
 
 Copyright (c) 2026, Mapbox
@@ -1590,31 +1590,31 @@ OF USE, DATA OR PROFITS, WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER
 TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF
 THIS SOFTWARE.
 
-es-toolkit 1.46.1 (MIT)
+es-toolkit (MIT)
 https://github.com/toss/es-toolkit
 Copyright (c) 2024 Viva Republica, Inc
 Copyright OpenJS Foundation and other contributors
 Parts of the test suite and compatibility layer in `es-toolkit/compat` are derived from Lodash (https://github.com/lodash/lodash) by the OpenJS Foundation (https://openjsf.org/) and Underscore.js by Jeremy Ashkenas, DocumentCloud and Investigative Reporters & Editors (http://underscorejs.org/)
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-eventemitter3 5.0.4 (MIT)
+eventemitter3 (MIT)
 https://github.com/primus/eventemitter3
 Copyright (c) 2014 Arnout Kazemier
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-gl-matrix 3.4.4 (MIT)
+gl-matrix (MIT)
 https://github.com/toji/gl-matrix
 Copyright (c) 2015-2025, Brandon Jones, Colin MacKenzie IV.
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-immer 11.1.9 (MIT)
+immer (MIT)
 https://github.com/immerjs/immer
 Copyright (c) 2017 Michel Weststrate
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-internmap 2.0.3 (ISC)
+internmap (ISC)
 https://github.com/mbostock/internmap
---- internmap 2.0.3: LICENSE ---
+--- internmap: LICENSE ---
 Copyright 2021 Mike Bostock
 
 Permission to use, copy, modify, and/or distribute this software for any purpose
@@ -1629,14 +1629,14 @@ OF USE, DATA OR PROFITS, WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER
 TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF
 THIS SOFTWARE.
 
-json-stringify-pretty-compact 4.0.0 (MIT)
+json-stringify-pretty-compact (MIT)
 https://github.com/lydell/json-stringify-pretty-compact
 Copyright (c) 2014, 2016, 2017, 2019, 2021, 2022 Simon Lydell
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-kdbush 4.1.0 (ISC)
+kdbush (ISC)
 https://github.com/mourner/kdbush
---- kdbush 4.1.0: LICENSE ---
+--- kdbush: LICENSE ---
 ISC License
 
 Copyright (c) 2026, Vladimir Agafonkin
@@ -1653,9 +1653,9 @@ OF USE, DATA OR PROFITS, WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER
 TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF
 THIS SOFTWARE.
 
-leaflet 1.9.4 (BSD-2-Clause)
+leaflet (BSD-2-Clause)
 https://github.com/Leaflet/Leaflet
---- leaflet 1.9.4: LICENSE ---
+--- leaflet: LICENSE ---
 BSD 2-Clause License
 
 Copyright (c) 2010-2023, Volodymyr Agafonkin
@@ -1683,9 +1683,9 @@ CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
 OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-maplibre-gl 6.16.0 (BSD-3-Clause)
+maplibre-gl (BSD-3-Clause)
 https://github.com/maplibre/maplibre-gl-js
---- maplibre-gl 6.16.0: LICENSE.txt ---
+--- maplibre-gl: LICENSE.txt ---
 Copyright (c) 2023, MapLibre contributors
 
 All rights reserved.
@@ -1803,19 +1803,19 @@ ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
 SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-minimist 1.2.8 (MIT)
+minimist (MIT)
 https://github.com/minimistjs/minimist
 This software is released under the MIT license:
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-murmurhash-js 1.0.0 (MIT)
+murmurhash-js (MIT)
 https://github.com/mikolalysenko/murmurhash-js
 Copyright (c) Gary Court
 Used under MIT; it is published without a licence file, so its terms are the standard text in "Standard licence texts: MIT", above.
 
-pbf 5.1.2 (BSD-3-Clause)
+pbf (BSD-3-Clause)
 https://github.com/mapbox/pbf
---- pbf 5.1.2: LICENSE ---
+--- pbf: LICENSE ---
 Copyright (c) 2026, Mapbox
 All rights reserved.
 
@@ -1844,9 +1844,9 @@ CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
 OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-potpack 2.1.0 (ISC)
+potpack (ISC)
 https://github.com/mapbox/potpack
---- potpack 2.1.0: LICENSE ---
+--- potpack: LICENSE ---
 ISC License
 
 Copyright (c) 2025, Mapbox
@@ -1863,14 +1863,14 @@ OF USE, DATA OR PROFITS, WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER
 TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF
 THIS SOFTWARE.
 
-protocol-buffers-schema 3.6.1 (MIT)
+protocol-buffers-schema (MIT)
 https://github.com/mafintosh/protocol-buffers-schema
 Copyright (c) 2014 Mathias Buus
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-quickselect 3.0.0 (ISC)
+quickselect (ISC)
 https://github.com/mourner/quickselect
---- quickselect 3.0.0: LICENSE ---
+--- quickselect: LICENSE ---
 ISC License
 
 Copyright (c) 2024, Vladimir Agafonkin
@@ -1887,73 +1887,73 @@ OF USE, DATA OR PROFITS, WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER
 TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF
 THIS SOFTWARE.
 
-react 19.3.1 (MIT)
+react (MIT)
 https://github.com/react/react
 Copyright (c) Meta Platforms, Inc. and affiliates.
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-react-dom 19.3.1 (MIT)
+react-dom (MIT)
 https://github.com/react/react
 Copyright (c) Meta Platforms, Inc. and affiliates.
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-react-is 19.2.8 (MIT)
+react-is (MIT)
 https://github.com/react/react
 Copyright (c) Meta Platforms, Inc. and affiliates.
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-react-redux 9.3.0 (MIT)
+react-redux (MIT)
 https://github.com/reduxjs/react-redux
 Copyright (c) 2015-present Dan Abramov
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-react-router 7.18.5 (MIT)
+react-router (MIT)
 https://github.com/remix-run/react-router
 Copyright (c) React Training LLC 2015-2019
 Copyright (c) Remix Software Inc. 2020-2021
 Copyright (c) Shopify Inc. 2022-2023
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-react-router-dom 7.18.5 (MIT)
+react-router-dom (MIT)
 https://github.com/remix-run/react-router
 Copyright (c) React Training LLC 2015-2019
 Copyright (c) Remix Software Inc. 2020-2021
 Copyright (c) Shopify Inc. 2022-2023
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-recharts 3.10.1 (MIT)
+recharts (MIT)
 https://github.com/recharts/recharts
 Copyright (c) 2015-present recharts
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-redux 5.0.1 (MIT)
+redux (MIT)
 https://github.com/reduxjs/redux
 Copyright (c) 2015-present Dan Abramov
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-redux-thunk 3.1.0 (MIT)
+redux-thunk (MIT)
 https://github.com/reduxjs/redux-thunk
 Copyright (c) 2015-present Dan Abramov
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-require-from-string 2.0.2 (MIT)
+require-from-string (MIT)
 https://github.com/floatdrop/require-from-string
 Copyright (c) Vsevolod Strukchinsky <floatdrop@gmail.com> (github.com/floatdrop)
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-reselect 5.2.0 (MIT)
+reselect (MIT)
 https://github.com/reduxjs/reselect
 Copyright (c) 2015-2018 Reselect Contributors
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-resolve-protobuf-schema 2.1.0 (MIT)
+resolve-protobuf-schema (MIT)
 https://github.com/mafintosh/resolve-protobuf-schema
 Copyright (c) 2014 Mathias Buus
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-rolldown 1.2.16 (MIT)
+rolldown (MIT)
 https://github.com/rolldown/rolldown
---- rolldown 1.2.16: LICENSE ---
+--- rolldown: LICENSE ---
 MIT License
 
 Copyright (c) 2024-present VoidZero Inc. & Contributors
@@ -1980,34 +1980,34 @@ end of terms and conditions
 
 The licenses of externally maintained libraries from which parts of the Software is derived are listed [here](https://github.com/rolldown/rolldown/blob/main/THIRD-PARTY-LICENSE).
 
-scheduler 0.28.0 (MIT)
+scheduler (MIT)
 https://github.com/react/react
 Copyright (c) Meta Platforms, Inc. and affiliates.
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-set-cookie-parser 2.7.3 (MIT)
+set-cookie-parser (MIT)
 https://github.com/nfriedly/set-cookie-parser
 Copyright (c) 2015 Nathan Friedly <nathan@nfriedly.com> (http://nfriedly.com/)
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-tailwind-merge 3.7.0 (MIT)
+tailwind-merge (MIT)
 https://github.com/dcastil/tailwind-merge
 Copyright (c) 2021 Dany Castillo
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-tailwindcss 4.3.4 (MIT)
+tailwindcss (MIT)
 https://github.com/tailwindlabs/tailwindcss
 Copyright (c) Tailwind Labs, Inc.
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-tiny-invariant 1.3.3 (MIT)
+tiny-invariant (MIT)
 https://github.com/alexreardon/tiny-invariant
 Copyright (c) 2019 Alexander Reardon
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-tinyqueue 3.0.0 (ISC)
+tinyqueue (ISC)
 https://github.com/mourner/tinyqueue
---- tinyqueue 3.0.0: LICENSE ---
+--- tinyqueue: LICENSE ---
 ISC License
 
 Copyright (c) 2017, Vladimir Agafonkin
@@ -2024,27 +2024,27 @@ OF USE, DATA OR PROFITS, WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER
 TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF
 THIS SOFTWARE.
 
-use-sync-external-store 1.6.0 (MIT)
+use-sync-external-store (MIT)
 https://github.com/facebook/react
 Copyright (c) Meta Platforms, Inc. and affiliates.
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-victory-vendor 37.3.6 (MIT AND ISC)
+victory-vendor (MIT AND ISC)
 https://github.com/FormidableLabs/victory
 Copyright (c) Formidable
 Used under MIT; it is published without a licence file, so its terms are the standard text in "Standard licence texts: MIT", above.
 
-victory-vendor 37.3.6: lib-vendor/d3-array/LICENSE: the same text as d3-color 3.1.0: LICENSE, above.
+victory-vendor: lib-vendor/d3-array/LICENSE: the same text as d3-color: LICENSE, above.
 
-victory-vendor 37.3.6: lib-vendor/d3-color/LICENSE: the same text as d3-color 3.1.0: LICENSE, above.
+victory-vendor: lib-vendor/d3-color/LICENSE: the same text as d3-color: LICENSE, above.
 
-victory-vendor 37.3.6: lib-vendor/d3-ease/LICENSE: the same text as d3-ease 3.0.1: LICENSE, above.
+victory-vendor: lib-vendor/d3-ease/LICENSE: the same text as d3-ease: LICENSE, above.
 
-victory-vendor 37.3.6: lib-vendor/d3-format/LICENSE: the same text as d3-interpolate 3.0.1: LICENSE, above.
+victory-vendor: lib-vendor/d3-format/LICENSE: the same text as d3-interpolate: LICENSE, above.
 
-victory-vendor 37.3.6: lib-vendor/d3-interpolate/LICENSE: the same text as d3-interpolate 3.0.1: LICENSE, above.
+victory-vendor: lib-vendor/d3-interpolate/LICENSE: the same text as d3-interpolate: LICENSE, above.
 
---- victory-vendor 37.3.6: lib-vendor/d3-path/LICENSE ---
+--- victory-vendor: lib-vendor/d3-path/LICENSE ---
 Copyright 2015-2021 Mike Bostock
 
 Permission to use, copy, modify, and/or distribute this software for any purpose
@@ -2059,15 +2059,15 @@ OF USE, DATA OR PROFITS, WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER
 TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF
 THIS SOFTWARE.
 
-victory-vendor 37.3.6: lib-vendor/d3-scale/LICENSE: the same text as d3-interpolate 3.0.1: LICENSE, above.
+victory-vendor: lib-vendor/d3-scale/LICENSE: the same text as d3-interpolate: LICENSE, above.
 
-victory-vendor 37.3.6: lib-vendor/d3-shape/LICENSE: the same text as d3-interpolate 3.0.1: LICENSE, above.
+victory-vendor: lib-vendor/d3-shape/LICENSE: the same text as d3-interpolate: LICENSE, above.
 
-victory-vendor 37.3.6: lib-vendor/d3-time/LICENSE: the same text as d3-interpolate 3.0.1: LICENSE, above.
+victory-vendor: lib-vendor/d3-time/LICENSE: the same text as d3-interpolate: LICENSE, above.
 
-victory-vendor 37.3.6: lib-vendor/d3-time-format/LICENSE: the same text as d3-interpolate 3.0.1: LICENSE, above.
+victory-vendor: lib-vendor/d3-time-format/LICENSE: the same text as d3-interpolate: LICENSE, above.
 
-victory-vendor 37.3.6: lib-vendor/d3-timer/LICENSE: the same text as d3-interpolate 3.0.1: LICENSE, above.
+victory-vendor: lib-vendor/d3-timer/LICENSE: the same text as d3-interpolate: LICENSE, above.
 
 Copyright 2010-2016 Mike Bostock
 All rights reserved.
@@ -2097,11 +2097,11 @@ Licensed under The MIT License
 http://en.wikipedia.org/wiki/MIT_License
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-victory-vendor 37.3.6: lib-vendor/internmap/LICENSE: the same text as internmap 2.0.3: LICENSE, above.
+victory-vendor: lib-vendor/internmap/LICENSE: the same text as internmap: LICENSE, above.
 
-vite 8.3.6 (MIT)
+vite (MIT)
 https://github.com/vitejs/vite
-vite 8.3.6: its licence file without the part from "# Licenses of bundled dependencies" on, which covers code inside the tool, not in the web UI.
+vite: its licence file without the part from "# Licenses of bundled dependencies" on, which covers code inside the tool, not in the web UI.
 # Vite core license
 Vite is released under the MIT license:
 Copyright (c) 2019-present, VoidZero Inc. and Vite contributors
@@ -2111,34 +2111,34 @@ MIT: the standard text in "Standard licence texts: MIT", above.
 Pi binaries: Rust crates
 ==============================================================================
 
-adler2 2.0.1 (0BSD OR MIT OR Apache-2.0)
+adler2 (0BSD OR MIT OR Apache-2.0)
 https://github.com/oyvindln/adler2
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-aead 0.5.2 (MIT OR Apache-2.0)
+aead (MIT OR Apache-2.0)
 https://github.com/RustCrypto/traits
 Copyright (c) 2019 The RustCrypto Project Developers
 Copyright (c) 2019 MobileCoin, LLC
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-aes 0.8.4 (MIT OR Apache-2.0)
+aes (MIT OR Apache-2.0)
 https://github.com/RustCrypto/block-ciphers
 Copyright (c) 2018 Artyom Pavlov
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-aes-gcm 0.10.3 (Apache-2.0 OR MIT)
+aes-gcm (Apache-2.0 OR MIT)
 https://github.com/RustCrypto/AEADs
 Copyright (c) 2019 The RustCrypto Project Developers
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-aho-corasick 1.1.4 (Unlicense OR MIT)
+aho-corasick (Unlicense OR MIT)
 https://github.com/BurntSushi/aho-corasick
 Copyright (c) 2015 Andrew Gallant
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-alloc-no-stdlib 2.0.4 (BSD-3-Clause)
+alloc-no-stdlib (BSD-3-Clause)
 https://github.com/dropbox/rust-alloc-no-stdlib
---- alloc-no-stdlib 2.0.4: LICENSE ---
+--- alloc-no-stdlib: LICENSE ---
 Copyright (c) 2016 Dropbox, Inc.
 All rights reserved.
 
@@ -2152,44 +2152,44 @@ Redistribution and use in source and binary forms, with or without modification,
 
 THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-alloc-stdlib 0.2.2 (BSD-3-Clause)
+alloc-stdlib (BSD-3-Clause)
 https://github.com/dropbox/rust-alloc-no-stdlib
-Published without a licence file; covered by the licence given for alloc-no-stdlib 2.0.4, from the same authors and repository.
+Published without a licence file; covered by the licence given for alloc-no-stdlib, from the same authors and repository.
 
-anstream 1.0.0 (MIT OR Apache-2.0)
+anstream (MIT OR Apache-2.0)
 https://github.com/rust-cli/anstyle.git
 Copyright (c) Individual contributors
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-anstyle 1.0.14 (MIT OR Apache-2.0)
+anstyle (MIT OR Apache-2.0)
 https://github.com/rust-cli/anstyle.git
 Copyright (c) Individual contributors
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-anstyle-parse 1.0.0 (MIT OR Apache-2.0)
+anstyle-parse (MIT OR Apache-2.0)
 https://github.com/rust-cli/anstyle.git
 Copyright (c) Individual contributors
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-anstyle-query 1.1.5 (MIT OR Apache-2.0)
+anstyle-query (MIT OR Apache-2.0)
 https://github.com/rust-cli/anstyle.git
 Copyright (c) Individual contributors
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-anyhow 1.0.104 (MIT OR Apache-2.0)
+anyhow (MIT OR Apache-2.0)
 https://github.com/dtolnay/anyhow
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-async-compression 0.4.41 (MIT OR Apache-2.0)
+async-compression (MIT OR Apache-2.0)
 https://github.com/Nullus157/async-compression
 Copyright (c) Wim Looman, Allen Bui
 Used under MIT; it is published without a licence file, so its terms are the standard text in "Standard licence texts: MIT", above.
 
-async-trait 0.1.92 (MIT OR Apache-2.0)
+async-trait (MIT OR Apache-2.0)
 https://github.com/dtolnay/async-trait
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-atomic-waker 1.1.2 (Apache-2.0 OR MIT)
+atomic-waker (Apache-2.0 OR MIT)
 https://github.com/smol-rs/atomic-waker
 MIT: the standard text in "Standard licence texts: MIT", above.
 
@@ -2210,75 +2210,75 @@ Copyright (c) 2016 Alex Crichton
 Copyright (c) 2017 The Tokio Authors
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-axum 0.8.9 (MIT)
+axum (MIT)
 https://github.com/tokio-rs/axum
 Copyright (c) 2019 axum Contributors
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-axum-core 0.5.6 (MIT)
+axum-core (MIT)
 https://github.com/tokio-rs/axum
 Copyright (c) 2019–2025 axum Contributors
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-base16ct 0.2.0 (Apache-2.0 OR MIT)
+base16ct (Apache-2.0 OR MIT)
 https://github.com/RustCrypto/formats/tree/master/base16ct
 Copyright (c) 2014 Steve "Sc00bz" Thomas (steve at tobtu dot com)
 Copyright (c) 2022 The RustCrypto Project Developers
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-base64 0.22.1 (MIT OR Apache-2.0)
+base64 0.22.x (MIT OR Apache-2.0)
 https://github.com/marshallpierce/rust-base64
 Copyright (c) 2015 Alice Maz
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-base64 0.23.1 (MIT OR Apache-2.0)
+base64 0.23.x (MIT OR Apache-2.0)
 https://github.com/marshallpierce/rust-base64
 Copyright (c) 2025 Alice Maz, Marshall Pierce
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-base64ct 1.8.3 (Apache-2.0 OR MIT)
+base64ct (Apache-2.0 OR MIT)
 https://github.com/RustCrypto/formats
 Copyright (c) 2014 Steve "Sc00bz" Thomas (steve at tobtu dot com)
 Copyright (c) 2021-2025 The RustCrypto Project Developers
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-bitflags 2.13.2 (MIT OR Apache-2.0)
+bitflags (MIT OR Apache-2.0)
 https://github.com/bitflags/bitflags
 Copyright (c) 2014 The Rust Project Developers
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-block-buffer 0.10.4 (MIT OR Apache-2.0)
+block-buffer 0.10.x (MIT OR Apache-2.0)
 https://github.com/RustCrypto/utils
 Copyright (c) 2018-2019 The RustCrypto Project Developers
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-block-buffer 0.12.0 (MIT OR Apache-2.0)
+block-buffer 0.12.x (MIT OR Apache-2.0)
 https://github.com/RustCrypto/utils
 Copyright (c) 2018-2025 The RustCrypto Project Developers
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-bluez-async 0.9.0 (MIT OR Apache-2.0)
+bluez-async (MIT OR Apache-2.0)
 https://github.com/bluez-rs/bluez-async/
 Copyright (c) Andrew Walbran, David Laban
 Used under MIT; it is published without a licence file, so its terms are the standard text in "Standard licence texts: MIT", above.
 
-bluez-generated 0.4.0 (MIT OR Apache-2.0)
+bluez-generated (MIT OR Apache-2.0)
 https://github.com/bluez-rs/bluez-async/
 Copyright (c) Andrew Walbran, David Laban
 Used under MIT; it is published without a licence file, so its terms are the standard text in "Standard licence texts: MIT", above.
 
-brotli 8.0.2 (BSD-3-Clause AND MIT)
+brotli (BSD-3-Clause AND MIT)
 https://github.com/dropbox/rust-brotli
 Copyright (c) 2009, 2010, 2013-2016 by the Brotli Authors.
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-brotli-decompressor 5.0.0 (BSD-3-Clause/MIT)
+brotli-decompressor (BSD-3-Clause/MIT)
 https://github.com/dropbox/rust-brotli-decompressor
-brotli-decompressor 5.0.0: LICENSE: the same text as alloc-no-stdlib 2.0.4: LICENSE, above.
+brotli-decompressor: LICENSE: the same text as alloc-no-stdlib: LICENSE, above.
 
-btleplug 0.13.5 (MIT/Apache-2.0/BSD-3-Clause)
+btleplug (MIT/Apache-2.0/BSD-3-Clause)
 https://github.com/deviceplug/btleplug
---- btleplug 0.13.5: LICENSE.md ---
+--- btleplug: LICENSE.md ---
 btleplug is covered under the following BSD-3-Clause license:
 
 Copyright (c) 2020-2021, Nonpolynomial
@@ -2578,24 +2578,24 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-bytes 1.12.1 (MIT)
+bytes (MIT)
 https://github.com/tokio-rs/bytes
 Copyright (c) 2018 Carl Lerche
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-cfg-if 1.0.5 (MIT OR Apache-2.0)
+cfg-if (MIT OR Apache-2.0)
 https://github.com/rust-lang/cfg-if
 Copyright (c) 2014 Alex Crichton
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-chacha20 0.10.0 (MIT OR Apache-2.0)
+chacha20 (MIT OR Apache-2.0)
 https://github.com/RustCrypto/stream-ciphers
 Copyright (c) 2019-2026 The RustCrypto Project Developers
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-chrono 0.4.45 (MIT OR Apache-2.0)
+chrono (MIT OR Apache-2.0)
 https://github.com/chronotope/chrono
---- chrono 0.4.45: LICENSE.txt ---
+--- chrono: LICENSE.txt ---
 Rust-chrono is dual-licensed under The MIT License [1] and
 Apache 2.0 License [2]. Copyright (c) 2014--2026, Kang Seonghoon and
 contributors.
@@ -2836,100 +2836,100 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ~~~~
 
-cipher 0.4.4 (MIT OR Apache-2.0)
+cipher (MIT OR Apache-2.0)
 https://github.com/RustCrypto/traits
 Copyright (c) 2016-2020 RustCrypto Developers
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-clap 4.6.7 (MIT OR Apache-2.0)
+clap (MIT OR Apache-2.0)
 https://github.com/clap-rs/clap
 Copyright (c) Individual contributors
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-clap_builder 4.6.7 (MIT OR Apache-2.0)
+clap_builder (MIT OR Apache-2.0)
 https://github.com/clap-rs/clap
 Copyright (c) Individual contributors
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-clap_derive 4.6.7 (MIT OR Apache-2.0)
+clap_derive (MIT OR Apache-2.0)
 https://github.com/clap-rs/clap
 Copyright (c) Individual contributors
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-clap_lex 1.1.0 (MIT OR Apache-2.0)
+clap_lex (MIT OR Apache-2.0)
 https://github.com/clap-rs/clap
 Copyright (c) Individual contributors
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-colorchoice 1.0.5 (MIT OR Apache-2.0)
+colorchoice (MIT OR Apache-2.0)
 https://github.com/rust-cli/anstyle.git
 Copyright (c) Individual contributors
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-compression-codecs 0.4.37 (MIT OR Apache-2.0)
+compression-codecs (MIT OR Apache-2.0)
 https://github.com/Nullus157/async-compression
 Copyright (c) Wim Looman, Allen Bui
 Used under MIT; it is published without a licence file, so its terms are the standard text in "Standard licence texts: MIT", above.
 
-compression-core 0.4.31 (MIT OR Apache-2.0)
+compression-core (MIT OR Apache-2.0)
 https://github.com/Nullus157/async-compression
 Copyright (c) Wim Looman, Allen Bui
 Used under MIT; it is published without a licence file, so its terms are the standard text in "Standard licence texts: MIT", above.
 
-const-oid 0.10.2 (Apache-2.0 OR MIT)
+const-oid 0.10.x (Apache-2.0 OR MIT)
 https://github.com/RustCrypto/formats
 Copyright (c) 2020-2026 The RustCrypto Project Developers
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-const-oid 0.9.6 (Apache-2.0 OR MIT)
+const-oid 0.9.x (Apache-2.0 OR MIT)
 https://github.com/RustCrypto/formats/tree/master/const-oid
 Copyright (c) 2020-2022 The RustCrypto Project Developers
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-cpufeatures 0.2.17 (MIT OR Apache-2.0)
+cpufeatures 0.2.x (MIT OR Apache-2.0)
 https://github.com/RustCrypto/utils
 Copyright (c) 2020-2025 The RustCrypto Project Developers
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-cpufeatures 0.3.0 (MIT OR Apache-2.0)
+cpufeatures 0.3.x (MIT OR Apache-2.0)
 https://github.com/RustCrypto/utils
 Copyright (c) 2020-2025 The RustCrypto Project Developers
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-crc32fast 1.5.4 (MIT OR Apache-2.0)
+crc32fast (MIT OR Apache-2.0)
 https://github.com/srijs/rust-crc32fast
 Copyright (c) 2018 Sam Rijs, Alex Crichton and contributors
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-crossbeam-utils 0.8.21 (MIT OR Apache-2.0)
+crossbeam-utils (MIT OR Apache-2.0)
 https://github.com/crossbeam-rs/crossbeam
 Copyright (c) 2019 The Crossbeam Project Developers
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-crypto-bigint 0.5.5 (Apache-2.0 OR MIT)
+crypto-bigint (Apache-2.0 OR MIT)
 https://github.com/RustCrypto/crypto-bigint
 Copyright (c) 2021 The RustCrypto Project Developers
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-crypto-common 0.1.7 (MIT OR Apache-2.0)
+crypto-common 0.1.x (MIT OR Apache-2.0)
 https://github.com/RustCrypto/traits
 Copyright (c) 2021 RustCrypto Developers
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-crypto-common 0.2.2 (MIT OR Apache-2.0)
+crypto-common 0.2.x (MIT OR Apache-2.0)
 https://github.com/RustCrypto/traits
 Copyright (c) 2021-2026 RustCrypto Developers
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-ctr 0.9.2 (MIT OR Apache-2.0)
+ctr (MIT OR Apache-2.0)
 https://github.com/RustCrypto/block-modes
 Copyright (c) 2018-2022 RustCrypto Developers
 Copyright (c) 2018 Artyom Pavlov
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-curve25519-dalek 5.0.0 (BSD-3-Clause)
+curve25519-dalek (BSD-3-Clause)
 https://github.com/dalek-cryptography/curve25519-dalek/tree/main/curve25519-dalek
---- curve25519-dalek 5.0.0: LICENSE ---
+--- curve25519-dalek: LICENSE ---
 Copyright (c) 2016-2021 isis agora lovecruft. All rights reserved.
 Copyright (c) 2016-2021 Henry de Valence. All rights reserved.
 
@@ -2960,70 +2960,70 @@ LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING
 NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
 SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-dashmap 6.2.1 (MIT)
+dashmap (MIT)
 https://github.com/xacrimon/dashmap
 Copyright (c) 2019 Acrimon
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-data-encoding 2.10.0 (MIT)
+data-encoding (MIT)
 https://github.com/ia0/data-encoding
 Copyright (c) 2015-2020 Julien Cretin
 Copyright (c) 2017-2020 Google Inc.
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-dbus 0.9.12 (Apache-2.0/MIT)
+dbus (Apache-2.0/MIT)
 https://github.com/diwic/dbus-rs
 Copyright (c) 2014-2018 David Henningsson <diwic@ubuntu.com> and other contributors
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-dbus-tokio 0.7.6 (Apache-2.0/MIT)
+dbus-tokio (Apache-2.0/MIT)
 https://github.com/diwic/dbus-rs
 Copyright (c) 2014-2018 David Henningsson <diwic@ubuntu.com> and other contributors
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-der 0.7.10 (Apache-2.0 OR MIT)
+der (Apache-2.0 OR MIT)
 https://github.com/RustCrypto/formats/tree/master/der
 Copyright (c) 2020-2023 The RustCrypto Project Developers
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-digest 0.10.7 (MIT OR Apache-2.0)
+digest 0.10.x (MIT OR Apache-2.0)
 https://github.com/RustCrypto/traits
 Copyright (c) 2017 Artyom Pavlov
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-digest 0.11.3 (MIT OR Apache-2.0)
+digest 0.11.x (MIT OR Apache-2.0)
 https://github.com/RustCrypto/traits
 Copyright (c) 2017-2025 RustCrypto Developers
 Copyright (c) 2017 Artyom Pavlov
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-displaydoc 0.2.5 (MIT OR Apache-2.0)
+displaydoc (MIT OR Apache-2.0)
 https://github.com/yaahc/displaydoc
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-downcast-rs 1.2.1 (MIT/Apache-2.0)
+downcast-rs (MIT/Apache-2.0)
 https://github.com/marcianx/downcast-rs
 Copyright (c) 2020 Ashish Myles and contributors
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-ecdsa 0.16.9 (Apache-2.0 OR MIT)
+ecdsa (Apache-2.0 OR MIT)
 https://github.com/RustCrypto/signatures/tree/master/ecdsa
 Copyright (c) 2018-2022 RustCrypto Developers
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-either 1.16.0 (MIT OR Apache-2.0)
+either (MIT OR Apache-2.0)
 https://github.com/rayon-rs/either
 Copyright (c) 2015
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-elliptic-curve 0.13.8 (Apache-2.0 OR MIT)
+elliptic-curve (Apache-2.0 OR MIT)
 https://github.com/RustCrypto/traits/tree/master/elliptic-curve
 Copyright (c) 2020-2022 RustCrypto Developers
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-encoding_rs 0.8.35 ((Apache-2.0 OR MIT) AND BSD-3-Clause)
+encoding_rs ((Apache-2.0 OR MIT) AND BSD-3-Clause)
 https://github.com/hsivonen/encoding_rs
---- encoding_rs 0.8.35: COPYRIGHT ---
+--- encoding_rs: COPYRIGHT ---
 encoding_rs is copyright Mozilla Foundation.
 
 Licensed under the Apache License, Version 2.0
@@ -3047,7 +3047,7 @@ Apache-2.0: the standard text in "Standard licence texts: Apache-2.0", above.
 Copyright Mozilla Foundation
 MIT: the standard text in "Standard licence texts: MIT", above.
 
---- encoding_rs 0.8.35: LICENSE-WHATWG ---
+--- encoding_rs: LICENSE-WHATWG ---
 Copyright © WHATWG (Apple, Google, Mozilla, Microsoft).
 
 Redistribution and use in source and binary forms, with or without
@@ -3075,44 +3075,44 @@ CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
 OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-equivalent 1.0.2 (Apache-2.0 OR MIT)
+equivalent (Apache-2.0 OR MIT)
 https://github.com/indexmap-rs/equivalent
 Copyright (c) 2016--2023
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-errno 0.3.14 (MIT OR Apache-2.0)
+errno (MIT OR Apache-2.0)
 https://github.com/lambda-fairy/rust-errno
 Copyright (c) 2014 Chris Wong
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-fallible-iterator 0.3.0 (MIT/Apache-2.0)
+fallible-iterator (MIT/Apache-2.0)
 https://github.com/sfackler/rust-fallible-iterator
 Copyright (c) 2015 The rust-openssl-verify Developers
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-fallible-streaming-iterator 0.1.9 (MIT/Apache-2.0)
+fallible-streaming-iterator (MIT/Apache-2.0)
 https://github.com/sfackler/fallible-streaming-iterator
 Copyright (c) 2016 The fallible-streaming-iterator Developers
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-ff 0.13.1 (MIT/Apache-2.0)
+ff (MIT/Apache-2.0)
 https://github.com/zkcrypto/ff
 Copyright (c) 2017 Sean Bowe
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-filedescriptor 0.8.3 (MIT)
+filedescriptor (MIT)
 https://github.com/wezterm/wezterm
 Copyright (c) 2018 Wez Furlong
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-flate2 1.1.9 (MIT OR Apache-2.0)
+flate2 (MIT OR Apache-2.0)
 https://github.com/rust-lang/flate2-rs
 Copyright (c) 2014-2026 Alex Crichton
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-foldhash 0.2.0 (Zlib)
+foldhash (Zlib)
 https://github.com/orlp/foldhash
---- foldhash 0.2.0: LICENSE ---
+--- foldhash: LICENSE ---
 Copyright (c) 2024 Orson Peters
 
 This software is provided 'as-is', without any express or implied warranty. In
@@ -3133,98 +3133,98 @@ the following restrictions:
 
 3. This notice may not be removed or altered from any source distribution.
 
-form_urlencoded 1.2.2 (MIT OR Apache-2.0)
+form_urlencoded (MIT OR Apache-2.0)
 https://github.com/servo/rust-url
 Copyright (c) 2013-2016 The rust-url developers
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-futures 0.3.34 (MIT OR Apache-2.0)
+futures (MIT OR Apache-2.0)
 https://github.com/rust-lang/futures-rs
 Copyright (c) 2016 Alex Crichton
 Copyright (c) 2017 The Tokio Authors
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-futures-channel 0.3.34 (MIT OR Apache-2.0)
+futures-channel (MIT OR Apache-2.0)
 https://github.com/rust-lang/futures-rs
 Copyright (c) 2016 Alex Crichton
 Copyright (c) 2017 The Tokio Authors
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-futures-core 0.3.34 (MIT OR Apache-2.0)
+futures-core (MIT OR Apache-2.0)
 https://github.com/rust-lang/futures-rs
 Copyright (c) 2016 Alex Crichton
 Copyright (c) 2017 The Tokio Authors
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-futures-executor 0.3.34 (MIT OR Apache-2.0)
+futures-executor (MIT OR Apache-2.0)
 https://github.com/rust-lang/futures-rs
 Copyright (c) 2016 Alex Crichton
 Copyright (c) 2017 The Tokio Authors
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-futures-io 0.3.34 (MIT OR Apache-2.0)
+futures-io (MIT OR Apache-2.0)
 https://github.com/rust-lang/futures-rs
 Copyright (c) 2016 Alex Crichton
 Copyright (c) 2017 The Tokio Authors
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-futures-macro 0.3.34 (MIT OR Apache-2.0)
+futures-macro (MIT OR Apache-2.0)
 https://github.com/rust-lang/futures-rs
 Copyright (c) 2016 Alex Crichton
 Copyright (c) 2017 The Tokio Authors
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-futures-sink 0.3.34 (MIT OR Apache-2.0)
+futures-sink (MIT OR Apache-2.0)
 https://github.com/rust-lang/futures-rs
 Copyright (c) 2016 Alex Crichton
 Copyright (c) 2017 The Tokio Authors
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-futures-task 0.3.34 (MIT OR Apache-2.0)
+futures-task (MIT OR Apache-2.0)
 https://github.com/rust-lang/futures-rs
 Copyright (c) 2016 Alex Crichton
 Copyright (c) 2017 The Tokio Authors
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-futures-util 0.3.34 (MIT OR Apache-2.0)
+futures-util (MIT OR Apache-2.0)
 https://github.com/rust-lang/futures-rs
 Copyright (c) 2016 Alex Crichton
 Copyright (c) 2017 The Tokio Authors
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-generic-array 0.14.7 (MIT)
+generic-array (MIT)
 https://github.com/fizyk20/generic-array.git
 Copyright (c) 2015 Bartłomiej Kamiński
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-getrandom 0.2.17 (MIT OR Apache-2.0)
+getrandom 0.2.x (MIT OR Apache-2.0)
 https://github.com/rust-random/getrandom
 Copyright (c) 2018-2024 The rust-random Project Developers
 Copyright (c) 2014 The Rust Project Developers
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-getrandom 0.3.4 (MIT OR Apache-2.0)
+getrandom 0.3.x (MIT OR Apache-2.0)
 https://github.com/rust-random/getrandom
 Copyright (c) 2018-2025 The rust-random Project Developers
 Copyright (c) 2014 The Rust Project Developers
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-getrandom 0.4.3 (MIT OR Apache-2.0)
+getrandom 0.4.x (MIT OR Apache-2.0)
 https://github.com/rust-random/getrandom
 Copyright (c) 2018-2026 The rust-random Project Developers
 Copyright (c) 2014 The Rust Project Developers
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-ghash 0.5.1 (Apache-2.0 OR MIT)
+ghash (Apache-2.0 OR MIT)
 https://github.com/RustCrypto/universal-hashes
 Copyright (c) 2019 RustCrypto Developers
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-group 0.13.0 (MIT/Apache-2.0)
+group (MIT/Apache-2.0)
 https://github.com/zkcrypto/group
 MIT: the standard text in "Standard licence texts: MIT", above.
 
---- group 0.13.0: COPYRIGHT ---
+--- group: COPYRIGHT ---
 Copyrights in the "group" library are retained by their contributors. No
 copyright assignment is required to contribute to the "group" library.
 
@@ -3240,102 +3240,102 @@ submitted for inclusion in the work by you, as defined in the Apache-2.0
 license, shall be dual licensed as above, without any additional terms or
 conditions.
 
-hashbrown 0.14.5 (MIT OR Apache-2.0)
+hashbrown 0.14.x (MIT OR Apache-2.0)
 https://github.com/rust-lang/hashbrown
 Copyright (c) 2016 Amanieu d'Antras
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-hashbrown 0.17.0 (MIT OR Apache-2.0)
+hashbrown 0.17.x (MIT OR Apache-2.0)
 https://github.com/rust-lang/hashbrown
 Copyright (c) 2016 Amanieu d'Antras
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-hashlink 0.12.0 (MIT OR Apache-2.0)
+hashlink (MIT OR Apache-2.0)
 https://github.com/djc/hashlink
 This work is derived in part from the `linked-hash-map` crate, Copyright (c)
 2015 The Rust Project Developers
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-heck 0.5.0 (MIT OR Apache-2.0)
+heck (MIT OR Apache-2.0)
 https://github.com/withoutboats/heck
 Copyright (c) 2015 The Rust Project Developers
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-hex 0.4.3 (MIT OR Apache-2.0)
+hex (MIT OR Apache-2.0)
 https://github.com/KokaKiwi/rust-hex
 Copyright (c) 2013-2014 The Rust Project Developers.
 Copyright (c) 2015-2020 The rust-hex Developers
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-hkdf 0.12.4 (MIT OR Apache-2.0)
+hkdf (MIT OR Apache-2.0)
 https://github.com/RustCrypto/KDFs/
 Copyright (c) 2015-2018 Vlad Filippov
 Copyright (c) 2018-2021 RustCrypto Developers
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-hmac 0.12.1 (MIT OR Apache-2.0)
+hmac (MIT OR Apache-2.0)
 https://github.com/RustCrypto/MACs
 Copyright (c) 2017 Artyom Pavlov
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-http 1.5.0 (MIT OR Apache-2.0)
+http (MIT OR Apache-2.0)
 https://github.com/hyperium/http
 Copyright (c) 2017 http-rs authors
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-http-body 1.0.1 (MIT)
+http-body (MIT)
 https://github.com/hyperium/http-body
 Copyright (c) 2019-2024 Sean McArthur & Hyper Contributors
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-http-body-util 0.1.3 (MIT)
+http-body-util (MIT)
 https://github.com/hyperium/http-body
 Copyright (c) 2019-2025 Sean McArthur & Hyper Contributors
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-http-range-header 0.4.2 (MIT)
+http-range-header (MIT)
 https://github.com/MarcusGrass/parse-range-headers
 Copyright (c) 2021 MarcusGrass
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-httparse 1.10.1 (MIT OR Apache-2.0)
+httparse (MIT OR Apache-2.0)
 https://github.com/seanmonstar/httparse
 Copyright (c) 2015-2025 Sean McArthur
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-httpdate 1.0.3 (MIT OR Apache-2.0)
+httpdate (MIT OR Apache-2.0)
 https://github.com/pyfisch/httpdate
 Copyright (c) 2016 Pyfisch
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-hybrid-array 0.4.12 (MIT OR Apache-2.0)
+hybrid-array (MIT OR Apache-2.0)
 https://github.com/RustCrypto/hybrid-array
 Copyright (c) 2022-2026 The RustCrypto Project Developers
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-hyper 1.9.0 (MIT)
+hyper (MIT)
 https://github.com/hyperium/hyper
 Copyright (c) 2014-2026 Sean McArthur
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-hyper-rustls 0.27.9 (Apache-2.0 OR ISC OR MIT)
+hyper-rustls (Apache-2.0 OR ISC OR MIT)
 https://github.com/rustls/hyper-rustls
 Copyright (c) 2016 Joseph Birr-Pixton <jpixton@gmail.com>
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-hyper-util 0.1.20 (MIT)
+hyper-util (MIT)
 https://github.com/hyperium/hyper-util
 Copyright (c) 2023-2025 Sean McArthur
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-iana-time-zone 0.1.65 (MIT OR Apache-2.0)
+iana-time-zone (MIT OR Apache-2.0)
 https://github.com/strawlab/iana-time-zone
 Copyright (c) 2020 Andrew D. Straw
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-icu_collections 2.2.0 (Unicode-3.0)
+icu_collections (Unicode-3.0)
 https://github.com/unicode-org/icu4x
---- icu_collections 2.2.0: LICENSE ---
+--- icu_collections: LICENSE ---
 UNICODE LICENSE V3
 
 COPYRIGHT AND PERMISSION NOTICE
@@ -3383,125 +3383,125 @@ SPDX-License-Identifier: Unicode-3.0
 Portions of ICU4X may have been adapted from ICU4C and/or ICU4J.
 ICU 1.8.1 to ICU 57.1 © 1995-2016 International Business Machines Corporation and others.
 
-icu_locale_core 2.2.0 (Unicode-3.0)
+icu_locale_core (Unicode-3.0)
 https://github.com/unicode-org/icu4x
-icu_locale_core 2.2.0: LICENSE: the same text as icu_collections 2.2.0: LICENSE, above.
+icu_locale_core: LICENSE: the same text as icu_collections: LICENSE, above.
 
-icu_normalizer 2.2.0 (Unicode-3.0)
+icu_normalizer (Unicode-3.0)
 https://github.com/unicode-org/icu4x
-icu_normalizer 2.2.0: LICENSE: the same text as icu_collections 2.2.0: LICENSE, above.
+icu_normalizer: LICENSE: the same text as icu_collections: LICENSE, above.
 
-icu_normalizer_data 2.2.0 (Unicode-3.0)
+icu_normalizer_data (Unicode-3.0)
 https://github.com/unicode-org/icu4x
-icu_normalizer_data 2.2.0: LICENSE: the same text as icu_collections 2.2.0: LICENSE, above.
+icu_normalizer_data: LICENSE: the same text as icu_collections: LICENSE, above.
 
-icu_properties 2.2.0 (Unicode-3.0)
+icu_properties (Unicode-3.0)
 https://github.com/unicode-org/icu4x
-icu_properties 2.2.0: LICENSE: the same text as icu_collections 2.2.0: LICENSE, above.
+icu_properties: LICENSE: the same text as icu_collections: LICENSE, above.
 
-icu_properties_data 2.2.0 (Unicode-3.0)
+icu_properties_data (Unicode-3.0)
 https://github.com/unicode-org/icu4x
-icu_properties_data 2.2.0: LICENSE: the same text as icu_collections 2.2.0: LICENSE, above.
+icu_properties_data: LICENSE: the same text as icu_collections: LICENSE, above.
 
-icu_provider 2.2.0 (Unicode-3.0)
+icu_provider (Unicode-3.0)
 https://github.com/unicode-org/icu4x
-icu_provider 2.2.0: LICENSE: the same text as icu_collections 2.2.0: LICENSE, above.
+icu_provider: LICENSE: the same text as icu_collections: LICENSE, above.
 
-idna 1.1.0 (MIT OR Apache-2.0)
+idna (MIT OR Apache-2.0)
 https://github.com/servo/rust-url/
 Copyright (c) 2013-2025 The rust-url developers
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-idna_adapter 1.2.1 (Apache-2.0 OR MIT)
+idna_adapter (Apache-2.0 OR MIT)
 https://github.com/hsivonen/idna_adapter
 Copyright (c) The rust-url developers
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-indexmap 2.14.0 (Apache-2.0 OR MIT)
+indexmap (Apache-2.0 OR MIT)
 https://github.com/indexmap-rs/indexmap
 Copyright (c) 2016--2017
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-inout 0.1.4 (MIT OR Apache-2.0)
+inout (MIT OR Apache-2.0)
 https://github.com/RustCrypto/utils
 Copyright (c) 2022 The RustCrypto Project Developers
 Copyright (c) 2022 Artyom Pavlov
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-ipnet 2.12.0 (MIT OR Apache-2.0)
+ipnet (MIT OR Apache-2.0)
 https://github.com/krisprice/ipnet
 Copyright 2017 Juniper Networks, Inc.
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-is_terminal_polyfill 1.70.2 (MIT OR Apache-2.0)
+is_terminal_polyfill (MIT OR Apache-2.0)
 https://github.com/polyfill-rs/is_terminal_polyfill
 Copyright (c) Individual contributors
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-itertools 0.14.0 (MIT OR Apache-2.0)
+itertools 0.14.x (MIT OR Apache-2.0)
 https://github.com/rust-itertools/itertools
 Copyright (c) 2015
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-itertools 0.15.0 (MIT OR Apache-2.0)
+itertools 0.15.x (MIT OR Apache-2.0)
 https://github.com/rust-itertools/itertools
 Copyright (c) 2015
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-itoa 1.0.18 (MIT OR Apache-2.0)
+itoa (MIT OR Apache-2.0)
 https://github.com/dtolnay/itoa
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-lazy_static 1.5.0 (MIT OR Apache-2.0)
+lazy_static (MIT OR Apache-2.0)
 https://github.com/rust-lang-nursery/lazy-static.rs
 Copyright (c) 2010 The Rust Project Developers
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-libc 0.2.191 (MIT OR Apache-2.0)
+libc (MIT OR Apache-2.0)
 https://github.com/rust-lang/libc
 Copyright (c) The Rust Project Developers
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-libdbus-sys 0.2.7 (Apache-2.0/MIT)
+libdbus-sys (Apache-2.0/MIT)
 https://github.com/diwic/dbus-rs
 Copyright (c) 2014-2018 David Henningsson <diwic@ubuntu.com> and other contributors
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-libsqlite3-sys 0.39.1 (MIT)
+libsqlite3-sys (MIT)
 https://github.com/rusqlite/rusqlite
 Copyright (c) 2014 The rusqlite developers
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-litemap 0.8.2 (Unicode-3.0)
+litemap (Unicode-3.0)
 https://github.com/unicode-org/icu4x
-litemap 0.8.2: LICENSE: the same text as icu_collections 2.2.0: LICENSE, above.
+litemap: LICENSE: the same text as icu_collections: LICENSE, above.
 
-lock_api 0.4.14 (MIT OR Apache-2.0)
+lock_api (MIT OR Apache-2.0)
 https://github.com/Amanieu/parking_lot
 Copyright (c) 2016 The Rust Project Developers
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-log 0.4.34 (MIT OR Apache-2.0)
+log (MIT OR Apache-2.0)
 https://github.com/rust-lang/log
 Copyright (c) 2014 The Rust Project Developers
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-lru-slab 0.1.2 (MIT OR Apache-2.0 OR Zlib)
+lru-slab (MIT OR Apache-2.0 OR Zlib)
 https://github.com/Ralith/lru-slab
 Copyright (c) 2024 The lru-slab Developers
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-matchers 0.2.0 (MIT)
+matchers (MIT)
 https://github.com/hawkw/matchers
 Copyright (c) 2019 Eliza Weisman
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-matchit 0.8.4 (MIT AND BSD-3-Clause)
+matchit (MIT AND BSD-3-Clause)
 https://github.com/ibraheemdev/matchit
 Copyright (c) 2022 Ibraheem Ahmed
 MIT: the standard text in "Standard licence texts: MIT", above.
 
---- matchit 0.8.4: LICENSE.httprouter ---
+--- matchit: LICENSE.httprouter ---
 BSD 3-Clause License
 
 Copyright (c) 2013, Julien Schmidt
@@ -3532,22 +3532,22 @@ CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
 OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-memchr 2.8.0 (Unlicense OR MIT)
+memchr (Unlicense OR MIT)
 https://github.com/BurntSushi/memchr
 Copyright (c) 2015 Andrew Gallant
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-mime 0.3.17 (MIT OR Apache-2.0)
+mime (MIT OR Apache-2.0)
 https://github.com/hyperium/mime
 Copyright (c) 2014 Sean McArthur
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-mime_guess 2.0.5 (MIT)
+mime_guess (MIT)
 https://github.com/abonander/mime_guess
 Copyright (c) 2015 Austin Bonander
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-miniz_oxide 0.8.9 (MIT OR Zlib OR Apache-2.0)
+miniz_oxide (MIT OR Zlib OR Apache-2.0)
 https://github.com/Frommi/miniz_oxide/tree/master/miniz_oxide
 Copyright 2013-2014 RAD Game Tools and Valve Software
 Copyright 2010-2014 Rich Geldreich and Tenacious Software LLC
@@ -3561,141 +3561,141 @@ Copyright (c) 2017 Frommi
 Copyright (c) 2017-2024 oyvindln
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-mio 1.2.0 (MIT)
+mio (MIT)
 https://github.com/tokio-rs/mio
 Copyright (c) 2014 Carl Lerche and other MIO contributors
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-multer 3.1.0 (MIT)
+multer (MIT)
 https://github.com/rwf2/multer
 Copyright (c) 2020 Rousan Ali
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-nix 0.28.0 (MIT)
+nix (MIT)
 https://github.com/nix-rust/nix
 Copyright (c) 2015 Carl Lerche + nix-rust Authors
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-nu-ansi-term 0.50.3 (MIT)
+nu-ansi-term (MIT)
 https://github.com/nushell/nu-ansi-term
 Copyright (c) 2014 Benjamin Sago
 Copyright (c) 2021-2022 The Nushell Project Developers
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-num-traits 0.2.19 (MIT OR Apache-2.0)
+num-traits (MIT OR Apache-2.0)
 https://github.com/rust-num/num-traits
 Copyright (c) 2014 The Rust Project Developers
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-once_cell 1.21.4 (MIT OR Apache-2.0)
+once_cell (MIT OR Apache-2.0)
 https://github.com/matklad/once_cell
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-opaque-debug 0.3.1 (MIT OR Apache-2.0)
+opaque-debug (MIT OR Apache-2.0)
 https://github.com/RustCrypto/utils
 Copyright (c) 2018-2024 The RustCrypto Project Developers
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-p256 0.13.2 (Apache-2.0 OR MIT)
+p256 (Apache-2.0 OR MIT)
 https://github.com/RustCrypto/elliptic-curves/tree/master/p256
 Copyright (c) 2020-2023 RustCrypto Developers
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-parking_lot_core 0.9.12 (MIT OR Apache-2.0)
+parking_lot_core (MIT OR Apache-2.0)
 https://github.com/Amanieu/parking_lot
 Copyright (c) 2016 The Rust Project Developers
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-pem 4.0.0 (MIT)
+pem (MIT)
 https://github.com/jcreekmore/pem-rs.git
 Copyright (c) 2016 Jonathan Creekmore
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-pem-rfc7468 0.7.0 (Apache-2.0 OR MIT)
+pem-rfc7468 (Apache-2.0 OR MIT)
 https://github.com/RustCrypto/formats/tree/master/pem-rfc7468
 Copyright (c) 2021 The RustCrypto Project Developers
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-percent-encoding 2.3.2 (MIT OR Apache-2.0)
+percent-encoding (MIT OR Apache-2.0)
 https://github.com/servo/rust-url/
 Copyright (c) 2013-2025 The rust-url developers
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-pin-project-lite 0.2.17 (Apache-2.0 OR MIT)
+pin-project-lite (Apache-2.0 OR MIT)
 https://github.com/taiki-e/pin-project-lite
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-pkcs8 0.10.2 (Apache-2.0 OR MIT)
+pkcs8 (Apache-2.0 OR MIT)
 https://github.com/RustCrypto/formats/tree/master/pkcs8
 Copyright (c) 2020-2023 The RustCrypto Project Developers
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-polyval 0.6.2 (Apache-2.0 OR MIT)
+polyval (Apache-2.0 OR MIT)
 https://github.com/RustCrypto/universal-hashes
 Copyright (c) 2019-2023 RustCrypto Developers
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-portable-pty 0.9.0 (MIT)
+portable-pty (MIT)
 https://github.com/wezterm/wezterm
 Copyright (c) 2018 Wez Furlong
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-potential_utf 0.1.5 (Unicode-3.0)
+potential_utf (Unicode-3.0)
 https://github.com/unicode-org/icu4x
-potential_utf 0.1.5: LICENSE: the same text as icu_collections 2.2.0: LICENSE, above.
+potential_utf: LICENSE: the same text as icu_collections: LICENSE, above.
 
-ppv-lite86 0.2.21 (MIT OR Apache-2.0)
+ppv-lite86 (MIT OR Apache-2.0)
 https://github.com/cryptocorrosion/cryptocorrosion
 Copyright (c) 2019 The CryptoCorrosion Contributors
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-primeorder 0.13.6 (Apache-2.0 OR MIT)
+primeorder (Apache-2.0 OR MIT)
 https://github.com/RustCrypto/elliptic-curves/tree/master/primeorder
 Copyright (c) 2020-2023 RustCrypto Developers
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-proc-macro2 1.0.106 (MIT OR Apache-2.0)
+proc-macro2 (MIT OR Apache-2.0)
 https://github.com/dtolnay/proc-macro2
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-prost 0.14.4 (Apache-2.0)
+prost (Apache-2.0)
 https://github.com/tokio-rs/prost
 Apache-2.0: the standard text in "Standard licence texts: Apache-2.0", above.
 
-prost-derive 0.14.4 (Apache-2.0)
+prost-derive (Apache-2.0)
 https://github.com/tokio-rs/prost
 Apache-2.0: the standard text in "Standard licence texts: Apache-2.0", above.
 
-prost-types 0.14.4 (Apache-2.0)
+prost-types (Apache-2.0)
 https://github.com/tokio-rs/prost
 Apache-2.0: the standard text in "Standard licence texts: Apache-2.0", above.
 
-quinn 0.11.6 (MIT OR Apache-2.0)
+quinn (MIT OR Apache-2.0)
 https://github.com/quinn-rs/quinn
 Copyright (c) 2018 The quinn Developers
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-quinn-proto 0.11.16 (MIT OR Apache-2.0)
+quinn-proto (MIT OR Apache-2.0)
 https://github.com/quinn-rs/quinn
 Copyright (c) 2018 The quinn Developers
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-quinn-udp 0.5.14 (MIT OR Apache-2.0)
+quinn-udp (MIT OR Apache-2.0)
 https://github.com/quinn-rs/quinn
 Copyright (c) 2018 The quinn Developers
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-quote 1.0.45 (MIT OR Apache-2.0)
+quote (MIT OR Apache-2.0)
 https://github.com/dtolnay/quote
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-rand 0.10.3 (MIT OR Apache-2.0)
+rand 0.10.x (MIT OR Apache-2.0)
 https://github.com/rust-random/rand
 Copyright 2018 Developers of the Rand project
 Copyright (c) 2014 The Rust Project Developers
 MIT: the standard text in "Standard licence texts: MIT", above.
 
---- rand 0.10.3: COPYRIGHT ---
+--- rand 0.10.x: COPYRIGHT ---
 Copyrights in the Rand project are retained by their contributors. No
 copyright assignment is required to contribute to the Rand project.
 
@@ -3709,28 +3709,28 @@ licensed under the Apache License, Version 2.0 <LICENSE-APACHE> or
 The Rand project includes code from the Rust project
 published under these same licenses.
 
-rand 0.9.4 (MIT OR Apache-2.0)
+rand 0.9.x (MIT OR Apache-2.0)
 https://github.com/rust-random/rand
 Copyright 2018 Developers of the Rand project
 Copyright (c) 2014 The Rust Project Developers
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-rand 0.9.4: COPYRIGHT: the same text as rand 0.10.3: COPYRIGHT, above.
+rand 0.9.x: COPYRIGHT: the same text as rand 0.10.x: COPYRIGHT, above.
 
-rand_chacha 0.9.0 (MIT OR Apache-2.0)
+rand_chacha (MIT OR Apache-2.0)
 https://github.com/rust-random/rand
 Copyright 2018 Developers of the Rand project
 Copyright (c) 2014 The Rust Project Developers
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-rand_chacha 0.9.0: COPYRIGHT: the same text as rand 0.10.3: COPYRIGHT, above.
+rand_chacha: COPYRIGHT: the same text as rand 0.10.x: COPYRIGHT, above.
 
-rand_core 0.10.1 (MIT OR Apache-2.0)
+rand_core 0.10.x (MIT OR Apache-2.0)
 https://github.com/rust-random/rand_core
 Copyright (c) 2018-2026 The Rand Project Developers
 MIT: the standard text in "Standard licence texts: MIT", above.
 
---- rand_core 0.10.1: COPYRIGHT ---
+--- rand_core 0.10.x: COPYRIGHT ---
 Copyrights in the Rand project are retained by their contributors. No
 copyright assignment is required to contribute to the Rand project.
 
@@ -3741,58 +3741,58 @@ licensed under the Apache License, Version 2.0 <LICENSE-APACHE> or
 <http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
 <LICENSE-MIT> or <http://opensource.org/licenses/MIT>, at your option.
 
-rand_core 0.6.4 (MIT OR Apache-2.0)
+rand_core 0.6.x (MIT OR Apache-2.0)
 https://github.com/rust-random/rand
 Copyright 2018 Developers of the Rand project
 Copyright (c) 2014 The Rust Project Developers
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-rand_core 0.6.4: COPYRIGHT: the same text as rand 0.10.3: COPYRIGHT, above.
+rand_core 0.6.x: COPYRIGHT: the same text as rand 0.10.x: COPYRIGHT, above.
 
-rand_core 0.9.5 (MIT OR Apache-2.0)
+rand_core 0.9.x (MIT OR Apache-2.0)
 https://github.com/rust-random/rand
 Copyright 2018 Developers of the Rand project
 Copyright (c) 2014 The Rust Project Developers
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-rand_core 0.9.5: COPYRIGHT: the same text as rand 0.10.3: COPYRIGHT, above.
+rand_core 0.9.x: COPYRIGHT: the same text as rand 0.10.x: COPYRIGHT, above.
 
-rand_pcg 0.10.2 (MIT OR Apache-2.0)
+rand_pcg (MIT OR Apache-2.0)
 https://github.com/rust-random/rngs
 Copyright (c) 2014-2017 Melissa O'Neill and PCG Project contributors
 Copyright 2018 Developers of the Rand project
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-rand_pcg 0.10.2: COPYRIGHT: the same text as rand 0.10.3: COPYRIGHT, above.
+rand_pcg: COPYRIGHT: the same text as rand 0.10.x: COPYRIGHT, above.
 
-regex 1.13.1 (MIT OR Apache-2.0)
+regex (MIT OR Apache-2.0)
 https://github.com/rust-lang/regex
 Copyright (c) 2014 The Rust Project Developers
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-regex-automata 0.4.16 (MIT OR Apache-2.0)
+regex-automata (MIT OR Apache-2.0)
 https://github.com/rust-lang/regex
 Copyright (c) 2014 The Rust Project Developers
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-regex-syntax 0.8.11 (MIT OR Apache-2.0)
+regex-syntax (MIT OR Apache-2.0)
 https://github.com/rust-lang/regex
 Copyright (c) 2014 The Rust Project Developers
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-reqwest 0.12.28 (MIT OR Apache-2.0)
+reqwest (MIT OR Apache-2.0)
 https://github.com/seanmonstar/reqwest
 Copyright (c) 2016-2025 Sean McArthur
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-rfc6979 0.4.0 (Apache-2.0 OR MIT)
+rfc6979 (Apache-2.0 OR MIT)
 https://github.com/RustCrypto/signatures/tree/master/rfc6979
 Copyright (c) 2018-2022 RustCrypto Developers
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-ring 0.17.14 (Apache-2.0 AND ISC)
+ring (Apache-2.0 AND ISC)
 https://github.com/briansmith/ring
---- ring 0.17.14: LICENSE ---
+--- ring: LICENSE ---
 *ring* uses an "ISC" license, like BoringSSL used to use, for new code
 files. See LICENSE-other-bits for the text of that license.
 
@@ -3809,7 +3809,7 @@ Copyright 2015 The Chromium Authors. All rights reserved.
 copyright notice, this list of conditions and the following disclaimer
 Apache-2.0: the standard text in "Standard licence texts: Apache-2.0", above.
 
---- ring 0.17.14: LICENSE-other-bits ---
+--- ring: LICENSE-other-bits ---
 Copyright 2015-2025 Brian Smith.
 
 Permission to use, copy, modify, and/or distribute this software for any
@@ -3824,43 +3824,43 @@ WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN ACTION
 OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF OR IN
 CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 
-rusqlite 0.41.1 (MIT)
+rusqlite (MIT)
 https://github.com/rusqlite/rusqlite
 Copyright (c) 2014 The rusqlite developers
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-rust-embed 8.13.0 (MIT)
+rust-embed (MIT)
 https://pyrossh.dev/repos/rust-embed
 Copyright (c) 2018 pyros2097
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-rust-embed-impl 8.13.0 (MIT)
+rust-embed-impl (MIT)
 https://pyrossh.dev/repos/rust-embed
 Copyright (c) 2018 pyros2097
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-rust-embed-utils 8.13.0 (MIT)
+rust-embed-utils (MIT)
 https://pyrossh.dev/repos/rust-embed
 Copyright (c) 2018 pyros2097
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-rustc-hash 2.1.2 (Apache-2.0 OR MIT)
+rustc-hash (Apache-2.0 OR MIT)
 https://github.com/rust-lang/rustc-hash
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-rustls 0.23.46 (Apache-2.0 OR ISC OR MIT)
+rustls (Apache-2.0 OR ISC OR MIT)
 https://github.com/rustls/rustls
 Copyright (c) 2016 Joseph Birr-Pixton <jpixton@gmail.com>
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-rustls-pki-types 1.14.0 (MIT OR Apache-2.0)
+rustls-pki-types (MIT OR Apache-2.0)
 https://github.com/rustls/pki-types
 Copyright (c) 2023 Dirkjan Ochtman <dirkjan@ochtman.nl>
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-rustls-webpki 0.103.16 (ISC)
+rustls-webpki (ISC)
 https://github.com/rustls/webpki
---- rustls-webpki 0.103.16: LICENSE ---
+--- rustls-webpki: LICENSE ---
 Except as otherwise noted, this project is licensed under the following
 (ISC-style) terms:
 
@@ -3881,63 +3881,63 @@ OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 The files under third-party/chromium are licensed as described in
 third-party/chromium/LICENSE.
 
-ryu 1.0.23 (Apache-2.0 OR BSL-1.0)
+ryu (Apache-2.0 OR BSL-1.0)
 https://github.com/dtolnay/ryu
 Apache-2.0: the standard text in "Standard licence texts: Apache-2.0", above.
 
-same-file 1.0.6 (Unlicense/MIT)
+same-file (Unlicense/MIT)
 https://github.com/BurntSushi/same-file
 Copyright (c) 2017 Andrew Gallant
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-scopeguard 1.2.0 (MIT OR Apache-2.0)
+scopeguard (MIT OR Apache-2.0)
 https://github.com/bluss/scopeguard
 Copyright (c) 2016-2019 Ulrik Sverdrup "bluss" and scopeguard developers
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-sec1 0.7.3 (Apache-2.0 OR MIT)
+sec1 (Apache-2.0 OR MIT)
 https://github.com/RustCrypto/formats/tree/master/sec1
 Copyright (c) 2021-2022 The RustCrypto Project Developers
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-serde 1.0.229 (MIT OR Apache-2.0)
+serde (MIT OR Apache-2.0)
 https://github.com/serde-rs/serde
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-serde-xml-rs 0.8.2 (MIT)
+serde-xml-rs (MIT)
 https://github.com/RReverser/serde-xml-rs
 Copyright (c) 2017 Ingvar Stepanyan
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-serde_core 1.0.229 (MIT OR Apache-2.0)
+serde_core (MIT OR Apache-2.0)
 https://github.com/serde-rs/serde
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-serde_derive 1.0.229 (MIT OR Apache-2.0)
+serde_derive (MIT OR Apache-2.0)
 https://github.com/serde-rs/serde
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-serde_json 1.0.154 (MIT OR Apache-2.0)
+serde_json (MIT OR Apache-2.0)
 https://github.com/serde-rs/json
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-serde_path_to_error 0.1.20 (MIT OR Apache-2.0)
+serde_path_to_error (MIT OR Apache-2.0)
 https://github.com/dtolnay/path-to-error
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-serde_spanned 1.1.1 (MIT OR Apache-2.0)
+serde_spanned (MIT OR Apache-2.0)
 https://github.com/toml-rs/toml
 Copyright (c) Individual contributors
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-serde_urlencoded 0.7.1 (MIT/Apache-2.0)
+serde_urlencoded (MIT/Apache-2.0)
 https://github.com/nox/serde_urlencoded
 Copyright (c) 2016 Anthony Ramine
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-serial2 0.2.37 (BSD-2-Clause OR Apache-2.0)
+serial2 (BSD-2-Clause OR Apache-2.0)
 https://github.com/de-vri-es/serial2-rs
---- serial2 0.2.37: LICENSE-APACHE ---
+--- serial2: LICENSE-APACHE ---
 Copyright 2021, Maarten de Vries <maarten@de-vri.es>
 
 Licensed under the Apache License, Version 2.0 (the "License");
@@ -3952,29 +3952,14 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 
-sha1 0.10.6 (MIT OR Apache-2.0)
+sha1 0.10.x (MIT OR Apache-2.0)
 https://github.com/RustCrypto/hashes
 Copyright (c) 2006-2009 Graydon Hoare
 Copyright (c) 2009-2013 Mozilla Foundation
 Copyright (c) 2016 Artyom Pavlov
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-sha1 0.11.0 (MIT OR Apache-2.0)
-https://github.com/RustCrypto/hashes
-Copyright (c) 2016-2026 The RustCrypto Project Developers
-Copyright (c) 2016 Artyom Pavlov
-Copyright (c) 2009-2013 Mozilla Foundation
-Copyright (c) 2006-2009 Graydon Hoare
-MIT: the standard text in "Standard licence texts: MIT", above.
-
-sha2 0.10.9 (MIT OR Apache-2.0)
-https://github.com/RustCrypto/hashes
-Copyright (c) 2006-2009 Graydon Hoare
-Copyright (c) 2009-2013 Mozilla Foundation
-Copyright (c) 2016 Artyom Pavlov
-MIT: the standard text in "Standard licence texts: MIT", above.
-
-sha2 0.11.1 (MIT OR Apache-2.0)
+sha1 0.11.x (MIT OR Apache-2.0)
 https://github.com/RustCrypto/hashes
 Copyright (c) 2016-2026 The RustCrypto Project Developers
 Copyright (c) 2016 Artyom Pavlov
@@ -3982,81 +3967,96 @@ Copyright (c) 2009-2013 Mozilla Foundation
 Copyright (c) 2006-2009 Graydon Hoare
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-sharded-slab 0.1.7 (MIT)
+sha2 0.10.x (MIT OR Apache-2.0)
+https://github.com/RustCrypto/hashes
+Copyright (c) 2006-2009 Graydon Hoare
+Copyright (c) 2009-2013 Mozilla Foundation
+Copyright (c) 2016 Artyom Pavlov
+MIT: the standard text in "Standard licence texts: MIT", above.
+
+sha2 0.11.x (MIT OR Apache-2.0)
+https://github.com/RustCrypto/hashes
+Copyright (c) 2016-2026 The RustCrypto Project Developers
+Copyright (c) 2016 Artyom Pavlov
+Copyright (c) 2009-2013 Mozilla Foundation
+Copyright (c) 2006-2009 Graydon Hoare
+MIT: the standard text in "Standard licence texts: MIT", above.
+
+sharded-slab (MIT)
 https://github.com/hawkw/sharded-slab
 Copyright (c) 2019 Eliza Weisman
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-shell-words 1.1.1 (MIT/Apache-2.0)
+shell-words (MIT/Apache-2.0)
 https://github.com/tmiasko/shell-words
 Copyright (c) 2016 Tomasz Miąsko
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-signal-hook-registry 1.4.8 (MIT OR Apache-2.0)
+signal-hook-registry (MIT OR Apache-2.0)
 https://github.com/vorner/signal-hook
 Copyright (c) 2017 tokio-jsonrpc developers
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-signature 2.2.0 (Apache-2.0 OR MIT)
+signature (Apache-2.0 OR MIT)
 https://github.com/RustCrypto/traits/tree/master/signature
 Copyright (c) 2018-2023 RustCrypto Developers
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-simd-adler32 0.3.9 (MIT)
+simd-adler32 (MIT)
 https://github.com/mcountryman/simd-adler32
 Copyright (c) [2021] [Marvin Countryman]
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-slab 0.4.12 (MIT)
+slab (MIT)
 https://github.com/tokio-rs/slab
 Copyright (c) 2019 Carl Lerche
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-smallvec 1.15.1 (MIT OR Apache-2.0)
+smallvec (MIT OR Apache-2.0)
 https://github.com/servo/rust-smallvec
 Copyright (c) 2018 The Servo Project Developers
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-socket2 0.5.10 (MIT OR Apache-2.0)
+socket2 0.5.x (MIT OR Apache-2.0)
 https://github.com/rust-lang/socket2
 Copyright (c) 2014 Alex Crichton
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-socket2 0.6.3 (MIT OR Apache-2.0)
+socket2 0.6.x (MIT OR Apache-2.0)
 https://github.com/rust-lang/socket2
 Copyright (c) 2014 Alex Crichton
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-spin 0.9.8 (MIT)
+spin (MIT)
 https://github.com/mvdnes/spin-rs.git
 Copyright (c) 2014 Mathijs van de Nes
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-spki 0.7.3 (Apache-2.0 OR MIT)
+spki (Apache-2.0 OR MIT)
 https://github.com/RustCrypto/formats/tree/master/spki
 Copyright (c) 2021-2023 The RustCrypto Project Developers
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-stable_deref_trait 1.2.1 (MIT OR Apache-2.0)
+stable_deref_trait (MIT OR Apache-2.0)
 https://github.com/storyyeller/stable_deref_trait
 Copyright (c) 2017 Robert Grosse
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-static_assertions 1.1.0 (MIT OR Apache-2.0)
+static_assertions (MIT OR Apache-2.0)
 https://github.com/nvzqz/static-assertions-rs
 Copyright (c) 2017 Nikolai Vazquez
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-strsim 0.11.1 (MIT)
+strsim (MIT)
 https://github.com/rapidfuzz/strsim-rs
 Copyright (c) 2015 Danny Guo
 Copyright (c) 2016 Titus Wormer <tituswormer@gmail.com>
 Copyright (c) 2018 Akash Kurdekar
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-subtle 2.6.1 (BSD-3-Clause)
+subtle (BSD-3-Clause)
 https://github.com/dalek-cryptography/subtle
---- subtle 2.6.1: LICENSE ---
+--- subtle: LICENSE ---
 Copyright (c) 2016-2017 Isis Agora Lovecruft, Henry de Valence. All rights reserved.
 Copyright (c) 2016-2024 Isis Agora Lovecruft. All rights reserved.
 
@@ -4087,188 +4087,188 @@ LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING
 NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
 SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-syn 2.0.117 (MIT OR Apache-2.0)
+syn 2.x (MIT OR Apache-2.0)
 https://github.com/dtolnay/syn
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-syn 3.0.2 (MIT OR Apache-2.0)
+syn 3.x (MIT OR Apache-2.0)
 https://github.com/dtolnay/syn
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-sync_wrapper 1.0.2 (Apache-2.0)
+sync_wrapper (Apache-2.0)
 https://github.com/Actyx/sync_wrapper
 Apache-2.0: the standard text in "Standard licence texts: Apache-2.0", above.
 
-synstructure 0.13.2 (MIT)
+synstructure (MIT)
 https://github.com/mystor/synstructure
 Copyright 2016 Nika Layzell
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-thiserror 1.0.69 (MIT OR Apache-2.0)
+thiserror 1.x (MIT OR Apache-2.0)
 https://github.com/dtolnay/thiserror
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-thiserror 2.0.21 (MIT OR Apache-2.0)
+thiserror 2.x (MIT OR Apache-2.0)
 https://github.com/dtolnay/thiserror
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-thiserror-impl 1.0.69 (MIT OR Apache-2.0)
+thiserror-impl 1.x (MIT OR Apache-2.0)
 https://github.com/dtolnay/thiserror
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-thiserror-impl 2.0.21 (MIT OR Apache-2.0)
+thiserror-impl 2.x (MIT OR Apache-2.0)
 https://github.com/dtolnay/thiserror
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-thread_local 1.1.9 (MIT OR Apache-2.0)
+thread_local (MIT OR Apache-2.0)
 https://github.com/Amanieu/thread_local-rs
 Copyright (c) 2016 The Rust Project Developers
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-tinystr 0.8.3 (Unicode-3.0)
+tinystr (Unicode-3.0)
 https://github.com/unicode-org/icu4x
-tinystr 0.8.3: LICENSE: the same text as icu_collections 2.2.0: LICENSE, above.
+tinystr: LICENSE: the same text as icu_collections: LICENSE, above.
 
-tinyvec 1.11.0 (Zlib OR Apache-2.0 OR MIT)
+tinyvec (Zlib OR Apache-2.0 OR MIT)
 https://github.com/Lokathor/tinyvec
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-tinyvec_macros 0.1.1 (MIT OR Apache-2.0 OR Zlib)
+tinyvec_macros (MIT OR Apache-2.0 OR Zlib)
 https://github.com/Soveu/tinyvec_macros
 Copyright (c) 2020 Soveu
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-tokio 1.54.1 (MIT)
+tokio (MIT)
 https://github.com/tokio-rs/tokio
 Copyright (c) Tokio Contributors
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-tokio-macros 2.7.0 (MIT)
+tokio-macros (MIT)
 https://github.com/tokio-rs/tokio
 Copyright (c) 2019 Yoshua Wuyts
 Copyright (c) Tokio Contributors
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-tokio-rustls 0.26.4 (MIT OR Apache-2.0)
+tokio-rustls (MIT OR Apache-2.0)
 https://github.com/rustls/tokio-rustls
 Copyright (c) 2017 quininer kel
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-tokio-stream 0.1.19 (MIT)
+tokio-stream (MIT)
 https://github.com/tokio-rs/tokio
 Copyright (c) Tokio Contributors
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-tokio-tungstenite 0.29.0 (MIT)
+tokio-tungstenite (MIT)
 https://github.com/snapview/tokio-tungstenite
 Copyright (c) 2017 Daniel Abramov
 Copyright (c) 2017 Alexey Galakhov
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-tokio-util 0.7.20 (MIT)
+tokio-util (MIT)
 https://github.com/tokio-rs/tokio
 Copyright (c) Tokio Contributors
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-toml 1.1.3+spec-1.1.0 (MIT OR Apache-2.0)
+toml (MIT OR Apache-2.0)
 https://github.com/toml-rs/toml
 Copyright (c) Individual contributors
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-toml_datetime 1.1.1+spec-1.1.0 (MIT OR Apache-2.0)
+toml_datetime (MIT OR Apache-2.0)
 https://github.com/toml-rs/toml
 Copyright (c) Individual contributors
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-toml_parser 1.1.2+spec-1.1.0 (MIT OR Apache-2.0)
+toml_parser (MIT OR Apache-2.0)
 https://github.com/toml-rs/toml
 Copyright (c) Individual contributors
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-toml_writer 1.1.2+spec-1.1.0 (MIT OR Apache-2.0)
+toml_writer (MIT OR Apache-2.0)
 https://github.com/toml-rs/toml
 Copyright (c) Individual contributors
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-tower 0.5.3 (MIT)
+tower (MIT)
 https://github.com/tower-rs/tower
 Copyright (c) 2019 Tower Contributors
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-tower-http 0.6.11 (MIT)
+tower-http 0.6.x (MIT)
 https://github.com/tower-rs/tower-http
 Copyright (c) 2019-2021 Tower Contributors
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-tower-http 0.7.1 (MIT)
+tower-http 0.7.x (MIT)
 https://github.com/tower-rs/tower-http
 Copyright (c) 2019-2021 Tower Contributors
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-tower-layer 0.3.3 (MIT)
+tower-layer (MIT)
 https://github.com/tower-rs/tower
 Copyright (c) 2019 Tower Contributors
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-tower-service 0.3.3 (MIT)
+tower-service (MIT)
 https://github.com/tower-rs/tower
 Copyright (c) 2019 Tower Contributors
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-tracing 0.1.44 (MIT)
+tracing (MIT)
 https://github.com/tokio-rs/tracing
 Copyright (c) 2019 Tokio Contributors
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-tracing-attributes 0.1.31 (MIT)
+tracing-attributes (MIT)
 https://github.com/tokio-rs/tracing
 Copyright (c) 2019 Tokio Contributors
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-tracing-core 0.1.36 (MIT)
+tracing-core (MIT)
 https://github.com/tokio-rs/tracing
 Copyright (c) 2019 Tokio Contributors
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-tracing-log 0.2.0 (MIT)
+tracing-log (MIT)
 https://github.com/tokio-rs/tracing
 Copyright (c) 2019 Tokio Contributors
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-tracing-subscriber 0.3.23 (MIT)
+tracing-subscriber (MIT)
 https://github.com/tokio-rs/tracing
 Copyright (c) 2019 Tokio Contributors
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-try-lock 0.2.5 (MIT)
+try-lock (MIT)
 https://github.com/seanmonstar/try-lock
 Copyright (c) 2018-2023 Sean McArthur
 Copyright (c) 2016 Alex Crichton
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-tungstenite 0.29.0 (MIT OR Apache-2.0)
+tungstenite (MIT OR Apache-2.0)
 https://github.com/snapview/tungstenite-rs
 Copyright (c) 2017 Alexey Galakhov
 Copyright (c) 2016 Jason Housley
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-typenum 1.20.1 (MIT OR Apache-2.0)
+typenum (MIT OR Apache-2.0)
 https://github.com/paholg/typenum
 Copyright (c) 2014 Paho Lurie-Gregg
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-unicase 2.9.0 (MIT OR Apache-2.0)
+unicase (MIT OR Apache-2.0)
 https://github.com/seanmonstar/unicase
 Copyright (c) 2014-2026 Sean McArthur
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-unicode-ident 1.0.24 ((MIT OR Apache-2.0) AND Unicode-3.0)
+unicode-ident ((MIT OR Apache-2.0) AND Unicode-3.0)
 https://github.com/dtolnay/unicode-ident
 Apache-2.0: the standard text in "Standard licence texts: Apache-2.0", above.
 
 MIT: the standard text in "Standard licence texts: MIT", above.
 
---- unicode-ident 1.0.24: LICENSE-UNICODE ---
+--- unicode-ident: LICENSE-UNICODE ---
 UNICODE LICENSE V3
 
 COPYRIGHT AND PERMISSION NOTICE
@@ -4309,14 +4309,14 @@ not be used in advertising or otherwise to promote the sale, use or other
 dealings in these Data Files or Software without prior written
 authorization of the copyright holder.
 
-universal-hash 0.5.1 (MIT OR Apache-2.0)
+universal-hash (MIT OR Apache-2.0)
 https://github.com/RustCrypto/traits
 Copyright (c) 2019-2020 RustCrypto Developers
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-untrusted 0.9.0 (ISC)
+untrusted (ISC)
 https://github.com/briansmith/untrusted
---- untrusted 0.9.0: LICENSE.txt ---
+--- untrusted: LICENSE.txt ---
 // Copyright 2015-2016 Brian Smith.
 //
 // Permission to use, copy, modify, and/or distribute this software for any
@@ -4331,23 +4331,23 @@ https://github.com/briansmith/untrusted
 // ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
 // OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 
-url 2.5.8 (MIT OR Apache-2.0)
+url (MIT OR Apache-2.0)
 https://github.com/servo/rust-url
 Copyright (c) 2013-2025 The rust-url developers
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-urlencoding 2.1.3 (MIT)
+urlencoding (MIT)
 https://github.com/kornelski/rust_urlencoding
 © 2016 Bertram Truong
 © 2021 Kornel Lesiński
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-utf8_iter 1.0.4 (Apache-2.0 OR MIT)
+utf8_iter (Apache-2.0 OR MIT)
 https://github.com/hsivonen/utf8_iter
 Copyright Mozilla Foundation
 MIT: the standard text in "Standard licence texts: MIT", above.
 
---- utf8_iter 1.0.4: COPYRIGHT ---
+--- utf8_iter: COPYRIGHT ---
 Copyright Mozilla Foundation
 
 Licensed under the Apache License (Version 2.0), or the MIT license,
@@ -4391,30 +4391,30 @@ licensed under the Apache License, Version 2.0 <LICENSE-APACHE> or
 <http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
 <LICENSE-MIT> or <http://opensource.org/licenses/MIT>, at your option.
 
-utf8parse 0.2.2 (Apache-2.0 OR MIT)
+utf8parse (Apache-2.0 OR MIT)
 https://github.com/alacritty/vte
 Copyright (c) 2016 Joe Wilm
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-uuid 1.29.0 (Apache-2.0 OR MIT)
+uuid (Apache-2.0 OR MIT)
 https://github.com/uuid-rs/uuid
 Copyright (c) 2014 The Rust Project Developers
 Copyright (c) 2018 Ashley Mannix, Christopher Armstrong, Dylan DPC, Hunar Roop Kahlon
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-walkdir 2.5.0 (Unlicense/MIT)
+walkdir (Unlicense/MIT)
 https://github.com/BurntSushi/walkdir
 Copyright (c) 2015 Andrew Gallant
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-want 0.3.1 (MIT)
+want (MIT)
 https://github.com/seanmonstar/want
 Copyright (c) 2018-2019 Sean McArthur
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-webpki-roots 1.0.10 (CDLA-Permissive-2.0)
+webpki-roots (CDLA-Permissive-2.0)
 https://github.com/rustls/webpki-roots
---- webpki-roots 1.0.10: LICENSE ---
+--- webpki-roots: LICENSE ---
 # Community Data License Agreement - Permissive - Version 2.0
 
 This is the Community Data License Agreement - Permissive, Version
@@ -4477,17 +4477,17 @@ agreement.
 of Data, including for example machine learning models and models'
 insights.
 
-winnow 1.0.4 (MIT)
+winnow (MIT)
 https://github.com/winnow-rs/winnow
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-writeable 0.6.3 (Unicode-3.0)
+writeable (Unicode-3.0)
 https://github.com/unicode-org/icu4x
-writeable 0.6.3: LICENSE: the same text as icu_collections 2.2.0: LICENSE, above.
+writeable: LICENSE: the same text as icu_collections: LICENSE, above.
 
-x25519-dalek 3.0.0 (BSD-3-Clause)
+x25519-dalek (BSD-3-Clause)
 https://github.com/dalek-cryptography/curve25519-dalek/tree/main/x25519-dalek
---- x25519-dalek 3.0.0: LICENSE ---
+--- x25519-dalek: LICENSE ---
 Copyright (c) 2017-2021 isis agora lovecruft. All rights reserved.
 Copyright (c) 2019-2021 DebugSteven. All rights reserved.
 
@@ -4518,52 +4518,52 @@ LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING
 NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
 SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-xml 1.3.0 (MIT)
+xml (MIT)
 https://github.com/kornelski/xml-rs
 Copyright (c) 2014 Vladimir Matveev
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-yoke 0.8.2 (Unicode-3.0)
+yoke (Unicode-3.0)
 https://github.com/unicode-org/icu4x
-yoke 0.8.2: LICENSE: the same text as icu_collections 2.2.0: LICENSE, above.
+yoke: LICENSE: the same text as icu_collections: LICENSE, above.
 
-yoke-derive 0.8.2 (Unicode-3.0)
+yoke-derive (Unicode-3.0)
 https://github.com/unicode-org/icu4x
-yoke-derive 0.8.2: LICENSE: the same text as icu_collections 2.2.0: LICENSE, above.
+yoke-derive: LICENSE: the same text as icu_collections: LICENSE, above.
 
-zerocopy 0.8.48 (BSD-2-Clause OR Apache-2.0 OR MIT)
+zerocopy (BSD-2-Clause OR Apache-2.0 OR MIT)
 https://github.com/google/zerocopy
 Copyright 2023 The Fuchsia Authors
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-zerofrom 0.1.7 (Unicode-3.0)
+zerofrom (Unicode-3.0)
 https://github.com/unicode-org/icu4x
-zerofrom 0.1.7: LICENSE: the same text as icu_collections 2.2.0: LICENSE, above.
+zerofrom: LICENSE: the same text as icu_collections: LICENSE, above.
 
-zerofrom-derive 0.1.7 (Unicode-3.0)
+zerofrom-derive (Unicode-3.0)
 https://github.com/unicode-org/icu4x
-zerofrom-derive 0.1.7: LICENSE: the same text as icu_collections 2.2.0: LICENSE, above.
+zerofrom-derive: LICENSE: the same text as icu_collections: LICENSE, above.
 
-zeroize 1.8.2 (Apache-2.0 OR MIT)
+zeroize (Apache-2.0 OR MIT)
 https://github.com/RustCrypto/utils
 Copyright (c) 2018-2021 The RustCrypto Project Developers
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-zerotrie 0.2.4 (Unicode-3.0)
+zerotrie (Unicode-3.0)
 https://github.com/unicode-org/icu4x
-zerotrie 0.2.4: LICENSE: the same text as icu_collections 2.2.0: LICENSE, above.
+zerotrie: LICENSE: the same text as icu_collections: LICENSE, above.
 
-zerovec 0.11.6 (Unicode-3.0)
+zerovec (Unicode-3.0)
 https://github.com/unicode-org/icu4x
-zerovec 0.11.6: LICENSE: the same text as icu_collections 2.2.0: LICENSE, above.
+zerovec: LICENSE: the same text as icu_collections: LICENSE, above.
 
-zerovec-derive 0.11.3 (Unicode-3.0)
+zerovec-derive (Unicode-3.0)
 https://github.com/unicode-org/icu4x
-zerovec-derive 0.11.3: LICENSE: the same text as icu_collections 2.2.0: LICENSE, above.
+zerovec-derive: LICENSE: the same text as icu_collections: LICENSE, above.
 
-zlib-rs 0.6.3 (Zlib)
+zlib-rs (Zlib)
 https://github.com/trifectatechfoundation/zlib-rs
---- zlib-rs 0.6.3: LICENSE ---
+--- zlib-rs: LICENSE ---
 (C) 2024 Trifecta Tech Foundation 
 
 This software is provided 'as-is', without any express or implied
@@ -4584,21 +4584,21 @@ freely, subject to the following restrictions:
 
 3. This notice may not be removed or altered from any source distribution.
 
-zmij 1.0.21 (MIT)
+zmij (MIT)
 https://github.com/dtolnay/zmij
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-zstd 0.13.3 (MIT)
+zstd (MIT)
 https://github.com/gyscos/zstd-rs
 Copyright (c) 2016 Alexandre Bury
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-zstd-safe 7.2.4 (MIT OR Apache-2.0)
+zstd-safe (MIT OR Apache-2.0)
 https://github.com/gyscos/zstd-rs
 Copyright (c) 2016 Alexandre Bury
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-zstd-sys 2.0.16+zstd.1.5.7 (MIT/Apache-2.0)
+zstd-sys (MIT/Apache-2.0)
 https://github.com/gyscos/zstd-rs
 Copyright (c) 2016 Alexandre Bury
 MIT: the standard text in "Standard licence texts: MIT", above.

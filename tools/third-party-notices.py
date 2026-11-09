@@ -23,6 +23,11 @@ readable:
 - an MIT or Apache-2.0 text with the standard wording is reduced to its
   copyright lines and a pointer to one full copy of that standard text;
 - any other text seen before (ignoring spacing) is referred to, not repeated.
+
+Packages are named without their versions, so a version-only dependency
+bump (most Dependabot PRs) leaves the file unchanged and --check passes.
+Adding or removing a package, or a changed licence text, still needs a
+regenerated file.
 """
 import hashlib
 import json
@@ -265,6 +270,37 @@ def read(path):
         return f.read().rstrip()
 
 
+def version_series(version):
+    """The semver-compatible series: 2.0.21 -> 2.x, 0.6.4 -> 0.6.x."""
+    parts = re.split(r"[.+-]", version)
+    if parts[0] != "0":
+        return f"{parts[0]}.x"
+    if len(parts) > 1 and parts[1] != "0":
+        return f"0.{parts[1]}.x"
+    return version
+
+
+def package_labels(packages):
+    """Names without versions, so a version-only dependency bump doesn't
+    change the file (Dependabot can't regenerate it). A name present in
+    several versions gets its version series, or the full version if two
+    share a series."""
+    by_name = {}
+    for p in packages:
+        by_name.setdefault(p["name"], []).append(p)
+    labels = {}
+    for name, group in by_name.items():
+        series = [version_series(p["version"]) for p in group]
+        for p, s in zip(group, series):
+            if len(group) == 1:
+                labels[id(p)] = name
+            elif series.count(s) == 1:
+                labels[id(p)] = f"{name} {s}"
+            else:
+                labels[id(p)] = f'{name} {p["version"]}'
+    return labels
+
+
 def render():
     out = [
         f"{PRODUCT}: licences",
@@ -313,8 +349,9 @@ def render():
     def section(heading, packages):
         out.extend([RULE, heading, RULE, ""])
         packages = sorted(packages, key=lambda p: (p["name"], p["version"]))
+        labels = package_labels(packages)
         for package in packages:
-            label = f'{package["name"]} {package["version"]}'
+            label = labels[id(package)]
             out.append(f'{label} ({package.get("license") or "see below"})')
             if FLAG.search(package.get("license") or ""):
                 flagged.append(f'{label} ({package["license"]})')
@@ -324,7 +361,7 @@ def render():
             sibling = next((p for p in packages if p["name"] == SAME_AS.get(package["name"])), None)
             if not files and sibling and licence_files(sibling):
                 missing.append(label)
-                out.append(f'Published without a licence file; covered by the licence given for {sibling["name"]} {sibling["version"]}, from the same authors and repository.')
+                out.append(f'Published without a licence file; covered by the licence given for {labels[id(sibling)]}, from the same authors and repository.')
                 out.append("")
             elif not files or all(os.sep in n for n, _ in files):
                 missing.append(label)
