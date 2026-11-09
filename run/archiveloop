@@ -2685,7 +2685,9 @@ function set_time () {
     then
       local -r uptime_end=$(awk '{print $1}' /proc/uptime)
       local -r clocktime_end=$(date +%s.%N)
-      log "$(awk "BEGIN {printf \"Time adjusted by %f seconds after %f seconds\", $clocktime_end-$clocktime_start, $uptime_end-$uptime_start}")"
+      # The wall-clock change minus the time that really passed is the
+      # step itself. A slow answer points at the network, not the clock.
+      log "$(awk "BEGIN {printf \"Clock corrected by %.2f seconds (the time server took %.1f seconds to answer)\", ($clocktime_end-$clocktime_start)-($uptime_end-$uptime_start), $uptime_end-$uptime_start}")"
       return
     fi
     log "sntp failed, retrying..."
@@ -3704,10 +3706,11 @@ then
     rtc_sync_systohc || true
   fi
 
-  # A large clock step can cause NetworkManager to drop the WiFi
-  # connection (it thinks the DHCP lease expired). Re-verify and recover.
+  # The connection can drop while the clock is being checked. That is the
+  # network failing, not the clock step: NetworkManager times DHCP leases
+  # on the monotonic clock, and the step is usually under a second.
   if ! archive_is_reachable; then
-    log "Network lost after time adjustment, waiting for recovery..."
+    log "Archive server stopped answering during the clock check; waiting for it to come back..."
     wait_for_archive_to_be_reachable
   fi
 
@@ -3754,10 +3757,11 @@ do
     rtc_sync_systohc || true
   fi
 
-  # A large clock step can cause NetworkManager to drop the WiFi
-  # connection (it thinks the DHCP lease expired). Re-verify and recover.
+  # The connection can drop while the clock is being checked. That is the
+  # network failing, not the clock step: NetworkManager times DHCP leases
+  # on the monotonic clock, and the step is usually under a second.
   if ! archive_is_reachable; then
-    log "Network lost after time adjustment, waiting for recovery..."
+    log "Archive server stopped answering during the clock check; waiting for it to come back..."
     wait_for_archive_to_be_reachable
   fi
 
