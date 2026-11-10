@@ -1771,6 +1771,63 @@ apply_status_led_cleanup() {
     log "status-led: abnormal-exit cleanup installed"
 }
 
+# ── Wi-Fi power saving off ───────────────────────────────────────────────
+#
+# Linux turns Wi-Fi power saving on by default: the radio naps between
+# packets to save battery. A Pi in a car gains nothing from that (a few
+# hundredths of a watt), and on the Broadcom/Cypress chips it is a commonly
+# reported cause of lag, stalls and dropped connections. The Away Mode
+# hotspot already switches it off; this keeps it off all the time.
+#
+# NetworkManager applies `wifi.powersave = 2` (disable) each time a Wi-Fi
+# connection comes up, for the built-in radio and USB adapters alike. Boards
+# that don't use NetworkManager only get the live switch below.
+apply_wifi_powersave_off() {
+    local nm_dir=${SENTRYUSB_NM_DIR:-/etc/NetworkManager}
+    local dropin=$nm_dir/conf.d/sentryusb-wifi-powersave.conf
+    local want='# Managed by Sentry USB: keep Wi-Fi power saving off (2 = disable).
+[connection]
+wifi.powersave = 2'
+
+    if [ ! -d "$nm_dir" ]; then
+        log "wifi-powersave: NetworkManager not in use; switching it off until the next reboot only"
+    elif [ "$(cat "$dropin" 2>/dev/null)" = "$want" ]; then
+        log "wifi-powersave: setting already current"
+    else
+        # Root is read-only on a deployed unit: unlock, write, then lock back.
+        # Remount root directly: remountfs_rw would also unlock the boot
+        # partition, which nothing here locks again.
+        local ro_before=no
+        findmnt -no OPTIONS / 2>/dev/null | grep -qE '(^|,)ro(,|$)' && ro_before=yes
+        if [ "$ro_before" = yes ]; then
+            mount -o remount,rw / 2>/dev/null || true
+        fi
+        mkdir -p "$nm_dir/conf.d" 2>/dev/null || true
+        printf '%s\n' "$want" > "$dropin" 2>/dev/null || true
+        local written=no
+        [ "$(cat "$dropin" 2>/dev/null)" = "$want" ] && written=yes
+        if [ "$ro_before" = yes ]; then
+            sync
+            mount -o remount,ro / 2>/dev/null || true
+        fi
+        if [ "$written" != yes ]; then
+            err "wifi-powersave: failed to write $dropin (read-only fs? check remountfs_rw)"
+            return 1
+        fi
+        nmcli general reload conf >/dev/null 2>&1 || true
+        log "wifi-powersave: Wi-Fi power saving is kept off from now on"
+    fi
+
+    # Take effect now, without dropping the connection.
+    if command -v iw >/dev/null 2>&1; then
+        local iface
+        for iface in $(iw dev 2>/dev/null | awk '$1 == "Interface" { print $2 }'); do
+            iw dev "$iface" set power_save off 2>/dev/null || true
+        done
+    fi
+    return 0
+}
+
 # The offline refresh comes first; then cap inode reserves to prevent data loss
 # on single-disk installs
 # running v3.20.0-v3.20.8, and the updater bounds this whole script
@@ -1794,6 +1851,7 @@ run_patch apply_mounted_archive_watchdog
 run_patch apply_snapshot_eviction_by_age
 run_patch apply_snapshot_slot_pick_hardening
 run_patch apply_malloc_arena_cap
+run_patch apply_wifi_powersave_off
 
 # Future patches that must survive an OTA update get appended here. Each
 # one self-checks board / precondition / marker so the whole script stays
