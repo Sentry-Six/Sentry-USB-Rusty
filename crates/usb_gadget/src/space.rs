@@ -148,20 +148,21 @@ fn slot_num(name: &str) -> Option<u32> {
 
 /// Return release candidates from an oldest-first list.
 ///
-/// Protect both the mtime-newest snapshot and the highest slot. The latter is
-/// monotonic and remains reliable when an unsynchronized Pi clock makes a new
-/// snapshot appear oldest. Normally both protections identify the same item.
+/// Protect both the newest snapshot by age (newest clip time, see
+/// `list_snapshots_by_age`) and the highest slot. The latter is monotonic and
+/// covers a snapshot whose age had to fall back to an unsynchronized Pi-clock
+/// mtime. Normally both protections identify the same item.
 fn releasable(mut in_age_order: Vec<String>) -> Vec<String> {
     if in_age_order.len() < 2 {
         return Vec::new();
     }
-    // Compute the highest slot before removing the mtime-newest item.
+    // Compute the highest slot before removing the newest item.
     let highest = in_age_order
         .iter()
         .filter_map(|n| slot_num(n).map(|s| (s, n.clone())))
         .max_by_key(|(s, _)| *s)
         .map(|(_, n)| n);
-    in_age_order.pop(); // newest by mtime
+    in_age_order.pop(); // newest by age
     if let Some(highest) = highest {
         in_age_order.retain(|n| *n != highest);
     }
@@ -291,7 +292,7 @@ pub async fn manage_free_space(reserve_bytes: Option<u64>) -> Result<()> {
         );
     }
 
-    // Slot numbering can restart after a reflash, so release by mtime age.
+    // Release by footage age (car clock), not slot number or Pi-clock mtime.
     let snapshots = super::snapshot::list_snapshots_by_age();
     if snapshots.is_empty() {
         if free >= reserve {
