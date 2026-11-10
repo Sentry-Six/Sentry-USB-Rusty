@@ -8,6 +8,8 @@
 //! it, Park the whole time skips it. Everything else in the list passes
 //! through untouched. When unsure, keep: a read error or a missing front file.
 //! Every readable recording is checked, including the newest remaining candidate.
+//! The newest may have been mid-recording at the snapshot, so a Park or no-data
+//! verdict read from it isn't remembered: the complete file is read next run.
 //!
 //! Cars without Tesla data (older hardware or software) have none in any clip,
 //! so a recording with no data is only skipped after this device has observed
@@ -78,13 +80,21 @@ pub struct Outcome {
 /// front file (None when it can't be read).
 pub fn select(candidates: &str, known: &Known, mut read: impl FnMut(&str) -> Option<Verdict>) -> Outcome {
     let recordings: BTreeSet<&str> = candidates.lines().filter_map(recording).collect();
+    // The newest recording may still have been recording when the snapshot
+    // was taken. A Park or no-data verdict read from that partial copy is
+    // used for this run but not remembered, so the complete file is read
+    // again next run (the car may have pulled away later that minute).
+    let newest = recordings.last().copied();
     let mut verdicts = BTreeMap::new();
     let mut remembered = BTreeMap::new();
     let mut unsure = 0;
     for &rec in &recordings {
-        let verdict = if let Some(&v) = known.verdicts.get(rec) { Some(v) } else { read(rec) };
+        let (verdict, fresh) = match known.verdicts.get(rec) { Some(&v) => (Some(v), false), None => (read(rec), true) };
         match verdict {
-            Some(v) => { verdicts.insert(rec, v); remembered.insert(rec.to_owned(), v); }
+            Some(v) => {
+                verdicts.insert(rec, v);
+                if !(fresh && Some(rec) == newest && v != Verdict::Driving) { remembered.insert(rec.to_owned(), v); }
+            }
             None => unsure += 1,
         }
     }
@@ -175,10 +185,25 @@ mod tests {
         assert!(first.kept.is_empty());
         let mut known = first.remembered;
         for _ in 0..3 {
-            let out = select(&list, &known, |_| panic!("cached Park evidence is authoritative, even for newest"));
+            // Older Park verdicts are cached; only the newest is read again.
+            let out = select(&list, &known, |r| { assert_eq!(r, rec("10-02-00")); Some(Verdict::Parked) });
             assert!(out.kept.is_empty());
             known = out.remembered;
         }
+    }
+
+    #[test]
+    fn a_park_verdict_from_the_newest_recording_is_not_remembered() {
+        // Snapshot taken mid-recording: the partial newest clip is all Park.
+        let first = run(&(cams("10-00-00") + &cams("10-01-00")), &[("10-00-00", Some(Verdict::Driving)), ("10-01-00", Some(Verdict::Parked))]);
+        assert_eq!(kept_recordings(&first), [rec("10-00-00")].into());
+        assert!(!first.remembered.verdicts.contains_key(&rec("10-01-00")));
+        // Next run the complete file shows the car pulled away: archive it.
+        let next = select(&(cams("10-01-00") + &cams("10-02-00")), &first.remembered, |r| {
+            Some(if r == rec("10-01-00") { Verdict::Driving } else { Verdict::Parked })
+        });
+        assert_eq!(kept_recordings(&next), [rec("10-01-00")].into());
+        assert_eq!(next.remembered.verdicts.get(&rec("10-01-00")), Some(&Verdict::Driving));
     }
 
     #[test]
@@ -199,7 +224,7 @@ mod tests {
         let old_car = run(&list, &[("10-00-00", Some(Verdict::NoData)), ("10-01-00", Some(Verdict::NoData))]);
         assert_eq!(old_car.kept.len(), 12);
         assert!(!old_car.remembered.has_data);
-        let again = select(&list, &old_car.remembered, |_| panic!("reuse no-data evidence"));
+        let again = select(&list, &old_car.remembered, |r| { assert_eq!(r, rec("10-01-00"), "reuse older no-data evidence"); Some(Verdict::NoData) });
         assert_eq!(again.kept.len(), 12);
     }
 
@@ -222,7 +247,7 @@ mod tests {
         let path = dir.path().join("checked");
         std::fs::write(&path, format!("{} parked\n", rec("08-00-00"))).unwrap();
         let known = read_known(&path);
-        let out = select(&cams("10-00-00"), &known, |_| Some(Verdict::NoData));
+        let out = select(&(cams("10-00-00") + &cams("10-01-00")), &known, |_| Some(Verdict::NoData));
         assert!(out.kept.is_empty());
         assert!(out.remembered.has_data);
         assert_eq!(out.remembered.verdicts.keys().cloned().collect::<Vec<_>>(), [rec("10-00-00")]);
@@ -248,7 +273,7 @@ mod tests {
         assert!(std::fs::read_to_string(&output).unwrap().is_empty());
         let known = read_known(&remember);
         assert!(known.has_data);
-        assert_eq!(known.verdicts.len(), 1);
+        assert!(known.verdicts.is_empty(), "the newest recording's no-data verdict is read again next run");
         assert!(std::fs::read_to_string(&remember).unwrap().starts_with(HAS_DATA_MARKER));
         // The front stays authoritative when only a repeater remains a candidate.
         std::fs::write(&input, format!("{}-right_repeater.mp4\n", rec("10-03-00"))).unwrap();
