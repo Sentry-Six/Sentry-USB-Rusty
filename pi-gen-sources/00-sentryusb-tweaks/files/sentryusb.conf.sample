@@ -83,7 +83,8 @@ export SHARE_PASSWORD='password'
 
 # With ARCHIVE_RECENTCLIPS on: only archive Recent Clips recorded while driving
 # (out of Park at any point). Clips from while parked are skipped. Cars that
-# don't record driving data keep all their Recent Clips.
+# never record driving data keep all their Recent Clips. Once this device sees
+# gear data, it remembers that across cycles and skips no-SEI clips too.
 #export ARCHIVE_RECENTCLIPS_DRIVING_ONLY=true
 
 # SavedClips, SentryClips and track mode clips are archived by default, but
