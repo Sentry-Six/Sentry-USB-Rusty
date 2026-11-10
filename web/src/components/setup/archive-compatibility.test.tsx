@@ -81,3 +81,29 @@ test("toggling compatibility sends the setting to Test Connection and supports d
     win.close()
   }
 })
+
+test("driving-only belongs to Recent Clips, before Track Mode, and remains opt-in", () => {
+  const win = new Window()
+  try {
+    for (const system of ["cifs", "nfs", "rsync", "rclone", "none"]) {
+      for (const recent of ["true", "false"]) {
+        for (const driving of [undefined, "true", "false"]) {
+          const data: Record<string, string> = { ARCHIVE_SYSTEM: system, ARCHIVE_RECENTCLIPS: recent }
+          if (driving !== undefined) data.ARCHIVE_RECENTCLIPS_DRIVING_ONLY = driving
+          win.document.body.innerHTML = renderToStaticMarkup(createElement(ArchiveStep, { data, onChange() {}, onBatchChange() {} }))
+          const labels = [...win.document.querySelectorAll("label")]
+          const driveLabel = labels.find(node => node.textContent.trim() === "Only Recent Clips from driving")
+          if (system === "none" || recent === "false") { assert.equal(driveLabel, undefined); continue }
+          assert.ok(driveLabel)
+          const recentLabel = labels.find(node => node.textContent.trim() === "Recent Clips")!
+          const trackLabel = labels.find(node => node.textContent.trim() === "Track Mode Clips")!
+          assert.ok(recentLabel.parentElement!.contains(driveLabel), "the child control belongs to Recent Clips")
+          assert.ok(!trackLabel.parentElement!.contains(driveLabel), "it must not appear under Track Mode")
+          assert.ok(labels.indexOf(recentLabel) < labels.indexOf(driveLabel))
+          assert.ok(labels.indexOf(driveLabel) < labels.indexOf(trackLabel))
+          assert.equal(driveLabel.querySelector("input")!.checked, driving === "true")
+        }
+      }
+    }
+  } finally { win.close() }
+})

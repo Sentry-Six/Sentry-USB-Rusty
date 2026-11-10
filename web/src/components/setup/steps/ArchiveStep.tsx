@@ -313,33 +313,35 @@ export function ArchiveStep({ data, onChange }: StepProps) {
             { field: "ARCHIVE_RECENTCLIPS", label: "Recent Clips", def: "true" },
             { field: "ARCHIVE_TRACKMODECLIPS", label: "Track Mode Clips", def: "true" },
           ].map(({ field, label, def }) => (
-            <label key={field} className="flex items-center gap-2">
-              <input
-                type="checkbox"
-                checked={(data[field] ?? def) === "true"}
-                onChange={(e) => onChange(field, e.target.checked ? "true" : "false")}
-                className="h-4 w-4 rounded border-white/20 bg-white/5 accent-blue-500"
-              />
-              <span className="text-sm text-slate-300">{label}</span>
-            </label>
-          ))}
-          {(data.ARCHIVE_RECENTCLIPS ?? "true") === "true" && (
-            <div className="ml-6 space-y-1">
+            <div key={field}>
               <label className="flex items-center gap-2">
                 <input
                   type="checkbox"
-                  checked={data.ARCHIVE_RECENTCLIPS_DRIVING_ONLY === "true"}
-                  onChange={(e) => onChange("ARCHIVE_RECENTCLIPS_DRIVING_ONLY", e.target.checked ? "true" : "false")}
+                  checked={(data[field] ?? def) === "true"}
+                  onChange={(e) => onChange(field, e.target.checked ? "true" : "false")}
                   className="h-4 w-4 rounded border-white/20 bg-white/5 accent-blue-500"
                 />
-                <span className="text-sm text-slate-300">Only Recent Clips from driving</span>
+                <span className="text-sm text-slate-300">{label}</span>
               </label>
-              <p className="text-xs text-slate-500">
-                Recent Clips recorded while the car was parked aren&apos;t archived. Cars that don&apos;t
-                record driving data keep all their Recent Clips.
-              </p>
+              {field === "ARCHIVE_RECENTCLIPS" && (data.ARCHIVE_RECENTCLIPS ?? "true") === "true" && (
+                <div className="ml-6 space-y-1">
+                  <label className="flex items-center gap-2">
+                    <input
+                      type="checkbox"
+                      checked={data.ARCHIVE_RECENTCLIPS_DRIVING_ONLY === "true"}
+                      onChange={(e) => onChange("ARCHIVE_RECENTCLIPS_DRIVING_ONLY", e.target.checked ? "true" : "false")}
+                      className="h-4 w-4 rounded border-white/20 bg-white/5 accent-blue-500"
+                    />
+                    <span className="text-sm text-slate-300">Only Recent Clips from driving</span>
+                  </label>
+                  <p className="text-xs text-slate-500">
+                    Recent Clips recorded while the car was parked aren&apos;t archived. Cars that don&apos;t
+                    record driving data keep all their Recent Clips.
+                  </p>
+                </div>
+              )}
             </div>
-          )}
+          ))}
         </div>
       )}
 
