@@ -15,17 +15,9 @@ any point, including stopped at a light, and then all of its cameras are
 archived. Recordings made entirely in Park are skipped. Saved Clips, Sentry
 Clips and Track Mode clips are never affected.
 
-The check reads the driving data Tesla records in each clip, including the
-newest remaining recording. Cars that never record it (older hardware or
-software) keep all of their Recent Clips. Once this device has seen Tesla gear
-data, that evidence is remembered across archive cycles: recordings without
-SEI are skipped even after the driving recordings have been archived. Until
-such evidence exists, no-SEI recordings are kept. If a front clip can't be read,
-or the check fails, the clips are archived anyway.
-
-This detection is local to the device's existing RecentClips cache, not a
-vehicle identity. If moving the device to a car without SEI, leave the
-driving-only option off to archive all Recent Clips.
+The check reads the driving data Tesla records in each clip. Cars that don't
+record it (older hardware or software) keep all of their Recent Clips. If a
+clip can't be read, or the check fails, the clips are archived anyway.
 
 ## CIFS / SMB
 

@@ -335,8 +335,7 @@ export function ArchiveStep({ data, onChange }: StepProps) {
                     <span className="text-sm text-slate-300">Only Recent Clips from driving</span>
                   </label>
                   <p className="text-xs text-slate-500">
-                    Recent Clips recorded while the car was parked aren&apos;t archived. Once driving data
-                    has been detected on this device, clips without it are skipped too. Cars that never
+                    Recent Clips recorded while the car was parked aren&apos;t archived. Cars that don&apos;t
                     record driving data keep all their Recent Clips.
                   </p>
                 </div>
