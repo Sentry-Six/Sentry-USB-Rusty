@@ -175,13 +175,20 @@ function manage_free_space {
     then
       exit 0
     fi
-    # Candidates = snapshot dirs that actually hold a snap.bin, ordered by
-    # the bin's mtime (TRUE age), name as tie-break. Slot numbers are not
-    # time-monotonic in the field — a reflash can leave a stale
-    # high-numbered snapshot above a restarted sequence — and the old
-    # name-order pick (`sort | head -1`) deleted newer footage while
-    # sparing the genuinely oldest snapshot. The same list feeds the
-    # "fewer than two" guard so the count and the pick can't disagree.
+    # Candidates = snapshot dirs that actually hold a snap.bin, oldest
+    # first. CLIP_TIME_AGE: age is the newest clip timestamp in the
+    # snapshot's TOC (Tesla names clips YYYY-MM-DD_HH-MM-SS-<cam>.mp4 from
+    # the car's GPS-synced clock); the snap.bin mtime is only a fallback
+    # for a snapshot with no TOC or no dated clip. The mtime is the PI's
+    # clock: no battery-backed RTC, and timesyncloop only corrects it when
+    # an NTP server is reachable. On a drive away from Wi-Fi the clock
+    # restarts from a stale value, so that day's snapshots were stamped
+    # OLDER than ones taken at home days before, and eviction deleted the
+    # current day's footage first. Slot numbers are not used for age
+    # either (a reflash can leave a stale high slot above a restarted
+    # sequence). Name is the tie-break. The same list feeds the "fewer
+    # than two" guard so the count and the pick can't disagree.
+    # Mirrors list_snapshots_by_age() in crates/usb_gadget/src/snapshot.rs.
     local candidates
     # `-regex` (not just snap-*) so a scratch dir like snap-backup/ is
     # never a deletion candidate — matches the numeric-only rule the
@@ -191,6 +198,18 @@ function manage_free_space {
         -mindepth 2 -maxdepth 2 -type f \
         -regextype posix-extended -regex '/backingfiles/snapshots/snap-[0-9]+/snap\.bin' \
         -printf '%T@\t%h\n' 2>/dev/null |
+      while IFS=$'\t' read -r mtime dir
+      do
+        stamp=$(LC_ALL=C grep -oE \
+                  '20(1[5-9]|[2-9][0-9])-[01][0-9]-[0-3][0-9]_[0-2][0-9]-[0-5][0-9]-[0-6][0-9]' \
+                  "$dir/snap.bin.toc" 2>/dev/null | LC_ALL=C sort | tail -1)
+        age=""
+        if [ -n "$stamp" ]
+        then
+          age=$(date -u -d "${stamp:0:10} ${stamp:11:2}:${stamp:14:2}:${stamp:17:2}" +%s 2>/dev/null) || age=""
+        fi
+        printf '%s\t%s\n' "${age:-${mtime%.*}}" "$dir"
+      done |
       LC_ALL=C sort -t $'\t' -k1,1n -k2,2
     )
     if [ -z "$candidates" ]
@@ -245,7 +264,7 @@ function manage_free_space {
       log "unable to select oldest snapshot (only protected snapshots remain)"
       exit 1
     fi
-    log "low space, deleting $oldest (oldest by snap.bin mtime)"
+    log "low space, deleting $oldest (oldest by footage time)"
     local ifree_before="$ifree"
     /root/bin/release_snapshot.sh "$oldest"
     rm -rf "$oldest"

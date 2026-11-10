@@ -957,15 +957,25 @@ pub fn list_snapshots() -> Vec<String> {
     snaps
 }
 
-/// Eviction candidates ordered by `snap.bin` mtime, then name. Slot numbers can
-/// restart after reflashing, so lexical order is unsafe. Only physical numeric
-/// directories with readable images qualify.
+/// Eviction candidates, oldest first. Only physical numeric directories with
+/// readable images qualify.
+///
+/// Age is the newest clip timestamp recorded in the snapshot's TOC: Tesla
+/// names every clip `YYYY-MM-DD_HH-MM-SS-<camera>.mp4` from the car's
+/// GPS-synced clock. The `snap.bin` mtime is only a fallback (no TOC, or no
+/// dated clip in it). That mtime comes from the Pi's clock, which has no
+/// battery-backed RTC and is only corrected when timesyncloop reaches an NTP
+/// server. On a drive away from Wi-Fi the clock restarts from a stale
+/// fake-hwclock value, so the snapshots taken that day were stamped OLDER
+/// than ones taken at home days earlier, and eviction deleted the current
+/// day's footage first. Slot names are not used for age either: they can
+/// restart beneath a leftover after a reflash. Ties break on the name.
 pub fn list_snapshots_by_age() -> Vec<String> {
     list_snapshots_by_age_in(Path::new(SNAPSHOTS_DIR))
 }
 
 fn list_snapshots_by_age_in(base: &Path) -> Vec<String> {
-    let mut aged: Vec<(std::time::SystemTime, String)> = Vec::new();
+    let mut aged: Vec<(i64, String)> = Vec::new();
     if let Ok(entries) = std::fs::read_dir(base) {
         for entry in entries.flatten() {
             let name = entry.file_name().to_string_lossy().to_string();
@@ -982,11 +992,86 @@ fn list_snapshots_by_age_in(base: &Path) -> Vec<String> {
             let Ok(mtime) = meta.modified() else {
                 continue;
             };
-            aged.push((mtime, name));
+            let age = newest_footage_secs(&entry.path().join("snap.bin.toc")).unwrap_or_else(|| {
+                match mtime.duration_since(std::time::UNIX_EPOCH) {
+                    Ok(d) => i64::try_from(d.as_secs()).unwrap_or(i64::MAX),
+                    Err(e) => -i64::try_from(e.duration().as_secs()).unwrap_or(i64::MAX),
+                }
+            });
+            aged.push((age, name));
         }
     }
     aged.sort();
     aged.into_iter().map(|(_, n)| n).collect()
+}
+
+/// Newest Tesla clip timestamp (`YYYY-MM-DD_HH-MM-SS`) named in a snapshot
+/// TOC, as seconds on the car's clock (read as UTC; only compared with other
+/// clip timestamps in practice). `None` when the TOC is unreadable or names
+/// no dated clip.
+fn newest_footage_secs(toc: &Path) -> Option<i64> {
+    use std::io::BufRead;
+    let file = std::fs::File::open(toc).ok()?;
+    let mut newest: Option<i64> = None;
+    let mut reader = std::io::BufReader::new(file);
+    let mut line = Vec::new();
+    loop {
+        line.clear();
+        match reader.read_until(b'\n', &mut line) {
+            Ok(0) | Err(_) => break,
+            Ok(_) => {}
+        }
+        // A line's newest stamp is its filename's; the parent event folder
+        // can only be the same age or older, so take the max over the line.
+        for start in 0..line.len().saturating_sub(18) {
+            if let Some(t) = parse_clip_stamp(&line[start..start + 19]) {
+                newest = Some(newest.map_or(t, |n| n.max(t)));
+            }
+        }
+    }
+    newest
+}
+
+/// Parse exactly `YYYY-MM-DD_HH-MM-SS` into seconds since 1970 (UTC
+/// arithmetic). Rejects out-of-range fields and implausible years so a
+/// random digit run in a path cannot pose as footage time.
+fn parse_clip_stamp(b: &[u8]) -> Option<i64> {
+    if b.len() != 19 {
+        return None;
+    }
+    for (i, &c) in b.iter().enumerate() {
+        let ok = match i {
+            4 | 7 | 13 | 16 => c == b'-',
+            10 => c == b'_',
+            _ => c.is_ascii_digit(),
+        };
+        if !ok {
+            return None;
+        }
+    }
+    let num = |r: std::ops::Range<usize>| {
+        b[r].iter().fold(0i64, |acc, &c| acc * 10 + i64::from(c - b'0'))
+    };
+    let (y, mo, d) = (num(0..4), num(5..7), num(8..10));
+    let (h, mi, s) = (num(11..13), num(14..16), num(17..19));
+    if !(2015..=2099).contains(&y)
+        || !(1..=12).contains(&mo)
+        || !(1..=31).contains(&d)
+        || h > 23
+        || mi > 59
+        || s > 60
+    {
+        return None;
+    }
+    // Days from civil date (Howard Hinnant's algorithm).
+    let yy = if mo <= 2 { y - 1 } else { y };
+    let era = yy.div_euclid(400);
+    let yoe = yy - era * 400;
+    let mp = (mo + 9) % 12;
+    let doy = (153 * mp + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    let days = era * 146_097 + doe - 719_468;
+    Some(days * 86_400 + h * 3_600 + mi * 60 + s)
 }
 
 /// Find the next slot, reusing an unmounted incomplete snapshot. Return its
@@ -2451,6 +2536,72 @@ mod tests {
             order,
             vec!["snap-000414", "snap-000000", "snap-000201", "snap-000202", "snap-000413"],
         );
+    }
+
+    /// Snapshot fixture whose TOC lists the given clip paths.
+    fn mk_snap_with_clips(base: &std::path::Path, name: &str, bin_mtime: u64, clips: &[&str]) {
+        mk_snap(base, name, Some(bin_mtime), false);
+        let toc: String = clips.iter().map(|c| format!("1048576 {c}\n")).collect();
+        std::fs::write(base.join(name).join("snap.bin.toc"), toc).unwrap();
+    }
+
+    /// The field report: snapshots taken on a drive without Wi-Fi got a stale
+    /// Pi clock (no RTC, no NTP), so their images looked OLDER than ones taken
+    /// at home two days earlier, and eviction deleted today's footage first.
+    /// The car's clip timestamps must decide the order instead.
+    #[test]
+    fn list_snapshots_by_age_trusts_clip_time_over_stale_pi_clock() {
+        let base = scratch("age-clock");
+        // Two days ago, at home: NTP-synced, mtimes are real.
+        mk_snap_with_clips(&base, "snap-000031", 1_793_000_000, &[
+            "TeslaCam/RecentClips/2026-11-08_08-00-00-front.mp4",
+        ]);
+        mk_snap_with_clips(&base, "snap-000032", 1_793_000_600, &[
+            "TeslaCam/RecentClips/2026-11-08_08-10-00-front.mp4",
+        ]);
+        // Today, on the road: Pi clock restarted from a stale fake-hwclock
+        // value, so the images carry mtimes older than 31/32.
+        mk_snap_with_clips(&base, "snap-000062", 1_792_000_000, &[
+            "TeslaCam/RecentClips/2026-11-10_07-00-00-front.mp4",
+            "TeslaCam/SentryClips/2026-11-08_20-00-00/2026-11-08_19-59-00-back.mp4",
+        ]);
+        mk_snap_with_clips(&base, "snap-000063", 1_792_000_600, &[
+            "TeslaCam/RecentClips/2026-11-10_07-10-00-front.mp4",
+        ]);
+        mk_snap_with_clips(&base, "snap-000064", 1_792_001_200, &[
+            "TeslaCam/RecentClips/2026-11-10_07-20-00-left_repeater.mp4",
+        ]);
+
+        let order = list_snapshots_by_age_in(&base);
+        let _ = std::fs::remove_dir_all(&base);
+        assert_eq!(
+            order,
+            vec!["snap-000031", "snap-000032", "snap-000062", "snap-000063", "snap-000064"],
+        );
+    }
+
+    /// A snapshot with no dated clip falls back to its image mtime.
+    #[test]
+    fn list_snapshots_by_age_falls_back_to_mtime_without_clip_dates() {
+        let base = scratch("age-fallback");
+        mk_snap_with_clips(&base, "snap-000005", 1_793_000_000, &[
+            "TeslaCam/RecentClips/2026-11-08_08-00-00-front.mp4",
+        ]);
+        mk_snap_with_clips(&base, "snap-000006", 1_700_000_000, &["TeslaTrackMode/lap.csv"]);
+        let order = list_snapshots_by_age_in(&base);
+        let _ = std::fs::remove_dir_all(&base);
+        assert_eq!(order, vec!["snap-000006", "snap-000005"]);
+    }
+
+    #[test]
+    fn parse_clip_stamp_accepts_only_plausible_tesla_stamps() {
+        assert_eq!(parse_clip_stamp(b"1970-01-01_00-00-00"), None); // implausible year
+        assert_eq!(parse_clip_stamp(b"2026-11-10_07-20-00"), Some(1_794_295_200));
+        assert_eq!(parse_clip_stamp(b"2024-02-29_23-59-59"), Some(1_709_251_199));
+        assert_eq!(parse_clip_stamp(b"2026-13-10_07-20-00"), None);
+        assert_eq!(parse_clip_stamp(b"2026-11-10_24-00-00"), None);
+        assert_eq!(parse_clip_stamp(b"2026-11-10 07-20-00"), None);
+        assert_eq!(parse_clip_stamp(b"2026-11-10_07-20-0"), None);
     }
 
     #[test]
