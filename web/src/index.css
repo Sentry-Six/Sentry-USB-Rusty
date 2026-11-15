@@ -93,6 +93,16 @@ html[data-style="liquid"] .glass-sidebar {
   -webkit-backdrop-filter: blur(26px) saturate(180%);
   border-right: 1px solid rgba(255, 255, 255, 0.10);
 }
+/* The slide-over menu on narrow windows covers page content, unlike the
+   desktop sidebar, which only has the page background behind it. It is solid
+   so it stays readable where the browser doesn't draw backdrop blur. */
+html[data-style="liquid"] .glass-sidebar.nav-drawer {
+  background:
+    radial-gradient(520px 620px at 0% 0%, color-mix(in srgb, var(--color-accent) 16%, transparent), transparent 72%),
+    #0d1116;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
 html[data-style="liquid"] .tab-bar {
   /* 1rem outer radius; the pill stays concentric via the shared var. */
   --tab-radius: 1rem;
@@ -269,6 +279,9 @@ code, pre, .font-mono {
   backdrop-filter: blur(20px);
   -webkit-backdrop-filter: blur(20px);
   border-right: 1px solid #1e242f;
+}
+.glass-sidebar.nav-drawer {
+  background: #07090c;
 }
 
 /* ── Toggle switch ─────────────────────────────────────────────── */
