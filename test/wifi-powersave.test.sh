@@ -55,7 +55,9 @@ mkdir -p "$SENTRYUSB_NM_DIR"
 apply_wifi_powersave_off
 dropin=$SENTRYUSB_NM_DIR/conf.d/sentryusb-wifi-powersave.conf
 grep -qx 'wifi.powersave = 2' "$dropin"
+grep -qx 'connection.auth-retries = 0' "$dropin"
 grep -qx '\[connection\]' "$dropin"
+[ "$(grep -c '^\[' "$dropin")" = 1 ]
 grep -qx 'mount -o remount,rw /' "$calls"
 grep -qx 'mount -o remount,ro /' "$calls"
 grep -qx 'nmcli general reload conf' "$calls"
@@ -75,6 +77,17 @@ grep -qx 'iw dev wlan0 set power_save off' "$calls"
 echo 'wifi.powersave = 3' > "$dropin"
 apply_wifi_powersave_off >/dev/null
 grep -qx 'wifi.powersave = 2' "$dropin"
+
+# 3b. The file earlier releases wrote (power saving only) gains the
+#     retry-forever line, and NetworkManager is told to reload.
+printf '%s\n' '# Managed by Sentry USB: keep Wi-Fi power saving off (2 = disable).' \
+  '[connection]' 'wifi.powersave = 2' > "$dropin"
+: > "$calls"
+apply_wifi_powersave_off >/dev/null
+grep -qx 'wifi.powersave = 2' "$dropin"
+grep -qx 'connection.auth-retries = 0' "$dropin"
+grep -qx 'nmcli general reload conf' "$calls"
+grep -qx 'mount -o remount,ro /' "$calls"
 
 # 4. Without NetworkManager nothing is written, but the live switch still runs.
 : > "$calls"

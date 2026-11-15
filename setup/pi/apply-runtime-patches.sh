@@ -1782,12 +1782,22 @@ apply_status_led_cleanup() {
 # NetworkManager applies `wifi.powersave = 2` (disable) each time a Wi-Fi
 # connection comes up, for the built-in radio and USB adapters alike. Boards
 # that don't use NetworkManager only get the live switch below.
+#
+# The same file also sets `connection.auth-retries = 0` (retry forever).
+# When joining a password-protected network times out, NetworkManager guesses
+# the password is wrong; after three tries with nobody to ask it fails with
+# "no-secrets" and stops auto-connecting until it restarts. A car arriving
+# home on a weak signal hits that, and the Pi then sits beside its network
+# until someone reboots it. A file with only the power-saving line (written
+# by earlier releases) differs from `want`, so it is rewritten here.
 apply_wifi_powersave_off() {
     local nm_dir=${SENTRYUSB_NM_DIR:-/etc/NetworkManager}
     local dropin=$nm_dir/conf.d/sentryusb-wifi-powersave.conf
-    local want='# Managed by Sentry USB: keep Wi-Fi power saving off (2 = disable).
+    local want='# Managed by Sentry USB: keep Wi-Fi power saving off (2 = disable) and
+# never give up joining a known network (0 = retry forever).
 [connection]
-wifi.powersave = 2'
+wifi.powersave = 2
+connection.auth-retries = 0'
 
     if [ ! -d "$nm_dir" ]; then
         log "wifi-powersave: NetworkManager not in use; switching it off until the next reboot only"
@@ -1815,7 +1825,7 @@ wifi.powersave = 2'
             return 1
         fi
         nmcli general reload conf >/dev/null 2>&1 || true
-        log "wifi-powersave: Wi-Fi power saving is kept off from now on"
+        log "wifi-powersave: Wi-Fi power saving is kept off and joining is retried forever from now on"
     fi
 
     # Take effect now, without dropping the connection.
