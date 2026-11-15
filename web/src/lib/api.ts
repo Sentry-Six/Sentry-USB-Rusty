@@ -285,7 +285,14 @@ export interface TelemetryFrame {
   speed_mps: number
   gear: number
   autopilot: number
+  /** Accelerator pedal: a share (0-1) or a percentage (0-100), depending on the car. See accelPercent. */
   accel_pos: number
+  // Sent by Sentry USB versions that read them from the video; absent before.
+  /** Bits: 1 left blinker, 2 right blinker, 4 brake, 8 accelerator. */
+  flags?: number
+  accel_mps2_x?: number
+  accel_mps2_y?: number
+  steering_angle_deg?: number
 }
 
 export interface ClipTelemetry {

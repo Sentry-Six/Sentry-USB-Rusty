@@ -1,84 +1,15 @@
-import { useState, useEffect, useRef, useCallback, useMemo, lazy, Suspense } from "react"
-import {
-  BackHandIcon,
-  BoltIcon,
-  ChevronLeftIcon,
-  ChevronRightIcon,
-  CloseIcon,
-  DeleteIcon,
-  DirectionsCarIcon,
-  DownloadIcon,
-  FullscreenExitIcon,
-  FullscreenIcon,
-  OpenInNewIcon,
-  PauseIcon,
-  PlayArrowIcon,
-  ProgressActivityIcon,
-  SkipNextIcon,
-  SkipPreviousIcon,
-  VideocamIcon,
-  VisibilityIcon,
-  WarningIcon,
-} from "@/components/icons"
-import { cn } from "@/lib/utils"
-import type { ClipEntry, ClipGroup, EventMeta } from "@/lib/api"
-import { useTelemetry } from "@/hooks/useTelemetry"
-import TelemetryOverlay from "@/components/viewer/TelemetryOverlay"
+import { useCallback, useEffect, useMemo, useState } from "react"
+import { OpenInNewIcon, VideocamIcon } from "@/components/icons"
+import ClipPlayer from "@/components/viewer/ClipPlayer"
+import ClipsPanel from "@/components/viewer/ClipsPanel"
+import ViewerNotice from "@/components/viewer/ViewerNotice"
+import { useArchiving } from "@/hooks/useArchiving"
+import type { ClipSet } from "@/hooks/useClipPlayer"
+import type { ClipEntry, ClipGroup } from "@/lib/api"
 
-// Lazy so leaflet (~149 KB / 43 KB gz) only fetches when the user
-// opens a clip that has GPS telemetry. Dashcam-only or non-Tesla
-// clips never trigger the map chunk.
-const MiniMap = lazy(() => import("@/components/viewer/MiniMap"))
+const CLIPS_PAGE_SIZE = 20
 
-interface ClipSet {
-  timestamp: string
-  cameras: Record<string, string>
-}
-
-// Camera grid layout: pillars top, repeaters bottom (matches Sentry Studio)
-const CAMERAS_GRID_HW4 = ["left_pillar", "front", "right_pillar", "left_repeater", "back", "right_repeater"]
-// HW3: no pillar cameras, use 2x2 grid
-const CAMERAS_GRID_HW3 = ["front", "back", "left_repeater", "right_repeater"]
-const CAMERA_LABELS: Record<string, string> = {
-  front: "Front",
-  back: "Rear",
-  left_repeater: "Left Repeater",
-  right_repeater: "Right Repeater",
-  left_pillar: "Left Pillar",
-  right_pillar: "Right Pillar",
-}
-const CAMERA_SHORT: Record<string, string> = {
-  front: "Front",
-  back: "Rear",
-  left_repeater: "L. Rep",
-  right_repeater: "R. Rep",
-  left_pillar: "L. Pillar",
-  right_pillar: "R. Pillar",
-}
-
-const SPEED_OPTIONS = [0.5, 1, 1.5, 2, 4]
-
-const EVENT_REASONS: Record<string, { label: string; icon: typeof BoltIcon }> = {
-  sentry_aware_object_detection: { label: "Object Detected", icon: VisibilityIcon },
-  vehicle_auto_emergency_braking: { label: "Emergency Braking", icon: WarningIcon },
-  user_interaction_dashcam_icon_tapped: { label: "Manual Save", icon: BackHandIcon },
-  user_interaction_dashcam_panel_save: { label: "Manual Save", icon: BackHandIcon },
-  user_interaction_dashcam_launcher_action_tapped: { label: "Manual Save", icon: BackHandIcon },
-  user_interaction_honk: { label: "Honk", icon: BoltIcon },
-  sentry_aware_accel: { label: "Acceleration", icon: BoltIcon },
-  collision: { label: "Collision", icon: WarningIcon },
-  user_interaction_dashcam: { label: "Manual Save", icon: BackHandIcon },
-}
-
-function formatEventReason(reason: string): { label: string; Icon: typeof BoltIcon } {
-  const mapped = EVENT_REASONS[reason]
-  if (mapped) return { label: mapped.label, Icon: mapped.icon }
-  return {
-    label: reason.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase()),
-    Icon: BoltIcon,
-  }
-}
-
+// One ClipSet per minute: the minute's start time and each camera's file.
 function groupByTimestamp(files: string[], basePath: string): ClipSet[] {
   const map = new Map<string, Record<string, string>>()
   for (const f of files) {
@@ -93,50 +24,25 @@ function groupByTimestamp(files: string[], basePath: string): ClipSet[] {
     .map(([timestamp, cameras]) => ({ timestamp, cameras }))
 }
 
-function formatTime(s: number): string {
-  if (!Number.isFinite(s) || s < 0) return "0:00"
-  const m = Math.floor(s / 60)
-  const sec = Math.floor(s % 60)
-  return `${m}:${sec.toString().padStart(2, "0")}`
-}
-
-function formatClipDate(date: string): string {
-  // Tesla format: 2025-02-22_17-58-00 → Feb 22, 5:58 PM
-  const match = date.match(/^(\d{4})-(\d{2})-(\d{2})_(\d{2})-(\d{2})-(\d{2})$/)
-  if (match) {
-    const [, y, mo, d, h, mi] = match
-    const dt = new Date(+y, +mo - 1, +d, +h, +mi)
-    return dt.toLocaleDateString("en-US", { month: "short", day: "numeric" }) +
-      ", " + dt.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" })
-  }
-  // RecentClips entries are bucketed per day: 2025-02-22 → Sun, Feb 22
-  const dateOnly = date.match(/^(\d{4})-(\d{2})-(\d{2})$/)
-  if (dateOnly) {
-    const [, y, mo, d] = dateOnly
-    const dt = new Date(+y, +mo - 1, +d)
-    return dt.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" })
-  }
-  return date
-}
-
+// The clip viewer, laid out like Sentry Studio's player: the cameras fill the
+// window, the clip browser floats over them and folds away, and the controls
+// are one slim row.
 export default function Viewer() {
   const [groups, setGroups] = useState<ClipGroup[]>([])
   const [loading, setLoading] = useState(true)
-  const [activeCategory, setActiveCategory] = useState("RecentClips")
+  const [loadingMore, setLoadingMore] = useState(false)
+  const [category, setCategory] = useState("RecentClips")
   const [selectedClip, setSelectedClip] = useState<ClipEntry | null>(null)
-  const [clipSets, setClipSets] = useState<ClipSet[]>([])
-  const [currentSetIdx, setCurrentSetIdx] = useState(0)
-  const [playing, setPlaying] = useState(false)
-  const [focusedCamera, setFocusedCamera] = useState<string | null>(null)
-  const [activeCameras, setActiveCameras] = useState<Set<string>>(new Set(["front"]))
-  const [playbackSpeed, setPlaybackSpeed] = useState(1)
-  const [currentTime, setCurrentTime] = useState(0)
-  const [isFullscreen, setIsFullscreen] = useState(false)
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => window.innerWidth < 768)
-  const [showPromo, setShowPromo] = useState(true)
-  const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null)
-  const [segmentDurations, setSegmentDurations] = useState<number[]>([])
+  const [panelOpen, setPanelOpen] = useState(true)
   const [metric, setMetric] = useState(false)
+
+  // Archiving shares the Pi's Wi-Fi with the video; warn while it runs.
+  // Hiding the notice lasts until that archive finishes.
+  const { archiving, etaSeconds } = useArchiving()
+  const [noticeHidden, setNoticeHidden] = useState(false)
+  if (!archiving && noticeHidden) setNoticeHidden(false)
+  const archivingNotice = archiving && !noticeHidden ? { etaSeconds } : null
+  const hideNotice = useCallback(() => setNoticeHidden(true), [])
 
   // Load unit from setup config (DRIVE_MAP_UNIT set in wizard)
   useEffect(() => {
@@ -145,465 +51,59 @@ export default function Viewer() {
       .then((cfg) => {
         const entry = cfg.DRIVE_MAP_UNIT
         if (entry) {
-          const val = typeof entry === "object"
-            ? (entry.active ? entry.value : null)
-            : entry
+          const val = typeof entry === "object" ? (entry.active ? entry.value : null) : entry
           if (val !== null) setMetric(val === "km")
         }
       })
       .catch(() => {})
   }, [])
 
-  // Detect HW3 vs HW4 — check if ANY clip set has pillar cameras
-  const hasPillars = useMemo(
-    () => clipSets.some((s) => "left_pillar" in s.cameras || "right_pillar" in s.cameras),
-    [clipSets]
-  )
-  const CAMERAS_GRID = hasPillars ? CAMERAS_GRID_HW4 : CAMERAS_GRID_HW3
-
-  // Telemetry for the current clip set
-  const currentSet = clipSets[currentSetIdx] as ClipSet | undefined
-  const frontFile = currentSet?.cameras["front"]?.split("/").pop() ?? null
-  const { telemetry, frameAtTime } = useTelemetry(
-    selectedClip?.path ?? null,
-    frontFile
-  )
-  const currentFrame = useMemo(() => frameAtTime(currentTime), [currentTime, frameAtTime])
-
-  const videoRefs = useRef<Map<string, HTMLVideoElement>>(new Map())
-  const masterVideoRef = useRef<HTMLVideoElement | null>(null)
-  const containerRef = useRef<HTMLDivElement>(null)
-  const seekBarRef = useRef<HTMLDivElement>(null)
-  const animFrameRef = useRef<number>(0)
-  const pendingSeekRef = useRef<number | null>(null)
-
-  // Cross-segment preloading: hidden <video> elements for the next segment
-  const preloadedVideosRef = useRef<Map<string, HTMLVideoElement>>(new Map())
-  const preloadedForIdxRef = useRef<number>(-1)
-
-  // Refs for high-frequency values — avoids triggering React renders at video frame rate
-  const currentTimeRef = useRef(0)
-  const globalTimeRef = useRef(0)
-  const playingRef = useRef(false)
-  const currentSetIdxRef = useRef(0)
-  const playbackSpeedRef = useRef(1)
-  const lastUIUpdateRef = useRef(0)
-
-  // Keep refs in sync with state
-  useEffect(() => { currentSetIdxRef.current = currentSetIdx }, [currentSetIdx])
-  useEffect(() => { playbackSpeedRef.current = playbackSpeed }, [playbackSpeed])
-
-  // Memoized timeline computations (only recompute when segments change)
-  const priorSegmentsTime = useMemo(
-    () => segmentDurations.slice(0, currentSetIdx).reduce((a, b) => a + b, 0),
-    [segmentDurations, currentSetIdx]
-  )
-  const totalDuration = useMemo(
-    () => segmentDurations.reduce((a, b) => a + b, 0),
-    [segmentDurations]
-  )
-  const priorSegmentsTimeRef = useRef(0)
-  useEffect(() => { priorSegmentsTimeRef.current = priorSegmentsTime }, [priorSegmentsTime])
-  const totalDurationRef = useRef(0)
-  useEffect(() => { totalDurationRef.current = totalDuration }, [totalDuration])
-
-  const globalTime = priorSegmentsTime + currentTime
-
-  // Memoized segment marker positions for seek bar
-  const segmentPositions = useMemo(() => {
-    if (segmentDurations.length <= 1 || totalDuration <= 0) return []
-    const positions: number[] = []
-    let cumulative = 0
-    for (let i = 1; i < segmentDurations.length; i++) {
-      cumulative += segmentDurations[i - 1]
-      positions.push((cumulative / totalDuration) * 100)
-    }
-    return positions
-  }, [segmentDurations, totalDuration])
-
-  const CLIPS_PAGE_SIZE = 20
-
-  // Fetch clips by category (only active category, not all 3)
+  // Fetch clips for the open category only.
   useEffect(() => {
     const controller = new AbortController()
-    fetch(`/api/clips?category=${activeCategory}&limit=${CLIPS_PAGE_SIZE}`, { signal: controller.signal })
+    fetch(`/api/clips?category=${category}&limit=${CLIPS_PAGE_SIZE}`, { signal: controller.signal })
       .then((r) => r.json())
       .then((data: ClipGroup[]) => {
         if (controller.signal.aborted) return
-        setGroups((prev) => {
-          const others = prev.filter((g) => g.name !== activeCategory)
-          return [...others, ...data]
-        })
+        setGroups((prev) => [...prev.filter((g) => g.name !== category), ...data])
         setLoading(false)
       })
       .catch(() => { if (!controller.signal.aborted) setLoading(false) })
     return () => controller.abort()
-  }, [activeCategory])
-
-  const [loadingMore, setLoadingMore] = useState(false)
+  }, [category])
 
   function loadMoreClips() {
-    const group = groups.find((g) => g.name === activeCategory)
-    if (!group || !group.hasMore) return
-    const lastClip = group.clips[group.clips.length - 1]
-    if (!lastClip) return
+    const group = groups.find((g) => g.name === category)
+    const lastClip = group?.clips[group.clips.length - 1]
+    if (!group?.hasMore || !lastClip) return
     setLoadingMore(true)
-    fetch(`/api/clips?category=${activeCategory}&limit=${CLIPS_PAGE_SIZE}&before=${lastClip.date}`)
+    fetch(`/api/clips?category=${category}&limit=${CLIPS_PAGE_SIZE}&before=${lastClip.date}`)
       .then((r) => r.json())
       .then((data: ClipGroup[]) => {
-        const newGroup = data.find((g) => g.name === activeCategory)
-        if (newGroup) {
-          setGroups((prev) =>
-            prev.map((g) =>
-              g.name === activeCategory
-                ? { ...g, clips: [...g.clips, ...newGroup.clips], hasMore: newGroup.hasMore }
-                : g
-            )
-          )
+        const more = data.find((g) => g.name === category)
+        if (more) {
+          setGroups((prev) => prev.map((g) => (
+            g.name === category ? { ...g, clips: [...g.clips, ...more.clips], hasMore: more.hasMore } : g
+          )))
         }
         setLoadingMore(false)
       })
       .catch(() => setLoadingMore(false))
   }
 
-  const activeGroup = groups.find((g) => g.name === activeCategory)
-
-  function selectClip(clip: ClipEntry | null) {
-    const sets = clip ? groupByTimestamp(clip.files, clip.path) : []
-    setSelectedClip(clip)
-    setClipSets(sets)
-    setSegmentDurations(new Array(sets.length).fill(60))
-    setCurrentSetIdx(0)
-    setPlaying(false)
-    setFocusedCamera(null)
-    setActiveCameras(new Set(["front"]))
-    pendingSeekRef.current = null
-    setCurrentTime(0)
-    currentTimeRef.current = 0
-    globalTimeRef.current = 0
+  function changeCategory(next: string) {
+    if (next !== category) setLoading(true)
+    setCategory(next)
+    setSelectedClip(null)
   }
 
-  // Preload segment durations — only probe the first few segments eagerly,
-  // defer the rest until the user navigates near them
-  const EAGER_PROBE_COUNT = 6
-  useEffect(() => {
-    if (!clipSets.length) return
-    const durations = new Array(clipSets.length).fill(60)
-    let cancelled = false
-    const cleanups: (() => void)[] = []
+  function selectClip(clip: ClipEntry) {
+    setSelectedClip(clip)
+    // On a phone the open panel covers the cameras; get it out of the way.
+    if (window.innerWidth < 768) setPanelOpen(false)
+  }
 
-    async function loadBatched(startIdx: number, endIdx: number) {
-      const BATCH = 3
-      for (let start = startIdx; start < endIdx; start += BATCH) {
-        if (cancelled) return
-        const batch = clipSets.slice(start, Math.min(start + BATCH, endIdx))
-        await Promise.all(batch.map((set, j) => {
-          const i = start + j
-          return new Promise<void>((resolve) => {
-            const url = set.cameras["front"] || Object.values(set.cameras)[0]
-            if (!url) { resolve(); return }
-            const v = document.createElement("video")
-            v.preload = "metadata"
-            v.src = url
-            v.onloadedmetadata = () => {
-              if (!cancelled && Number.isFinite(v.duration)) {
-                durations[i] = v.duration
-                setSegmentDurations([...durations])
-              }
-              resolve()
-            }
-            v.onerror = () => resolve()
-            cleanups.push(() => { v.src = ""; v.remove() })
-          })
-        }))
-      }
-    }
-
-    // Only probe the first EAGER_PROBE_COUNT segments initially
-    loadBatched(0, Math.min(EAGER_PROBE_COUNT, clipSets.length))
-    return () => { cancelled = true; cleanups.forEach((c) => c()) }
-  }, [clipSets])
-
-  // Lazily probe segment durations as user navigates near un-probed segments
-  useEffect(() => {
-    if (!clipSets.length || currentSetIdx < EAGER_PROBE_COUNT - 2) return
-    // Probe a window around the current segment
-    const probeStart = Math.max(0, currentSetIdx - 1)
-    const probeEnd = Math.min(clipSets.length, currentSetIdx + 4)
-
-    let cancelled = false
-    const cleanups: (() => void)[] = []
-
-    for (let i = probeStart; i < probeEnd; i++) {
-      // Skip already-probed segments (non-default duration)
-      if (segmentDurations[i] !== 60) continue
-      const set = clipSets[i]
-      const url = set.cameras["front"] || Object.values(set.cameras)[0]
-      if (!url) continue
-      const v = document.createElement("video")
-      v.preload = "metadata"
-      v.src = url
-      v.onloadedmetadata = () => {
-        if (!cancelled && Number.isFinite(v.duration)) {
-          setSegmentDurations((prev) => {
-            const next = [...prev]
-            next[i] = v.duration
-            return next
-          })
-        }
-      }
-      cleanups.push(() => { v.src = ""; v.remove() })
-    }
-
-    return () => { cancelled = true; cleanups.forEach((c) => c()) }
-    // segmentDurations intentionally omitted: it's only read to skip
-    // already-probed segments; depending on it would cancel and re-create
-    // in-flight probes every time one completes.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [clipSets, currentSetIdx])
-
-  // Drift correction: re-sync any camera >200ms off the master every 2s
-  useEffect(() => {
-    if (!playing) return
-    const DRIFT_THRESHOLD = 0.2 // seconds
-    const interval = setInterval(() => {
-      const master = masterVideoRef.current
-      if (!master || master.paused) return
-      const masterTime = master.currentTime
-      videoRefs.current.forEach((v) => {
-        if (v === master || v.paused) return
-        if (Math.abs(v.currentTime - masterTime) > DRIFT_THRESHOLD) {
-          v.currentTime = masterTime
-        }
-      })
-    }, 2000)
-    return () => clearInterval(interval)
-  }, [playing])
-
-  // Clean up preloaded videos
-  const cleanupPreloaded = useCallback(() => {
-    preloadedVideosRef.current.forEach((v) => { v.src = ""; v.remove() })
-    preloadedVideosRef.current.clear()
-    preloadedForIdxRef.current = -1
-  }, [])
-
-  // Cross-segment preloading: when within 5s of segment end, preload next segment's active cameras
-  useEffect(() => {
-    if (!playing || clipSets.length === 0) return
-    const PRELOAD_WINDOW = 5 // seconds before end to start preloading
-
-    const checkInterval = setInterval(() => {
-      const master = masterVideoRef.current
-      if (!master || !Number.isFinite(master.duration)) return
-
-      const timeRemaining = master.duration - master.currentTime
-      const nextIdx = currentSetIdxRef.current + 1
-
-      if (timeRemaining <= PRELOAD_WINDOW && nextIdx < clipSets.length) {
-        // Already preloaded for this segment?
-        if (preloadedForIdxRef.current === nextIdx) return
-
-        // Clean up any stale preloads
-        cleanupPreloaded()
-        preloadedForIdxRef.current = nextIdx
-
-        const nextSet = clipSets[nextIdx]
-        activeCameras.forEach((cam) => {
-          const url = nextSet.cameras[cam]
-          if (!url) return
-          const v = document.createElement("video")
-          v.preload = "auto"
-          v.muted = true
-          v.playsInline = true
-          v.src = url
-          // Hidden — just for buffering
-          v.style.display = "none"
-          document.body.appendChild(v)
-          preloadedVideosRef.current.set(cam, v)
-        })
-      } else if (timeRemaining > PRELOAD_WINDOW && preloadedForIdxRef.current !== -1) {
-        // User seeked away from the end — clean up
-        cleanupPreloaded()
-      }
-    }, 1000)
-
-    return () => {
-      clearInterval(checkInterval)
-    }
-  }, [playing, clipSets, activeCameras, cleanupPreloaded])
-
-  // Clean up preloaded videos on segment change (they've served their purpose or are stale)
-  useEffect(() => {
-    cleanupPreloaded()
-  }, [currentSetIdx, cleanupPreloaded])
-
-  // Clean up preloaded videos on unmount
-  useEffect(() => {
-    return () => cleanupPreloaded()
-  }, [cleanupPreloaded])
-
-  // Set master video ref (front camera preferred)
-  useEffect(() => {
-    if (!currentSet) { masterVideoRef.current = null; return }
-    const front = videoRefs.current.get("front")
-    if (front) { masterVideoRef.current = front; return }
-    for (const v of videoRefs.current.values()) {
-      if (v) { masterVideoRef.current = v; return }
-    }
-    masterVideoRef.current = null
-  }, [currentSet, currentSetIdx])
-
-  // Time update animation loop — only runs during playback, throttles React updates to ~15fps
-  const startAnimLoop = useCallback(() => {
-    const UI_INTERVAL = 66 // ~15fps for React state updates
-    function tick() {
-      if (!playingRef.current) return // stop loop when paused
-      const master = masterVideoRef.current
-      if (master) {
-        currentTimeRef.current = master.currentTime
-        globalTimeRef.current = priorSegmentsTimeRef.current + master.currentTime
-        const now = performance.now()
-        if (now - lastUIUpdateRef.current >= UI_INTERVAL) {
-          lastUIUpdateRef.current = now
-          setCurrentTime(master.currentTime)
-        }
-      }
-      animFrameRef.current = requestAnimationFrame(tick)
-    }
-    cancelAnimationFrame(animFrameRef.current)
-    animFrameRef.current = requestAnimationFrame(tick)
-  }, [])
-
-  useEffect(() => {
-    playingRef.current = playing
-    if (playing) startAnimLoop()
-    return () => cancelAnimationFrame(animFrameRef.current)
-  }, [playing, startAnimLoop])
-
-  // Apply playback speed to all videos
-  useEffect(() => {
-    videoRefs.current.forEach((v) => { if (v) v.playbackRate = playbackSpeed })
-  }, [playbackSpeed, currentSetIdx])
-
-
-  // Auto-advance to next clip set
-  const handleVideoEnded = useCallback(() => {
-    setCurrentSetIdx((i) => {
-      if (i < clipSets.length - 1) return i + 1
-      setPlaying(false)
-      return i
-    })
-  }, [clipSets.length])
-
-  // Sync all videos to a time — batched in RAF for smoother seeking
-  const syncVideos = useCallback((time: number) => {
-    requestAnimationFrame(() => {
-      videoRefs.current.forEach((v) => {
-        if (v) v.currentTime = time
-      })
-    })
-    // Update UI immediately for paused seeks
-    currentTimeRef.current = time
-    if (!playingRef.current) {
-      globalTimeRef.current = priorSegmentsTimeRef.current + time
-      setCurrentTime(time)
-    }
-  }, [])
-
-  const togglePlay = useCallback(() => {
-    const wasPlaying = playingRef.current
-    videoRefs.current.forEach((v) => {
-      if (!v) return
-      if (wasPlaying) v.pause()
-      else v.play().catch(() => { })
-    })
-    setPlaying(!wasPlaying)
-  }, [])
-
-  const segmentDurationsRef = useRef<number[]>([])
-  useEffect(() => { segmentDurationsRef.current = segmentDurations }, [segmentDurations])
-
-  const seekToGlobal = useCallback((globalT: number) => {
-    const durations = segmentDurationsRef.current
-    const total = totalDurationRef.current
-    const clamped = Math.max(0, Math.min(globalT, total))
-    let remaining = clamped
-    for (let i = 0; i < durations.length; i++) {
-      if (remaining <= durations[i] + 0.05 || i === durations.length - 1) {
-        const offset = Math.min(remaining, durations[i])
-        if (i !== currentSetIdxRef.current) {
-          pendingSeekRef.current = offset
-          setCurrentSetIdx(i)
-        } else {
-          syncVideos(offset)
-        }
-        return
-      }
-      remaining -= durations[i]
-    }
-  }, [syncVideos])
-
-  const skip = useCallback((seconds: number) => {
-    seekToGlobal(globalTimeRef.current + seconds)
-  }, [seekToGlobal])
-
-  const handleSeek = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
-    const bar = seekBarRef.current
-    const total = totalDurationRef.current
-    if (!bar || total <= 0) return
-    const rect = bar.getBoundingClientRect()
-    const pct = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width))
-    seekToGlobal(pct * total)
-  }, [seekToGlobal])
-
-  // Fullscreen toggle
-  const toggleFullscreen = useCallback(() => {
-    if (!containerRef.current) return
-    if (document.fullscreenElement) {
-      document.exitFullscreen()
-    } else {
-      containerRef.current.requestFullscreen()
-    }
-  }, [])
-
-  useEffect(() => {
-    const onFS = () => setIsFullscreen(!!document.fullscreenElement)
-    document.addEventListener("fullscreenchange", onFS)
-    return () => document.removeEventListener("fullscreenchange", onFS)
-  }, [])
-
-  // Keyboard shortcuts — stable callbacks mean this only re-attaches on focusedCamera change
-  useEffect(() => {
-    function onKey(e: KeyboardEvent) {
-      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return
-      switch (e.key) {
-        case " ":
-          e.preventDefault()
-          togglePlay()
-          break
-        case "ArrowLeft":
-          e.preventDefault()
-          skip(e.shiftKey ? -15 : -5)
-          break
-        case "ArrowRight":
-          e.preventDefault()
-          skip(e.shiftKey ? 15 : 5)
-          break
-        case "f":
-          e.preventDefault()
-          toggleFullscreen()
-          break
-        case "Escape":
-          if (focusedCamera) { e.preventDefault(); setFocusedCamera(null) }
-          break
-      }
-    }
-    window.addEventListener("keydown", onKey)
-    return () => window.removeEventListener("keydown", onKey)
-  }, [togglePlay, skip, toggleFullscreen, focusedCamera])
-
-  // Delete clip
-  async function handleDeleteClip(clip: ClipEntry) {
+  async function deleteClip(clip: ClipEntry) {
     try {
       // Delete via /mutable/TeslaCam (the snapshot-symlink tree this view
       // actually lists from), NOT /mnt/cam. /mnt/cam is the live cam-disk
@@ -613,546 +113,90 @@ export default function Viewer() {
       // backend's delete handler also runs its SavedClips/SentryClips
       // snapshot-symlink cleanup off this exact path. Matches the download
       // button below and the Files page.
-      const fullPath = `/mutable/TeslaCam/${activeCategory}/${clip.date}`
+      const fullPath = `/mutable/TeslaCam/${category}/${clip.date}`
       await fetch(`/api/files?path=${encodeURIComponent(fullPath)}`, { method: "DELETE" })
-      setGroups((prev) =>
-        prev.map((g) =>
-          g.name === activeCategory
-            ? { ...g, clips: g.clips.filter((c) => c.date !== clip.date) }
-            : g
-        )
-      )
-      if (selectedClip?.date === clip.date) {
-        selectClip(null)
-      }
-      setDeleteConfirm(null)
+      setGroups((prev) => prev.map((g) => (
+        g.name === category ? { ...g, clips: g.clips.filter((c) => c.date !== clip.date) } : g
+      )))
+      if (selectedClip?.date === clip.date) setSelectedClip(null)
     } catch { /* ignore */ }
   }
 
-  // Download clip set as zip
-  function handleDownload() {
-    if (!selectedClip) return
-    const fullPath = `/mutable/TeslaCam/${activeCategory}/${selectedClip.date}`
-    window.open(`/api/files/download-zip?path=${encodeURIComponent(fullPath)}`, "_blank")
-  }
+  // Recent clips are grouped by day and have no folder of their own to zip.
+  const download = selectedClip && category !== "RecentClips"
+    ? () => {
+        const fullPath = `/mutable/TeslaCam/${category}/${selectedClip.date}`
+        window.open(`/api/files/download-zip?path=${encodeURIComponent(fullPath)}`, "_blank")
+      }
+    : undefined
 
-  // Register video ref — stable (reads speed from ref)
-  const setVideoRef = useCallback((cam: string) => (el: HTMLVideoElement | null) => {
-    if (el) {
-      videoRefs.current.set(cam, el)
-      el.playbackRate = playbackSpeedRef.current
-    } else {
-      videoRefs.current.delete(cam)
-    }
-  }, [])
+  // Pressing play folds the clip browser away so nothing covers the cameras;
+  // the Clips button brings it back.
+  const foldPanel = useCallback(() => setPanelOpen(false), [])
 
-  const progress = totalDuration > 0 ? (globalTime / totalDuration) * 100 : 0
-
-  // Event metadata
-  const eventMeta = selectedClip?.event
-  const triggeredCamera = eventMeta?.camera
-
-  // Camera list for rendering
-  const camerasToShow = focusedCamera ? [focusedCamera] : CAMERAS_GRID
-
-  const categoryLabels: Record<string, string> = {
-    RecentClips: "Recent",
-    SavedClips: "Saved",
-    SentryClips: "Sentry",
-  }
-  const categoryCounts = groups.reduce<Record<string, number>>((acc, g) => {
-    acc[g.name] = g.clips.length
-    return acc
-  }, {})
-
-  return (
-    <div
-      ref={containerRef}
-      className={cn(
-        "flex flex-col",
-        isFullscreen ? "h-screen bg-slate-950 p-2" : "h-[calc(100vh-120px)] md:h-[calc(100vh-96px)]"
-      )}
-    >
-      {/* Header */}
-      {!isFullscreen && (
-        <div className="mb-3 flex items-center justify-between">
-          <div>
-            <h1 className="text-2xl font-bold text-slate-100">Viewer</h1>
-            <p className="mt-0.5 text-sm text-slate-500">
-              View all 6 cameras simultaneously with synced playback
-              <span className="ml-2 hidden text-[10px] text-slate-600 md:inline">
-                Space: play/pause &middot; ←→: skip 5s &middot; Shift+←→: skip 15s &middot; F: fullscreen
-              </span>
-            </p>
-          </div>
-        </div>
-      )}
-
-      {/* Category tabs */}
-      <div className={cn("mb-2 flex items-center gap-1", isFullscreen && "mb-1")}>
-        {["RecentClips", "SavedClips", "SentryClips"].map((cat) => (
-          <button
-            key={cat}
-            onClick={() => { if (cat !== activeCategory) setLoading(true); setActiveCategory(cat); selectClip(null) }}
-            className={cn(
-              "rounded-lg px-3 py-1.5 text-sm font-medium transition-colors",
-              activeCategory === cat
-                ? "bg-blue-500/15 text-blue-400"
-                : "text-slate-500 hover:bg-white/5 hover:text-slate-300"
-            )}
-          >
-            {categoryLabels[cat]}
-            {(categoryCounts[cat] ?? 0) > 0 && (
-              <span className="ml-1.5 rounded-full bg-white/5 px-1.5 py-0.5 text-[10px] tabular-nums text-slate-500">
-                {categoryCounts[cat]}
-              </span>
-            )}
-          </button>
-        ))}
-
-        {/* Sidebar toggle */}
-        <button
-          onClick={() => setSidebarCollapsed((c) => !c)}
-          className="ml-auto rounded-lg p-1.5 text-slate-500 transition-colors hover:bg-white/5 hover:text-slate-300"
-          title={sidebarCollapsed ? "Show clip browser" : "Hide clip browser"}
-        >
-          {sidebarCollapsed ? <ChevronRightIcon className="h-4 w-4" /> : <ChevronLeftIcon className="h-4 w-4" />}
-        </button>
-      </div>
-
-      <div className="flex min-h-0 flex-1 gap-2">
-        {/* Clip browser sidebar */}
-        {!sidebarCollapsed && (
-          <div className="glass-card flex w-56 shrink-0 flex-col overflow-hidden">
-            {/* Event info for selected clip */}
-            {selectedClip && eventMeta?.reason && (
-              <div className="border-b border-white/5 p-2">
-                <EventBadge event={eventMeta} />
-              </div>
-            )}
-
-            {/* Clip list */}
-            <div className="flex-1 overflow-y-auto p-1.5">
-              {loading ? (
-                <div className="flex items-center justify-center p-8">
-                  <ProgressActivityIcon className="h-5 w-5 animate-spin text-slate-500" />
-                </div>
-              ) : activeGroup && activeGroup.clips.length > 0 ? (
-                activeGroup.clips.map((clip) => {
-                  const isSelected = selectedClip?.date === clip.date
-                  const eventInfo = clip.event
-                  const { label: reasonLabel } = eventInfo?.reason
-                    ? formatEventReason(eventInfo.reason) : { label: "" }
-                  return (
-                    <div key={clip.date} className="group relative">
-                      <button
-                        onClick={() => selectClip(clip)}
-                        className={cn(
-                          "w-full rounded-lg px-2.5 py-2 text-left transition-colors",
-                          isSelected
-                            ? "bg-blue-500/15 text-blue-400"
-                            : "text-slate-400 hover:bg-white/5 hover:text-slate-200"
-                        )}
-                      >
-                        <div className="text-xs font-medium">{formatClipDate(clip.date)}</div>
-                        <div className="mt-0.5 flex items-center gap-1.5">
-                          <span className="text-[10px] text-slate-600">
-                            {clip.files.length} files
-                          </span>
-                          {reasonLabel && (
-                            <span className={cn(
-                              "rounded px-1 py-0.5 text-[9px] font-medium",
-                              activeCategory === "SentryClips"
-                                ? "bg-red-500/15 text-red-400"
-                                : "bg-amber-500/15 text-amber-400"
-                            )}>
-                              {reasonLabel}
-                            </span>
-                          )}
-                        </div>
-                        {eventInfo?.city && (
-                          <div className="mt-0.5 truncate text-[10px] text-slate-600">
-                            {eventInfo.city}
-                          </div>
-                        )}
-                      </button>
-                      {/* Delete button — RecentClips are auto-rotated by the
-                          car and stored as flat files (no per-date folder), so
-                          there's nothing meaningful to delete from the UI. */}
-                      {activeCategory !== "RecentClips" && (
-                        <>
-                          <button
-                            onClick={(e) => { e.stopPropagation(); setDeleteConfirm(clip.date) }}
-                            className="absolute right-1 top-1 hidden rounded p-0.5 text-slate-600 transition-colors hover:bg-red-500/15 hover:text-red-400 group-hover:block"
-                            title="Delete clip"
-                          >
-                            <DeleteIcon className="h-3 w-3" />
-                          </button>
-                          {deleteConfirm === clip.date && (
-                            <div className="mx-1 mb-1 flex items-center gap-1 rounded-md bg-red-500/10 px-2 py-1.5">
-                              <span className="flex-1 text-[10px] text-red-400">Delete this clip?</span>
-                              <button
-                                onClick={() => handleDeleteClip(clip)}
-                                className="rounded bg-red-500/20 px-2 py-0.5 text-[10px] font-medium text-red-400 hover:bg-red-500/30"
-                              >
-                                Yes
-                              </button>
-                              <button
-                                onClick={() => setDeleteConfirm(null)}
-                                className="rounded bg-white/5 px-2 py-0.5 text-[10px] text-slate-400 hover:bg-white/10"
-                              >
-                                No
-                              </button>
-                            </div>
-                          )}
-                        </>
-                      )}
-                    </div>
-                  )
-                })
-              ) : (
-                <div className="flex flex-col items-center justify-center py-8 text-center">
-                  <VideocamIcon className="mb-2 h-8 w-8 text-slate-500" />
-                  <p className="text-xs text-slate-600">No {categoryLabels[activeCategory]?.toLowerCase()} clips</p>
-                </div>
-              )}
-              {activeGroup?.hasMore && (
-                <button
-                  onClick={loadMoreClips}
-                  disabled={loadingMore}
-                  className="mt-1 w-full rounded-lg px-2 py-1.5 text-[11px] font-medium text-slate-400 transition-colors hover:bg-white/5 hover:text-slate-300 disabled:opacity-50"
-                >
-                  {loadingMore ? (
-                    <span className="flex items-center justify-center gap-1.5">
-                      <ProgressActivityIcon className="h-3 w-3 animate-spin" /> Loading…
-                    </span>
-                  ) : "Load more clips"}
-                </button>
-              )}
-            </div>
-
-            {/* Sentry Studio promo */}
-            {showPromo && (
-              <div className="border-t border-white/5 p-2">
-                <div className="relative rounded-lg bg-gradient-to-r from-blue-500/10 via-indigo-500/10 to-purple-500/10 p-2.5">
-                  <button
-                    onClick={() => setShowPromo(false)}
-                    className="absolute right-1 top-1 rounded p-0.5 text-slate-600 hover:text-slate-400"
-                  >
-                    <CloseIcon className="h-3 w-3" />
-                  </button>
-                  <div className="flex items-start gap-2">
-                    <DirectionsCarIcon className="mt-0.5 h-4 w-4 shrink-0 text-blue-400" />
-                    <div>
-                      <p className="text-[11px] font-medium text-slate-300">
-                        Looking for more? Try Sentry Studio
-                      </p>
-                      <p className="mt-0.5 text-[10px] leading-tight text-slate-500">
-                        Advanced TeslaCam viewer with GPS overlay, telemetry data, multi-angle export, and detailed event analysis.
-                      </p>
-                      <a
-                        href="https://github.com/ChadR23/Sentry-Six"
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="mt-1.5 inline-flex items-center gap-1 rounded-md bg-blue-500/10 px-2 py-1 text-[10px] font-medium text-blue-400 transition-colors hover:bg-blue-500/20 hover:text-blue-300"
-                      >
-                        View on GitHub <OpenInNewIcon className="h-2.5 w-2.5" />
-                      </a>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            )}
-          </div>
-        )}
-
-        {/* Video area */}
-        <div className="flex min-h-0 flex-1 flex-col">
-          {currentSet ? (
-            <>
-              {/* Camera grid */}
-              <div
-                className={cn(
-                  "relative min-h-0 flex-1",
-                  focusedCamera ? "" : hasPillars
-                    ? "grid grid-cols-2 grid-rows-3 gap-0.5 md:grid-cols-3 md:grid-rows-2"
-                    : "grid grid-cols-2 grid-rows-2 gap-0.5"
-                )}
-              >
-                {camerasToShow.map((cam) => {
-                  const isTriggered = triggeredCamera === cam
-                  const hasFocus = focusedCamera === cam
-                  const isCamActive = activeCameras.has(cam)
-                  return (
-                    <div
-                      key={cam}
-                      className={cn(
-                        "relative cursor-pointer overflow-hidden rounded-md bg-black transition-all",
-                        hasFocus && "h-full w-full",
-                        isTriggered && !hasFocus && "ring-1 ring-amber-500/60",
-                      )}
-                      onClick={() => {
-                        if (!isCamActive && currentSet.cameras[cam]) {
-                          // Activate this camera stream on click
-                          setActiveCameras((prev) => new Set([...prev, cam]))
-                          return
-                        }
-                        setFocusedCamera(hasFocus ? null : cam)
-                      }}
-                    >
-                      {currentSet.cameras[cam] && isCamActive ? (
-                        <video
-                          ref={setVideoRef(cam)}
-                          key={`${currentSetIdx}-${cam}`}
-                          src={currentSet.cameras[cam]}
-                          className="h-full w-full object-contain"
-                          muted
-                          playsInline
-                          preload="auto"
-                          onEnded={cam === "front" ? handleVideoEnded : undefined}
-                          onLoadedData={(e) => {
-                            const v = e.currentTarget
-                            v.playbackRate = playbackSpeedRef.current
-
-                            // Determine target time: pending seek (segment change) or
-                            // master video's current time (mid-playback camera activation)
-                            let targetTime: number | null = null
-                            if (pendingSeekRef.current !== null) {
-                              targetTime = pendingSeekRef.current
-                              if (cam === "front" || !currentSet.cameras["front"]) pendingSeekRef.current = null
-                            } else {
-                              const master = masterVideoRef.current
-                              if (master && master !== v && master.currentTime > 0.1) {
-                                targetTime = master.currentTime
-                              }
-                            }
-
-                            if (targetTime !== null) {
-                              v.currentTime = targetTime
-                            }
-                            if (playingRef.current) v.play().catch(() => { })
-                          }}
-                        />
-                      ) : currentSet.cameras[cam] && !isCamActive ? (
-                        <div className="flex h-full flex-col items-center justify-center gap-1.5 bg-slate-900/80">
-                          <PlayArrowIcon className="h-5 w-5 text-slate-500" />
-                          <span className="text-[10px] text-slate-500">Click to stream</span>
-                        </div>
-                      ) : (
-                        <div className="flex h-full items-center justify-center">
-                          <VideocamIcon className="h-6 w-6 text-slate-500" />
-                        </div>
-                      )}
-                      {/* Camera label */}
-                      <span
-                        className={cn(
-                          "absolute bottom-1 left-1 rounded px-1.5 py-0.5 text-[10px] font-medium",
-                          isTriggered
-                            ? "bg-amber-500/80 text-black"
-                            : "bg-black/60 text-slate-400"
-                        )}
-                      >
-                        {hasFocus ? CAMERA_LABELS[cam] : CAMERA_SHORT[cam]}
-                        {isTriggered && " ⚡"}
-                      </span>
-                      {/* Focus hint */}
-                      {hasFocus && (
-                        <span className="absolute right-1 top-1 rounded bg-black/60 px-1.5 py-0.5 text-[10px] text-slate-500">
-                          Click to exit &middot; ESC
-                        </span>
-                      )}
-                      {/* Telemetry overlay on front camera */}
-                      {cam === "front" && (focusedCamera === "front" || !focusedCamera) && telemetry && (
-                        <TelemetryOverlay frame={currentFrame} metric={metric} />
-                      )}
-                    </div>
-                  )
-                })}
-                {/* Mini map */}
-                {telemetry && telemetry.has_gps && !focusedCamera && (
-                  <Suspense fallback={null}>
-                    <MiniMap telemetry={telemetry} currentFrame={currentFrame} />
-                  </Suspense>
-                )}
-              </div>
-
-              {/* Transport bar */}
-              <div className="glass-card mt-1 p-2">
-                {/* Seek bar */}
-                <div
-                  ref={seekBarRef}
-                  className="group mb-2 h-1.5 cursor-pointer rounded-full bg-white/10 transition-all hover:h-2.5"
-                  onClick={handleSeek}
-                  onMouseDown={(e) => {
-                    handleSeek(e)
-                    let lastDragTime = 0
-                    const onMove = (ev: MouseEvent) => {
-                      const now = performance.now()
-                      if (now - lastDragTime < 33) return // ~30fps throttle
-                      lastDragTime = now
-                      const bar = seekBarRef.current
-                      const total = totalDurationRef.current
-                      if (!bar || total <= 0) return
-                      const rect = bar.getBoundingClientRect()
-                      const pct = Math.max(0, Math.min(1, (ev.clientX - rect.left) / rect.width))
-                      seekToGlobal(pct * total)
-                    }
-                    const onUp = () => {
-                      document.removeEventListener("mousemove", onMove)
-                      document.removeEventListener("mouseup", onUp)
-                    }
-                    document.addEventListener("mousemove", onMove)
-                    document.addEventListener("mouseup", onUp)
-                  }}
-                >
-                  <div className="relative h-full w-full">
-                    <div
-                      className="h-full rounded-full bg-blue-500 transition-all"
-                      style={{ width: `${progress}%` }}
-                    >
-                      <div className="absolute -right-1 -top-0.5 hidden h-3 w-3 rounded-full bg-blue-400 shadow-lg group-hover:block" />
-                    </div>
-                    {segmentPositions.map((pos, i) => (
-                      <div key={i} className="absolute top-0 h-full w-px bg-white/20" style={{ left: `${pos}%` }} />
-                    ))}
-                  </div>
-                </div>
-
-                <div className="flex items-center gap-2">
-                  {/* Time display */}
-                  <span className="w-28 text-xs tabular-nums text-slate-400">
-                    {formatTime(globalTime)} / {formatTime(totalDuration)}
-                  </span>
-                  {/* Segment indicator */}
-                  {segmentDurations.length > 1 && (
-                    <span className="rounded bg-white/5 px-1.5 py-0.5 text-[10px] tabular-nums text-slate-500">
-                      {currentSetIdx + 1}/{segmentDurations.length}
-                    </span>
-                  )}
-
-                  {/* Skip back */}
-                  <button
-                    onClick={() => skip(-5)}
-                    className="rounded-lg p-1.5 text-slate-400 transition-colors hover:bg-white/5 hover:text-slate-200"
-                    title="Back 5s (← or Shift+← for 15s)"
-                  >
-                    <SkipPreviousIcon className="h-3.5 w-3.5" />
-                  </button>
-
-                  {/* Play/Pause */}
-                  <button
-                    onClick={togglePlay}
-                    className="flex h-8 w-8 items-center justify-center rounded-full bg-blue-500/20 text-blue-400 transition-colors hover:bg-blue-500/30"
-                    title="Play/Pause (Space)"
-                  >
-                    {playing ? <PauseIcon className="h-4 w-4" /> : <PlayArrowIcon className="h-4 w-4 translate-x-px" />}
-                  </button>
-
-                  {/* Skip forward */}
-                  <button
-                    onClick={() => skip(5)}
-                    className="rounded-lg p-1.5 text-slate-400 transition-colors hover:bg-white/5 hover:text-slate-200"
-                    title="Forward 5s (→ or Shift+→ for 15s)"
-                  >
-                    <SkipNextIcon className="h-3.5 w-3.5" />
-                  </button>
-
-                  <div className="flex-1" />
-
-                  {/* Speed selector */}
-                  <div className="hidden items-center gap-0.5 sm:flex">
-                    {SPEED_OPTIONS.map((s) => (
-                      <button
-                        key={s}
-                        onClick={() => setPlaybackSpeed(s)}
-                        className={cn(
-                          "rounded px-1.5 py-0.5 text-[10px] font-medium transition-colors",
-                          playbackSpeed === s
-                            ? "bg-blue-500/20 text-blue-400"
-                            : "text-slate-600 hover:bg-white/5 hover:text-slate-400"
-                        )}
-                      >
-                        {s}x
-                      </button>
-                    ))}
-                  </div>
-
-
-                  {/* Download — RecentClips have no per-date folder to zip. */}
-                  {activeCategory !== "RecentClips" && (
-                    <button
-                      onClick={handleDownload}
-                      className="rounded-lg p-1.5 text-slate-500 transition-colors hover:bg-white/5 hover:text-slate-300"
-                      title="Download clip folder"
-                    >
-                      <DownloadIcon className="h-3.5 w-3.5" />
-                    </button>
-                  )}
-
-                  {/* Fullscreen */}
-                  <button
-                    onClick={toggleFullscreen}
-                    className="rounded-lg p-1.5 text-slate-500 transition-colors hover:bg-white/5 hover:text-slate-300"
-                    title="Fullscreen (F)"
-                  >
-                    {isFullscreen ? <FullscreenExitIcon className="h-3.5 w-3.5" /> : <FullscreenIcon className="h-3.5 w-3.5" />}
-                  </button>
-                </div>
-              </div>
-            </>
-          ) : (
-            <div className="glass-card flex flex-1 items-center justify-center">
-              <div className="max-w-xs text-center">
-                <VideocamIcon className="mx-auto mb-3 h-16 w-16 text-slate-500" />
-                <p className="text-sm font-medium text-slate-400">
-                  {selectedClip ? "No video files found" : "Select a clip to begin playback"}
-                </p>
-                <p className="mt-1 text-xs text-slate-600">
-                  Choose a clip from the sidebar to view all 6 cameras simultaneously with synced playback controls.
-                </p>
-                <div className="mt-4 rounded-lg border border-white/5 bg-white/[0.02] p-3">
-                  <p className="text-[11px] font-medium text-slate-400">Want a more advanced viewer?</p>
-                  <p className="mt-0.5 text-[10px] text-slate-600">
-                    Sentry Studio offers GPS overlays, telemetry data, multi-angle export, and more.
-                  </p>
-                  <a
-                    href="https://github.com/ChadR23/Sentry-Six"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="mt-2 inline-flex items-center gap-1 text-[10px] font-medium text-blue-400 transition-colors hover:text-blue-300"
-                  >
-                    Check out Sentry Studio <OpenInNewIcon className="h-2.5 w-2.5" />
-                  </a>
-                </div>
-              </div>
-            </div>
-          )}
-        </div>
-      </div>
-    </div>
+  const clipSets = useMemo(
+    () => (selectedClip ? groupByTimestamp(selectedClip.files, selectedClip.path) : []),
+    [selectedClip],
   )
-}
 
-// Event badge component
-function EventBadge({ event }: { event: EventMeta }) {
-  if (!event.reason) return null
-  const { label, Icon } = formatEventReason(event.reason)
+  const panel = (
+    <ClipsPanel
+      open={panelOpen}
+      onOpenChange={setPanelOpen}
+      groups={groups}
+      category={category}
+      onCategory={changeCategory}
+      loading={loading}
+      loadingMore={loadingMore}
+      onLoadMore={loadMoreClips}
+      selected={selectedClip}
+      onSelect={selectClip}
+      onDelete={deleteClip}
+    />
+  )
+
   return (
-    <div className="flex items-start gap-2">
-      <div className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-amber-500/15">
-        <Icon className="h-3 w-3 text-amber-400" />
-      </div>
-      <div className="min-w-0">
-        <p className="text-xs font-medium text-slate-300">{label}</p>
-        {event.camera && (
-          <p className="text-[10px] text-slate-500">
-            Triggered: {CAMERA_LABELS[event.camera] || event.camera}
-          </p>
-        )}
-        {event.city && (
-          <p className="truncate text-[10px] text-slate-600">{event.city}</p>
-        )}
-      </div>
+    <div className="min-h-[320px] flex-1 pb-2 md:pb-3">
+      <h1 className="sr-only">Viewer</h1>
+      {selectedClip && clipSets.length > 0 ? (
+        <ClipPlayer
+          key={selectedClip.path}
+          clip={selectedClip}
+          clipSets={clipSets}
+          metric={metric}
+          onDownload={download}
+          panel={panel}
+          onPlay={foldPanel}
+          archiving={archivingNotice}
+          onDismissArchiving={hideNotice}
+        />
+      ) : (
+        <div className="relative flex h-full items-center justify-center overflow-hidden rounded-lg bg-black/40">
+          <div className="max-w-xs px-4 text-center">
+            <VideocamIcon className="mx-auto mb-3 h-14 w-14 text-slate-600" />
+            <p className="text-sm font-medium text-slate-300">
+              {selectedClip ? "No video files found" : "Pick a clip to watch"}
+            </p>
+            <p className="mt-1 text-xs text-slate-500">
+              Every camera plays together, in sync. Space plays and pauses, the arrow keys skip, F is fullscreen.
+            </p>
+            <a
+              href="https://github.com/ChadR23/Sentry-Six"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="mt-4 inline-flex items-center gap-1 text-[11px] font-medium text-blue-400 transition-colors hover:text-blue-300"
+            >
+              For exporting and sharing clips, try Sentry Studio <OpenInNewIcon className="h-2.5 w-2.5" />
+            </a>
+          </div>
+          {panel}
+          <ViewerNotice
+            archiving={archivingNotice}
+            onDismiss={hideNotice}
+            className="absolute bottom-2 left-2 right-2 mx-auto max-w-xl"
+          />
+        </div>
+      )}
     </div>
   )
 }

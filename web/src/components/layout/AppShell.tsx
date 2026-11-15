@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react"
-import { Outlet } from "react-router-dom"
+import { Outlet, useLocation } from "react-router-dom"
 import { MenuIcon } from "@/components/icons"
 import { Sidebar } from "./Sidebar"
 import { MobileNav } from "./MobileNav"
@@ -52,6 +52,8 @@ export function AppShell() {
     }
   }, [])
 
+  const fullBleed = useLocation().pathname.startsWith("/viewer")
+
   return (
     <ConnectionProvider>
       <AwayModeProvider>
@@ -80,7 +82,8 @@ export function AppShell() {
             className={cn(
               "flex-1 overflow-y-auto transition-all duration-300",
               "md:ml-56",
-              sidebarCollapsed && "md:ml-16"
+              sidebarCollapsed && "md:ml-16",
+              fullBleed && "flex flex-col"
             )}
           >
             <div className="sticky top-0 z-[500] flex h-14 items-center gap-3 border-b border-white/5 bg-slate-950/80 px-4 backdrop-blur-md md:hidden">
@@ -93,8 +96,10 @@ export function AppShell() {
               <span className="text-sm font-semibold text-slate-100" style={{ fontFamily: '"Inter", -apple-system, system-ui, sans-serif' }}>Sentry USB</span>
             </div>
 
-            {/* Bound card width on wide or zoomed-out viewports. */}
-            <div className="mx-auto w-full max-w-[1280px] p-4 pb-safe md:p-6">
+            {/* Bound card width on wide or zoomed-out viewports. The Viewer is
+                a video player, not a page of cards: it takes the whole window,
+                less whatever the connection banner needs while it is up. */}
+            <div className={cn("mx-auto w-full pb-safe", fullBleed ? "flex min-h-0 flex-1 flex-col p-2 md:p-3" : "max-w-[1280px] p-4 md:p-6")}>
               <ConnectionBanner />
               <Outlet />
             </div>
