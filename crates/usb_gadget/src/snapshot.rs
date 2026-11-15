@@ -134,6 +134,10 @@ pub async fn make_snapshot_with(skip_fsck: bool, caller_holds_lock: bool) -> Res
         if let Err(e) = backfill_gapfill_links() {
             warn!("backfill_gapfill_links: {}", e);
         }
+        let removed = prune_event_only_days_in(&Path::new(TESLACAM).join("RecentClips"));
+        if removed > 0 {
+            info!("removed {} gap-fill link(s) from RecentClips days with no rolling footage left", removed);
+        }
     });
 
     if is_duplicate {
@@ -1344,6 +1348,8 @@ fn make_links_for_snapshot_mode(cur_mnt: &str, final_mnt: &str, fill_only: bool)
     for entry in l.entries(&recents_root) {
         link_clip_into_recents(&mut l, &entry.path(), cur_mnt, final_mnt);
     }
+    // Read after this snapshot's rolling clips are linked, so its own days count.
+    let rolling_from = oldest_rolling_day(&Path::new(TESLACAM).join("RecentClips"));
 
     for (root, dest) in [("SavedClips", &saved), ("SentryClips", &sentry)] {
         let events_root = format!("{}/TeslaCam/{}", cur_mnt, root);
@@ -1368,7 +1374,14 @@ fn make_links_for_snapshot_mode(cur_mnt: &str, final_mnt: &str, fill_only: bool)
                 let link = format!("{}/{}", evt_dest, clip.file_name().to_string_lossy());
                 let target = retarget_path(&clip.path(), cur_mnt, final_mnt);
                 l.place(&target, &link);
-                maybe_gapfill_recent_link(&mut l, &clip.path(), cur_mnt, final_mnt, &gapfill);
+                maybe_gapfill_recent_link(
+                    &mut l,
+                    &clip.path(),
+                    cur_mnt,
+                    final_mnt,
+                    &gapfill,
+                    rolling_from.as_deref(),
+                );
             }
         }
     }
@@ -1411,6 +1424,7 @@ fn maybe_gapfill_recent_link(
     cur_mnt: &str,
     final_mnt: &str,
     gapfill: &HashSet<String>,
+    rolling_from: Option<&str>,
 ) {
     if gapfill.is_empty() {
         return;
@@ -1427,10 +1441,83 @@ fn maybe_gapfill_recent_link(
         return;
     }
     let filedate = &filename[..10];
+    if before_rolling_footage(filedate, rolling_from) {
+        return;
+    }
     let recents = format!("{}/RecentClips/{}", TESLACAM, filedate);
     l.dir(&recents);
     let link = format!("{}/{}", recents, filename);
     l.place(&retarget_path(clip, cur_mnt, final_mnt), &link);
+}
+
+/// Whether a RecentClips entry is a gap-fill alias: a link stored as pointing
+/// into an event folder. Reads the stored target only, never through autofs.
+fn is_event_alias(path: &Path) -> bool {
+    std::fs::read_link(path).is_ok_and(|target| {
+        let t = target.to_string_lossy().replace('\\', "/");
+        t.contains("/SavedClips/") || t.contains("/SentryClips/")
+    })
+}
+
+/// RecentClips `YYYY-MM-DD` folders, oldest first.
+fn recent_day_dirs(recents_root: &Path) -> Vec<(String, std::path::PathBuf)> {
+    let mut days: Vec<(String, std::path::PathBuf)> = std::fs::read_dir(recents_root)
+        .map(|entries| {
+            entries
+                .flatten()
+                .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
+                .map(|e| (e.file_name().to_string_lossy().to_string(), e.path()))
+                .filter(|(name, _)| name.len() == 10 && looks_like_dated_clip(name))
+                .collect()
+        })
+        .unwrap_or_default();
+    days.sort();
+    days
+}
+
+/// The oldest RecentClips day that still holds the car's rolling footage: any
+/// entry that is not a gap-fill alias. `None` when no day does.
+fn oldest_rolling_day(recents_root: &Path) -> Option<String> {
+    recent_day_dirs(recents_root).into_iter().find_map(|(day, dir)| {
+        let rolling = std::fs::read_dir(&dir)
+            .map(|entries| entries.flatten().any(|e| !is_event_alias(&e.path())))
+            .unwrap_or(false);
+        rolling.then_some(day)
+    })
+}
+
+/// A gap-fill alias belongs beside rolling footage. The car keeps Sentry and
+/// Saved events for months, so an alias dated before the oldest rolling day
+/// would list a date in RecentClips that holds nothing but events. With no
+/// rolling footage at all there is no cutoff, and every alias is kept.
+fn before_rolling_footage(filedate: &str, rolling_from: Option<&str>) -> bool {
+    rolling_from.is_some_and(|oldest| filedate < oldest)
+}
+
+/// Remove gap-fill aliases from days older than the oldest rolling day, and
+/// the emptied date folders. The events stay in their own folders. Returns
+/// the number of links removed.
+fn prune_event_only_days_in(recents_root: &Path) -> usize {
+    let Some(oldest) = oldest_rolling_day(recents_root) else {
+        return 0;
+    };
+    let mut removed = 0;
+    for (day, dir) in recent_day_dirs(recents_root) {
+        if day >= oldest {
+            break;
+        }
+        if let Ok(entries) = std::fs::read_dir(&dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if is_event_alias(&path) && std::fs::remove_file(&path).is_ok() {
+                    removed += 1;
+                }
+            }
+        }
+        // Fails, and keeps the folder, if anything else is in it.
+        let _ = std::fs::remove_dir(&dir);
+    }
+    removed
 }
 
 /// Backfill changed manifest entries from existing event links without touching
@@ -1474,6 +1561,7 @@ fn backfill_gapfill_links_in(
     let mut made = 0usize;
     let mut skipped_dead = 0usize;
     let mut retry = 0usize;
+    let rolling_from = oldest_rolling_day(&teslacam.join("RecentClips"));
     for sub in ["SavedClips", "SentryClips"] {
         // A real directory only; never follow a link into autofs.
         if !std::fs::symlink_metadata(teslacam.join(sub)).is_ok_and(|m| m.is_dir()) {
@@ -1490,8 +1578,14 @@ fn backfill_gapfill_links_in(
             }
             if let Ok(clips) = std::fs::read_dir(&evt_path) {
                 for clip in clips.flatten() {
-                    match backfill_recent_link(teslacam, snapshots, autofs, &clip.path(), gapfill)
-                    {
+                    match backfill_recent_link(
+                        teslacam,
+                        snapshots,
+                        autofs,
+                        &clip.path(),
+                        gapfill,
+                        rolling_from.as_deref(),
+                    ) {
                         BackfillOutcome::Made => made += 1,
                         BackfillOutcome::DeadTarget => skipped_dead += 1,
                         BackfillOutcome::Retry => retry += 1,
@@ -1522,6 +1616,7 @@ fn backfill_recent_link(
     autofs: &Path,
     clip: &Path,
     gapfill: &HashSet<String>,
+    rolling_from: Option<&str>,
 ) -> BackfillOutcome {
     let filename = match clip.file_name().map(|s| s.to_string_lossy().to_string()) {
         Some(f) => f,
@@ -1531,7 +1626,7 @@ fn backfill_recent_link(
         Some(s) => s,
         None => return BackfillOutcome::Skipped,
     };
-    if !gapfill.contains(stamp) {
+    if !gapfill.contains(stamp) || before_rolling_footage(&filename[..10], rolling_from) {
         return BackfillOutcome::Skipped;
     }
     let recents = teslacam.join("RecentClips").join(&filename[..10]);
@@ -1904,6 +1999,95 @@ mod tests {
             backfill_gapfill_links_in(teslacam, &snaps, &autofs, &HashSet::new()),
             (0, 0, 0),
         );
+    }
+
+    /// Days older than the rolling footage lose their gap-fill aliases, and
+    /// neither the backfill nor a later prune brings them back or touches a
+    /// day that still has rolling footage.
+    #[cfg(unix)]
+    #[test]
+    fn event_only_days_older_than_rolling_footage_are_pruned_and_stay_gone() {
+        use std::os::unix::fs::symlink;
+
+        let root = tempfile::tempdir().unwrap();
+        let teslacam = root.path().join("TeslaCam");
+        let recents = teslacam.join("RecentClips");
+        let snaps = root.path().join("snapshots");
+        let autofs = root.path().join("autofs");
+        std::fs::create_dir_all(snaps.join("snap-000007")).unwrap();
+        let sentry = |event: &str, stamp: &str| {
+            format!(
+                "{}/snap-000007/mnt/TeslaCam/SentryClips/{event}/{stamp}-front.mp4",
+                snaps.display()
+            )
+        };
+        let rolling = |stamp: &str| {
+            format!("{}/snap-000007/mnt/TeslaCam/RecentClips/{stamp}-front.mp4", snaps.display())
+        };
+        let put = |day: &str, stamp: &str, target: String| {
+            let dir = recents.join(day);
+            std::fs::create_dir_all(&dir).unwrap();
+            symlink(target, dir.join(format!("{stamp}-front.mp4"))).unwrap();
+        };
+        // Two old days of events only, a day with both, then an event-only
+        // day newer than the rolling footage (a short drive that an event
+        // swallowed whole).
+        put("2026-09-12", "2026-09-12_14-13-45", sentry("2026-09-12_14-24-12", "2026-09-12_14-13-45"));
+        put("2026-10-21", "2026-10-21_15-33-15", sentry("2026-10-21_15-39-26", "2026-10-21_15-33-15"));
+        put("2026-11-07", "2026-11-07_09-00-00", rolling("2026-11-07_09-00-00"));
+        put("2026-11-07", "2026-11-07_09-01-00", sentry("2026-11-07_09-05-00", "2026-11-07_09-01-00"));
+        put("2026-11-09", "2026-11-09_08-00-00", sentry("2026-11-09_08-04-00", "2026-11-09_08-00-00"));
+
+        assert_eq!(oldest_rolling_day(&recents).as_deref(), Some("2026-11-07"));
+        assert_eq!(prune_event_only_days_in(&recents), 2);
+        assert!(!recents.join("2026-09-12").exists());
+        assert!(!recents.join("2026-10-21").exists());
+        assert_eq!(std::fs::read_dir(recents.join("2026-11-07")).unwrap().count(), 2);
+        assert_eq!(std::fs::read_dir(recents.join("2026-11-09")).unwrap().count(), 1);
+        assert_eq!(prune_event_only_days_in(&recents), 0);
+
+        // The car still holds the September event; the backfill leaves it in
+        // its own folder only, and still fills the hole on a rolling day.
+        for (event, stamp) in [
+            ("2026-09-12_14-24-12", "2026-09-12_14-13-45"),
+            ("2026-11-07_09-05-00", "2026-11-07_09-02-00"),
+        ] {
+            let dir = teslacam.join("SentryClips").join(event);
+            std::fs::create_dir_all(&dir).unwrap();
+            symlink(sentry(event, stamp), dir.join(format!("{stamp}-front.mp4"))).unwrap();
+        }
+        let gapfill: HashSet<String> = ["2026-09-12_14-13-45", "2026-11-07_09-02-00"]
+            .into_iter()
+            .map(String::from)
+            .collect();
+        assert_eq!(
+            backfill_gapfill_links_in(&teslacam, &snaps, &autofs, &gapfill),
+            (1, 0, 0),
+        );
+        assert!(!recents.join("2026-09-12").exists());
+        assert!(recents.join("2026-11-07/2026-11-07_09-02-00-front.mp4").is_symlink());
+    }
+
+    /// With no rolling footage anywhere there is no cutoff: nothing is pruned.
+    #[cfg(unix)]
+    #[test]
+    fn event_only_days_are_kept_when_no_day_has_rolling_footage() {
+        use std::os::unix::fs::symlink;
+
+        let root = tempfile::tempdir().unwrap();
+        let recents = root.path().join("RecentClips");
+        let day = recents.join("2026-09-12");
+        std::fs::create_dir_all(&day).unwrap();
+        symlink(
+            "/backingfiles/snapshots/snap-000001/mnt/TeslaCam/SentryClips/2026-09-12_14-24-12/2026-09-12_14-13-45-front.mp4",
+            day.join("2026-09-12_14-13-45-front.mp4"),
+        )
+        .unwrap();
+        assert_eq!(oldest_rolling_day(&recents), None);
+        assert_eq!(prune_event_only_days_in(&recents), 0);
+        assert!(day.join("2026-09-12_14-13-45-front.mp4").is_symlink());
+        assert!(!before_rolling_footage("2026-09-12", None));
+        assert_eq!(prune_event_only_days_in(&root.path().join("missing")), 0);
     }
 
     /// Purge classifies deliberately dangling links by stored category target.
