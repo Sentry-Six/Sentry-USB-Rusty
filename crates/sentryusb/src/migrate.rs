@@ -242,7 +242,7 @@ fn migration_script_for_mode(tarball_url: &str, release_ref: &str, automatic: bo
         // The payload was validated/staged with the target binary. Never fetch
         // main or resume a partial installation after an unexpected power cut.
         let start = script.find("# Download repo tarball").unwrap();
-        let end = script[start..].find("# ── Update run/ scripts").map(|n| n + start).unwrap();
+        let end = script[start..].find("# Unlock root only once").map(|n| n + start).unwrap();
         script.replace_range(start..end, "tar xzf /opt/sentryusb/auto-update-source.tar.gz --strip-components=1 -C \"$TMPDIR\"\n\n");
         script.insert_str(0, "SENTRYUSB_AUTOMATIC_UPDATE=1\n");
     }
@@ -259,13 +259,6 @@ fn build_migration_script(tarball_url: &str, release_ref: &str) -> String {
     format!(
         r#"set -e
 
-# Remount filesystem as read-write (no-op if already rw)
-/root/bin/remountfs_rw 2>/dev/null || mount -o remount,rw / 2>/dev/null || true
-
-# Ensure /root/bin exists — on fresh Rust installs it isn't created by setup,
-# so cp targets below would otherwise fail.
-mkdir -p /root/bin
-
 # ── Migrate broken cttseraser FUSE fstab entry to bind mount ──
 # Installs that completed setup before the FUSE → bind-mount switch still
 # carry the legacy `mount.ctts#/mutable/TeslaCam …` fstab line, which
@@ -277,6 +270,7 @@ mkdir -p /root/bin
 # never re-run it, so they need this one-shot migration instead.
 # Idempotent: skipped entirely when no `mount.ctts#` entry exists.
 if grep -qE '^[^#]*mount\.ctts#' /etc/fstab 2>/dev/null; then
+  /root/bin/remountfs_rw 2>/dev/null || mount -o remount,rw / 2>/dev/null || true
   # Strip the legacy entry AND any prior bind-mount line targeting the
   # same path, then append the canonical bind entry. awk + mv is atomic
   # so a power loss mid-write leaves /etc/fstab in its previous state.
@@ -296,7 +290,7 @@ if grep -qE '^[^#]*mount\.ctts#' /etc/fstab 2>/dev/null; then
   echo "migrate: replaced legacy mount.ctts# fstab entry with bind mount"
 fi
 
-TMPDIR=$(mktemp -d)
+TMPDIR=$(mktemp -d -p /tmp)
 trap "rm -rf $TMPDIR" EXIT
 
 # Download repo tarball — try version tag first, fall back to tracking branch
@@ -304,6 +298,13 @@ if ! curl -fsSL "{tarball_url}" | tar xz --strip-components=1 -C "$TMPDIR" 2>/de
   FALLBACK="https://github.com/{repo}/archive/{branch}.tar.gz"
   curl -fsSL "$FALLBACK" | tar xz --strip-components=1 -C "$TMPDIR" 2>/dev/null || exit 1
 fi
+
+# Unlock root only once the release is here, so an offline boot stays read-only
+/root/bin/remountfs_rw 2>/dev/null || mount -o remount,rw / 2>/dev/null || true
+
+# Ensure /root/bin exists — on fresh Rust installs it isn't created by setup,
+# so cp targets below would otherwise fail.
+mkdir -p /root/bin
 
 # ── Update run/ scripts ──
 if [ -d "$TMPDIR/run" ]; then
@@ -828,6 +829,23 @@ mod tests {
         assert_eq!(std::fs::metadata(&conf).unwrap().modified().unwrap(), written);
         assert!(!conf.with_extension("conf.new").exists());
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn root_is_unlocked_only_after_the_release_is_in_hand() {
+        for automatic in [false, true] {
+            let script = migration_script_for_mode("https://example.invalid/source.tar.gz", "v0.0.0", automatic);
+            let fetch = if automatic { "tar xzf /opt/sentryusb/auto-update-source.tar.gz" } else { "curl -fsSL" };
+            let at = script.find(fetch).unwrap();
+            let legacy = script.find("if grep -qE '^[^#]*mount\\.ctts#' /etc/fstab").unwrap();
+            let legacy_end = legacy + script[legacy..].find("\nfi\n").unwrap();
+            let before = format!("{}{}", &script[..legacy], &script[legacy_end..at]);
+            for unlock in ["remountfs_rw", "remount,rw"] {
+                assert!(!before.contains(unlock), "{unlock} before the release is fetched");
+                assert!(script[at..].contains(unlock));
+            }
+            assert!(script[at..].contains("mkdir -p /root/bin") && !before.contains("mkdir -p /root/bin"));
+        }
     }
 
     #[test]
