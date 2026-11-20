@@ -134,10 +134,7 @@ pub async fn make_snapshot_with(skip_fsck: bool, caller_holds_lock: bool) -> Res
         if let Err(e) = backfill_gapfill_links() {
             warn!("backfill_gapfill_links: {}", e);
         }
-        let removed = prune_event_only_days_in(&Path::new(TESLACAM).join("RecentClips"));
-        if removed > 0 {
-            info!("removed {} gap-fill link(s) from RecentClips days with no rolling footage left", removed);
-        }
+        prune_event_only_recent_days();
     });
 
     if is_duplicate {
@@ -1516,6 +1513,18 @@ fn prune_event_only_days_in(recents_root: &Path) -> usize {
         }
         // Fails, and keeps the folder, if anything else is in it.
         let _ = std::fs::remove_dir(&dir);
+    }
+    removed
+}
+
+/// Drop gap-fill aliases dated before the rolling footage from the live
+/// RecentClips folder. The daemon runs this after each process pass, because
+/// snapshots on real devices go through the bash make_snapshot.sh and never
+/// reach `take_snapshot`. Returns the number of links removed.
+pub fn prune_event_only_recent_days() -> usize {
+    let removed = prune_event_only_days_in(&Path::new(TESLACAM).join("RecentClips"));
+    if removed > 0 {
+        info!("removed {} gap-fill link(s) from RecentClips days with no rolling footage left", removed);
     }
     removed
 }

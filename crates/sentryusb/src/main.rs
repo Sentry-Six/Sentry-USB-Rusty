@@ -332,10 +332,13 @@ async fn main() {
     // through the bash make_snapshot.sh, which never reaches the Rust
     // snapshot code — the daemon is the only OTA-updatable place this
     // can run. No-op unless the manifest changed since the last pass.
+    // The prune beside it runs every pass: rolling footage ages out without
+    // the manifest changing, leaving older days holding only event links.
     processor.set_after_process(Arc::new(|| {
         if let Err(e) = sentryusb_gadget::snapshot::backfill_gapfill_links() {
             tracing::warn!("gap-fill backfill: {}", e);
         }
+        sentryusb_gadget::snapshot::prune_event_only_recent_days();
     }));
     let processor = Arc::new(processor);
 
