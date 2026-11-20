@@ -3438,12 +3438,7 @@ https://github.com/polyfill-rs/is_terminal_polyfill
 Copyright (c) Individual contributors
 MIT: the standard text in "Standard licence texts: MIT", above.
 
-itertools 0.14.x (MIT OR Apache-2.0)
-https://github.com/rust-itertools/itertools
-Copyright (c) 2015
-MIT: the standard text in "Standard licence texts: MIT", above.
-
-itertools 0.15.x (MIT OR Apache-2.0)
+itertools (MIT OR Apache-2.0)
 https://github.com/rust-itertools/itertools
 Copyright (c) 2015
 MIT: the standard text in "Standard licence texts: MIT", above.
