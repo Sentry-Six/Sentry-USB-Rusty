@@ -659,6 +659,8 @@ KNOWN_UAS_QUIRK_DEVICES=(
   "04e8:4001"   # Samsung PSSD T7 / T7 Shield / T7 Touch
   "04e8:4011"   # Samsung PSSD T5 EVO
   "04e8:61f5"   # Samsung PSSD T5 / T3
+  "04e8:6200"   # Samsung PSSD T5 EVO (stalls under UAS; seen on an 8TB unit)
+  "04e8:6201"   # Samsung PSSD T5 EVO (same drive after a USB re-enumeration)
   "174c:55aa"   # ASMedia ASM1051E (common in USB-SATA enclosures)
   "152d:0578"   # JMicron JMS578 (common in USB-SATA enclosures)
 )
@@ -669,10 +671,22 @@ function fix_uas_quirks() {
     return
   fi
 
-  # Build the quirks string from all known devices not already present
-  local existing_quirks
-  existing_quirks=$(grep -P -o 'usb-storage\.quirks=[^\s]*' "$CMDLINE_PATH" || true)
+  # Only the usb-storage.quirks= parameter counts. Other parameters (such
+  # as usbcore.quirks=) can name the same vendor:product without
+  # disabling UAS. The kernel treats - and _ in parameter names as the
+  # same, so usb_storage.quirks= is this parameter too.
+  local params count
+  params=$(grep -oE '(^|[[:space:]])usb[-_]storage\.quirks=[^[:space:]]*' "$CMDLINE_PATH" || true)
+  count=$(printf '%s' "$params" | grep -c . || true)
+  if [ "$count" -gt 1 ]; then
+    setup_progress "WARNING: cmdline.txt has more than one usb-storage.quirks= parameter; leaving UAS quirks unchanged"
+    return
+  fi
+  local existing_value
+  existing_value=$(printf '%s' "$params" | sed -E 's/^[[:space:]]*usb[-_]storage\.quirks=//')
 
+  # Add each known device that has no entry yet. An entry with other
+  # flags (e.g. 04e8:6200:s) was set by hand and is left alone.
   local new_entries=()
   for dev in "${KNOWN_UAS_QUIRK_DEVICES[@]}"; do
     # skip comment-only entries
@@ -680,7 +694,7 @@ function fix_uas_quirks() {
     dev="${dev// /}"
     [ -z "$dev" ] && continue
 
-    if [[ "$existing_quirks" == *"$dev"* ]]; then
+    if [[ ",${existing_value,,}," == *",${dev,,}:"* ]]; then
       continue
     fi
     new_entries+=("${dev}:u")
@@ -691,15 +705,22 @@ function fix_uas_quirks() {
     return
   fi
 
-  local joined
+  local joined new_value
   joined=$(IFS=,; echo "${new_entries[*]}")
+  new_value="${existing_value:+${existing_value},}${joined}"
 
-  if [ -z "$existing_quirks" ]; then
+  # The kernel's usb-storage quirks buffer holds 127 characters and
+  # rejects a longer value outright, which would drop every entry.
+  if [ ${#new_value} -gt 127 ]; then
+    setup_progress "WARNING: usb-storage.quirks would be ${#new_value} characters (kernel limit 127); leaving UAS quirks unchanged"
+    return
+  fi
+
+  if [ -z "$params" ]; then
     # No quirks param yet — append one
-    sed -i "s|\$| usb-storage.quirks=${joined}|" "$CMDLINE_PATH"
+    sed -i "s|\$| usb-storage.quirks=${new_value}|" "$CMDLINE_PATH"
   else
-    # Append to existing quirks value (comma-separated)
-    sed -i "s|${existing_quirks}|${existing_quirks},${joined}|" "$CMDLINE_PATH"
+    sed -i -E "s/(^|[[:space:]])usb[-_]storage\.quirks=[^[:space:]]*/\1usb-storage.quirks=${new_value}/" "$CMDLINE_PATH"
   fi
 
   setup_progress "Added UAS quirks: ${joined}"

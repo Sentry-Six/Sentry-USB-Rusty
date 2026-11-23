@@ -940,36 +940,114 @@ async fn fix_uas_quirks(env: &SetupEnv, emitter: &SetupEmitter) -> Result<()> {
         "04e8:4001", // Samsung T7
         "04e8:4011", // Samsung T5 EVO
         "04e8:61f5", // Samsung T5/T3
+        "04e8:6200", // Samsung T5 EVO (stalls under UAS; seen on an 8TB unit)
+        "04e8:6201", // Samsung T5 EVO (same drive after a USB re-enumeration)
         "174c:55aa", // ASMedia ASM1051E
         "152d:0578", // JMicron JMS578
     ];
 
     let content = std::fs::read_to_string(&cmdline_path)?;
-    let mut new_entries = Vec::new();
-    for quirk in &known_quirks {
-        if !content.contains(quirk) {
-            new_entries.push(format!("{}:u", quirk));
+    match plan_uas_quirks(&content, &known_quirks) {
+        UasQuirkPlan::UpToDate => Ok(()),
+        UasQuirkPlan::Skip(reason) => {
+            emitter.begin_phase("uas_quirks", "USB drive compatibility");
+            emitter.progress(&format!("WARNING: {reason}; leaving UAS quirks unchanged"));
+            Ok(())
+        }
+        UasQuirkPlan::Write { content, added } => {
+            emitter.begin_phase("uas_quirks", "USB drive compatibility");
+            std::fs::write(&cmdline_path, content)?;
+            emitter.progress(&format!("Added UAS quirks: {}", added));
+            Ok(())
         }
     }
+}
 
+const USB_STORAGE_QUIRKS: &str = "usb-storage.quirks=";
+/// The kernel's usb-storage quirks buffer holds 127 characters and rejects
+/// a longer value outright, which would drop every entry.
+const USB_STORAGE_QUIRKS_MAX_LEN: usize = 127;
+
+#[derive(Debug, PartialEq)]
+enum UasQuirkPlan {
+    UpToDate,
+    Skip(String),
+    Write { content: String, added: String },
+}
+
+/// Work out the cmdline.txt change that adds a `:u` entry for each known
+/// device missing from `usb-storage.quirks=`. Only that parameter counts:
+/// others (such as `usbcore.quirks=`) can name the same vendor:product
+/// without disabling UAS. An existing entry with other flags was set by
+/// hand and is left alone.
+fn plan_uas_quirks(content: &str, known: &[&str]) -> UasQuirkPlan {
+    let params: Vec<&str> = content
+        .split_whitespace()
+        .filter(|t| is_usb_storage_quirks(t))
+        .collect();
+    if params.len() > 1 {
+        return UasQuirkPlan::Skip(
+            "cmdline.txt has more than one usb-storage.quirks= parameter".to_string(),
+        );
+    }
+    let existing = params
+        .first()
+        .map(|t| &t[USB_STORAGE_QUIRKS.len()..])
+        .unwrap_or("");
+    let existing_lower = existing.to_ascii_lowercase();
+    let present = |id: &str| {
+        let id = id.to_ascii_lowercase();
+        existing_lower.split(',').any(|e| {
+            e.strip_prefix(id.as_str())
+                .is_some_and(|rest| rest.starts_with(':'))
+        })
+    };
+    let new_entries: Vec<String> = known
+        .iter()
+        .filter(|id| !present(id))
+        .map(|id| format!("{id}:u"))
+        .collect();
     if new_entries.is_empty() {
-        return Ok(());
+        return UasQuirkPlan::UpToDate;
     }
 
-    emitter.begin_phase("uas_quirks", "USB drive compatibility");
-    let joined = new_entries.join(",");
-    let new_content = if content.contains("usb-storage.quirks=") {
-        content.replace(
-            "usb-storage.quirks=",
-            &format!("usb-storage.quirks={},", joined),
-        )
+    let added = new_entries.join(",");
+    let new_value = if existing.is_empty() {
+        added.clone()
     } else {
-        format!("{} usb-storage.quirks={}\n", content.trim(), joined)
+        format!("{existing},{added}")
     };
+    if new_value.len() > USB_STORAGE_QUIRKS_MAX_LEN {
+        return UasQuirkPlan::Skip(format!(
+            "usb-storage.quirks would be {} characters (kernel limit {})",
+            new_value.len(),
+            USB_STORAGE_QUIRKS_MAX_LEN
+        ));
+    }
 
-    std::fs::write(&cmdline_path, new_content)?;
-    emitter.progress(&format!("Added UAS quirks: {}", joined));
-    Ok(())
+    let new_param = format!("{USB_STORAGE_QUIRKS}{new_value}");
+    let content = if params.is_empty() {
+        format!("{} {new_param}\n", content.trim())
+    } else {
+        let tokens: Vec<&str> = content
+            .split_whitespace()
+            .map(|t| {
+                if is_usb_storage_quirks(t) {
+                    new_param.as_str()
+                } else {
+                    t
+                }
+            })
+            .collect();
+        format!("{}\n", tokens.join(" "))
+    };
+    UasQuirkPlan::Write { content, added }
+}
+
+/// The kernel treats `-` and `_` in parameter names as the same, so
+/// `usb_storage.quirks=` is this parameter too.
+fn is_usb_storage_quirks(token: &str) -> bool {
+    token.starts_with(USB_STORAGE_QUIRKS) || token.starts_with("usb_storage.quirks=")
 }
 
 /// cmdline.txt tokens Raspberry Pi OS uses to run its firstboot/auto-expand
@@ -1228,5 +1306,120 @@ mod tests {
         let (cleaned, changed) = strip_auto_expand_tokens(cmdline);
         assert!(!changed);
         assert_eq!(cleaned, cmdline);
+    }
+}
+
+#[cfg(test)]
+mod uas_quirk_tests {
+    use super::{plan_uas_quirks, UasQuirkPlan};
+
+    const KNOWN: &[&str] = &["04e8:61f5", "04e8:6200", "04e8:6201"];
+
+    fn written(plan: UasQuirkPlan) -> (String, String) {
+        match plan {
+            UasQuirkPlan::Write { content, added } => (content, added),
+            other => panic!("expected a write, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn adds_a_new_parameter_when_none_exists() {
+        let (content, added) = written(plan_uas_quirks("console=tty1 rootwait ro\n", KNOWN));
+        assert_eq!(added, "04e8:61f5:u,04e8:6200:u,04e8:6201:u");
+        assert_eq!(
+            content,
+            "console=tty1 rootwait ro usb-storage.quirks=04e8:61f5:u,04e8:6200:u,04e8:6201:u\n"
+        );
+    }
+
+    #[test]
+    fn appends_only_missing_ids_to_the_existing_parameter() {
+        let (content, added) = written(plan_uas_quirks(
+            "rootwait usb-storage.quirks=04e8:61f5:u ro\n",
+            KNOWN,
+        ));
+        assert_eq!(added, "04e8:6200:u,04e8:6201:u");
+        assert_eq!(
+            content,
+            "rootwait usb-storage.quirks=04e8:61f5:u,04e8:6200:u,04e8:6201:u ro\n"
+        );
+    }
+
+    #[test]
+    fn an_id_in_usbcore_quirks_does_not_count() {
+        let cmdline =
+            "rootwait usb-storage.quirks=04e8:61f5:u usbcore.quirks=04e8:6200:k,04e8:6201:k\n";
+        let (content, added) = written(plan_uas_quirks(cmdline, KNOWN));
+        assert_eq!(added, "04e8:6200:u,04e8:6201:u");
+        assert!(content.contains("usb-storage.quirks=04e8:61f5:u,04e8:6200:u,04e8:6201:u "));
+        assert!(content.contains("usbcore.quirks=04e8:6200:k,04e8:6201:k"));
+    }
+
+    #[test]
+    fn up_to_date_when_every_id_is_present() {
+        let cmdline = "rootwait usb-storage.quirks=04e8:61f5:u,04e8:6200:u,04e8:6201:u\n";
+        assert_eq!(plan_uas_quirks(cmdline, KNOWN), UasQuirkPlan::UpToDate);
+    }
+
+    #[test]
+    fn a_hand_set_entry_with_other_flags_is_left_alone() {
+        let cmdline = "usb-storage.quirks=04e8:61f5:u,04e8:6200:s,04e8:6201:u\n";
+        assert_eq!(plan_uas_quirks(cmdline, KNOWN), UasQuirkPlan::UpToDate);
+    }
+
+    #[test]
+    fn the_underscore_spelling_is_the_same_parameter() {
+        let (content, added) = written(plan_uas_quirks(
+            "rootwait usb_storage.quirks=174c:55aa:mu\n",
+            KNOWN,
+        ));
+        assert_eq!(added, "04e8:61f5:u,04e8:6200:u,04e8:6201:u");
+        assert_eq!(
+            content,
+            "rootwait usb-storage.quirks=174c:55aa:mu,04e8:61f5:u,04e8:6200:u,04e8:6201:u\n"
+        );
+    }
+
+    #[test]
+    fn mixed_spellings_count_as_a_duplicate() {
+        let cmdline = "usb-storage.quirks=04e8:61f5:u usb_storage.quirks=152d:0578:u\n";
+        assert!(matches!(
+            plan_uas_quirks(cmdline, KNOWN),
+            UasQuirkPlan::Skip(_)
+        ));
+    }
+
+    #[test]
+    fn ids_match_regardless_of_case() {
+        let cmdline = "usb-storage.quirks=04E8:61F5:u,04E8:6200:s,04e8:6201:u\n";
+        assert_eq!(plan_uas_quirks(cmdline, KNOWN), UasQuirkPlan::UpToDate);
+    }
+
+    #[test]
+    fn a_longer_id_is_not_mistaken_for_a_known_one() {
+        let (_, added) = written(plan_uas_quirks(
+            "usb-storage.quirks=04e8:61f5:u,04e8:62001:u,04e8:6201:u\n",
+            KNOWN,
+        ));
+        assert_eq!(added, "04e8:6200:u");
+    }
+
+    #[test]
+    fn skips_when_the_parameter_appears_twice() {
+        let cmdline = "usb-storage.quirks=04e8:61f5:u rootwait usb-storage.quirks=152d:0578:u\n";
+        assert!(matches!(
+            plan_uas_quirks(cmdline, KNOWN),
+            UasQuirkPlan::Skip(_)
+        ));
+    }
+
+    #[test]
+    fn skips_when_the_value_would_pass_the_kernel_limit() {
+        let long = ["1234:5678:u"; 10].join(",");
+        let cmdline = format!("usb-storage.quirks={long}\n");
+        assert!(matches!(
+            plan_uas_quirks(&cmdline, KNOWN),
+            UasQuirkPlan::Skip(_)
+        ));
     }
 }
